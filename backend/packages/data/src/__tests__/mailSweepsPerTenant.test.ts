@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import "../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, enqueueJob, ensureQueueSchema, grantQueueSchemaPrivileges, runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@alldots/queue";
+import { installQueueSchema } from "../db/queueSchema.js";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { withTransaction } from "../db/pool.js";
 import { createDatabase, getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -93,7 +94,7 @@ async function indexRows(itemId: string): Promise<Array<{ tenant_id: string; dat
 describe("mail sweeps run per tenant (issue #989)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -117,8 +118,7 @@ describe("mail sweeps run per tenant (issue #989)", () => {
     await seedSystem(adminPool);
     tenantZero = getTenantZeroId();
     tenantB = await createTestTenant(adminPool);
-    await ensureQueueSchema(adminPool);
-    await grantQueueSchemaPrivileges(adminPool);
+    await installQueueSchema(adminPool);
     vi.spyOn(tenancyLogger, "error").mockImplementation(() => {});
   });
 

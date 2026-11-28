@@ -1,4 +1,4 @@
-import type { AreaFilterTemplate, ModuleRegistry } from "@semprec/module-registry";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import type { DatabaseRow } from "../types.js";
 
 export interface CollectionMetadata {
@@ -26,8 +26,6 @@ export interface CollectionMetadataResolver {
   collectionFilter(database: Pick<DatabaseRow, "key" | "system">): Record<string, unknown> | undefined;
   /** Related-collection order and exclusions, active databases only; `undefined` when none declared. */
   relatedOrder?(database: Pick<DatabaseRow, "key" | "system">): { order: string[]; omit: string[] } | undefined;
-  /** Per-area filter template; `undefined` when none declared. */
-  areaFilter?(database: Pick<DatabaseRow, "key" | "system">): AreaFilterTemplate | undefined;
 }
 
 const NO_METADATA: Omit<CollectionMetadata, "overviewHidden"> = {
@@ -86,11 +84,6 @@ export async function createCollectionMetadataResolver(
       if (declared === undefined) return undefined;
       const isActive = (key: string) => descriptors.has(key);
       return { order: declared.order.filter(isActive), omit: (declared.omit ?? []).filter(isActive) };
-    },
-    areaFilter(database) {
-      if (!database.system || database.key === null) return undefined;
-      const declared = descriptors.get(database.key)?.areaFilter;
-      return declared === undefined ? undefined : structuredClone(declared);
     },
   };
 }

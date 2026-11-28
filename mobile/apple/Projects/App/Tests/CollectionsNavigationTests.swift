@@ -1,7 +1,7 @@
 import CoreKit
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 final class CollectionsNavigationTests: XCTestCase {
 
@@ -37,17 +37,13 @@ final class CollectionsNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testAnEventOpensItsMeetingPageAndAnAreaOpensItsOwnScreen() {
+    func testAnEventOpensItsMeetingPage() {
         let context = NavigationContext()
         let overview = StackSpy()
         context.register(overview, for: .overview)
         let router = AppCollectionsRouter(context: context, tab: .overview)
         router.showEvent(itemId: "e1")
-        router.showArea(areaId: "a1")
-        XCTAssertEqual(
-            overview.pushed,
-            [.meeting(eventId: "e1", tab: .overview), .area(areaId: "a1", tab: .overview)]
-        )
+        XCTAssertEqual(overview.pushed, [.meeting(eventId: "e1", tab: .overview)])
     }
 
     @MainActor
@@ -60,7 +56,6 @@ final class CollectionsNavigationTests: XCTestCase {
         router.showItem(itemId: "e1", databaseKey: "events")
         router.showItem(itemId: "pe1", databaseKey: "people")
         router.showItem(itemId: "j1", databaseKey: "journal")
-        router.showItem(itemId: "a1", databaseKey: "areas")
         router.showItem(itemId: "b1", databaseKey: "books")
         router.showItem(itemId: "c1", databaseKey: "companies")
         XCTAssertEqual(
@@ -68,8 +63,7 @@ final class CollectionsNavigationTests: XCTestCase {
             [
                 .meeting(eventId: "e1", tab: .overview),
                 .collectionItem(itemId: "pe1", databaseKey: "people"),
-                .collectionItem(itemId: "j1", databaseKey: "journal"),
-                .collectionItem(itemId: "a1", databaseKey: "areas")
+                .collectionItem(itemId: "j1", databaseKey: "journal")
             ]
         )
         XCTAssertEqual(
@@ -92,8 +86,8 @@ final class CollectionsNavigationTests: XCTestCase {
         router.showItem(itemId: "p1", databaseKey: "projects")
         router.showCollection(projects)
         router.showEvent(itemId: "e1")
-        router.showArea(areaId: "a1")
         router.showProjectMail(projectId: "p1")
+        router.showProjectMailSignals(projectId: "p1")
         router.showProjectNotes(projectId: "p1")
         router.showProjectAgent(projectId: "p1")
         router.showProjectTasks(projectId: "p1")
@@ -118,6 +112,17 @@ final class CollectionsNavigationTests: XCTestCase {
         context.register(overview, for: .overview)
         AppCollectionsRouter(context: context, tab: .overview).showProjectAgent(projectId: "p1")
         XCTAssertEqual(overview.pushed, [.sempProjectAgent(projectId: "p1")])
+    }
+
+    @MainActor
+    func testTheMailSignalsOfAProjectOpenOnTheStackOfTheCollection() {
+        let context = NavigationContext()
+        let overview = StackSpy()
+        context.register(overview, for: .overview)
+        AppCollectionsRouter(context: context, tab: .overview).showProjectMailSignals(projectId: "p1")
+        XCTAssertEqual(overview.pushed, [.projectMailSignals(projectId: "p1")])
+        XCTAssertTrue(overview.sheets.isEmpty)
+        XCTAssertFalse(AppDestination.projectMailSignals(projectId: "p1").presentsAsSheet)
     }
 
     @MainActor

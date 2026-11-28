@@ -53,7 +53,7 @@ async function insertMessage(threadId: string, role = "user", extra: { agentRunI
 describe("semp_threads and semp_messages schema (issue #1367)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+    runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -129,7 +129,7 @@ describe("semp_threads and semp_messages schema (issue #1367)", () => {
     const { rows: tables } = await adminPool.query<{ name: string }>(
       `SELECT c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-          AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'`,
+          AND obj_description(c.oid, 'pg_class') = 'alldots:tenancy=tenant'`,
     );
     const { rows: foreignKeys } = await adminPool.query<{ table_name: string; referenced_table: string }>(
       `SELECT child.relname AS table_name, parent.relname AS referenced_table

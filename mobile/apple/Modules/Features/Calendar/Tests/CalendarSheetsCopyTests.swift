@@ -69,7 +69,7 @@ final class CalendarSheetsCopyTests: XCTestCase {
         XCTAssertFalse(swatch.matches("#007AFE"))
     }
 
-    func testCalendarsSemprecFillsExplainWhatFillsThem() {
+    func testCalendarsAlldotsFillsExplainWhatFillsThem() {
         let keys = ["tasks", "birthdays", "sleep", "holidaysCz"]
         let subtitles = keys.compactMap { CalendarRow(id: $0, name: $0, color: "#000000", systemKey: $0).subtitle }
         XCTAssertEqual(Set(subtitles).count, keys.count)
@@ -87,8 +87,27 @@ final class CalendarSheetsCopyTests: XCTestCase {
         let birthdays = CalendarRow(id: "b", name: "B", color: "#000000", group: .system, systemKey: "birthdays")
         let subscription = CalendarRow(id: "h", name: "H", color: "#000000", group: .subscription)
         let sleep = CalendarRow(id: "s", name: "Sleep", color: "#000000", group: .system, systemKey: "sleep")
-        XCTAssertEqual(Set([own.hint, tasks.hint, birthdays.hint, subscription.hint]).count, 4)
+        let account = CalendarRow(id: "g", name: "G", color: "#000000", group: .account)
+        let readOnly = CalendarRow(id: "r", name: "R", color: "#000000", group: .account, readOnly: true)
+        let hints = [own.hint, tasks.hint, birthdays.hint, subscription.hint, account.hint, readOnly.hint]
+        XCTAssertEqual(Set(hints).count, 6)
         XCTAssertEqual(sleep.hint, own.hint)
+    }
+
+    func testAnAccountCalendarRenamedHereNamesItsProviderName() throws {
+        let renamed = CalendarRow(id: "g", name: "Rodina", color: "#000000", group: .account, remoteName: "Family")
+        XCTAssertTrue(try XCTUnwrap(renamed.providerName).contains("Family"))
+        let asAtProvider = CalendarRow(id: "g", name: "Family", color: "#000000", group: .account, remoteName: "Family")
+        XCTAssertNil(asAtProvider.providerName)
+        XCTAssertNil(CalendarRow(id: "w", name: "Work", color: "#000000", remoteName: "Job").providerName)
+    }
+
+    func testEveryAccountStatusHasItsOwnTextAndOnlyProblemsAskForAttention() {
+        let statuses: [InternetServiceStatus] = [
+            .off, .pending, .syncing, .ok, .error, .needsReauthorization, .needsConsent
+        ]
+        XCTAssertEqual(Set(statuses.map(\.calendarsText)).count, statuses.count)
+        XCTAssertEqual(statuses.filter(\.needsAttention), [.error, .needsReauthorization, .needsConsent])
     }
 
     // MARK: - Failures

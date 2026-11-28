@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { wallClockToInstant } from "../../calendarTime.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
@@ -256,7 +256,7 @@ function byId(a: { id: string }, b: { id: string }): number {
 describe("calendar timeline read (issue #1717)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await runAsSystem("verify calendar timeline role", () =>
       dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -1113,6 +1113,13 @@ describe("calendar timeline read (issue #1717)", () => {
         now: { date: DAY, time: "12:15" },
         at: new Date("2026-10-16T10:15:00Z"),
         includeSleep: true,
+        lookups: {
+          database: expect.any(Function),
+          calendarIds: expect.any(Function),
+          locale: expect.any(Function),
+          hostEventsRelation: expect.any(Function),
+          itemsByIds: expect.any(Function),
+        },
       },
     ]);
   });

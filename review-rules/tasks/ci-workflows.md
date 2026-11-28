@@ -20,7 +20,16 @@ repository. Report nothing for files outside `.github/workflows/`.
    triggers so the check stops running on pull requests it used to run on;
    lowering `REVIEW_BLOCK_SEVERITY` or changing `GH_CHECK_NAME`; and making the
    finalizer stop marking an interrupted Check Run as completed or stop writing
-   its `crb-outcome` marker.
+   its `crb-outcome` marker. The one sanctioned skip is the area condition in
+   `ci.yml`: a backend or web job or `ci` step may carry
+   `if: github.event_name == 'push' || needs.changes.outputs.<area> == 'true'`,
+   decided by the `changes` job, while `ci` fails when `changes` did not
+   succeed or reported a value other than `true` or `false`, and `integration`
+   passes skipped shards only for a pull request whose `changes` succeeded with
+   `backend` `false`. Dropping the push clause or either guard, or conditioning
+   a required job on anything else, is the weakening this item describes: the
+   guards are what keep a failed or wrong detection from reporting skipped jobs
+   as green.
 3. A `permissions:` grant wider than the job's steps use — high. Name the
    scope and show that no step needs it. A `write` scope added to a workflow
    triggered by `pull_request_target`, or a move from an explicit

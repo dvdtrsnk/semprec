@@ -1,7 +1,7 @@
 // Daily sweep: a Pages item whose parent's document holds no `page` block for it is trashed through the choke point,
 // so it stays restorable.
 import type { Pool, PoolClient } from "pg";
-import { readPageBlocks } from "@semprec/block-model";
+import { readPageBlocks } from "@alldots/block-model";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemsByIds, lockItemById } from "../chokePoint/itemsStore.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";

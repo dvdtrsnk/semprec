@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterNodeSchema as sharedSchema } from "@semprec/shared";
+import { filterNodeSchema as sharedSchema } from "@alldots/shared";
 import { ValidationError } from "../errors.js";
 import { compileFilterNode, type FilterProperties } from "../views/filterCompiler.js";
 import { parseFilterNode } from "../views/filterTree.js";

@@ -2,16 +2,16 @@
 // that decided their day. States match `GET /api/events/:id/tasks`, read in one batch.
 import type { PoolClient } from "pg";
 import { eventEnd } from "../calendarTime.js";
-import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
+import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import {
   byAddedAtThenEventId,
-  loadHostEventsRelation,
   readHostEventAddedAt,
   toTaskHostEvent,
   type TaskHostEvent,
 } from "../tasks/taskHostEventState.js";
-import { readEventsTasks, type EventTasks } from "../tasks/taskStateInEvent.js";
+import { readEventsTasksIn, type EventTasks } from "../tasks/taskStateInEvent.js";
+import type { CalendarTimelineLookups } from "./timelineLookups.js";
 import type {
   CalendarEventOccurrence,
   CalendarTimelineContext,
@@ -37,15 +37,16 @@ export interface NamedHostEvent extends TaskHostEvent {
  */
 export async function readDecidingHostEvents(
   client: PoolClient,
+  lookups: CalendarTimelineLookups,
   taskIds: readonly string[],
 ): Promise<Map<string, NamedHostEvent>> {
-  const relation = await loadHostEventsRelation(client);
+  const relation = await lookups.hostEventsRelation();
   if (relation === null || taskIds.length === 0) return new Map();
   const edges = await relationsStore.listRelationsForItems(client, relation.definitionId, [...taskIds]);
   const taskOf = (edge: (typeof edges)[number]): string => (relation.taskIsItemA ? edge.itemA : edge.itemB);
   const eventOf = (edge: (typeof edges)[number]): string => (relation.taskIsItemA ? edge.itemB : edge.itemA);
   const events = new Map(
-    (await itemsStore.getItemsByIds(client, [...new Set(edges.map(eventOf))])).map((event) => [event.id, event]),
+    (await lookups.itemsByIds([...new Set(edges.map(eventOf))])).map((event) => [event.id, event]),
   );
   const hostEventsByTask = new Map<string, NamedHostEvent[]>();
   for (const edge of edges) {
@@ -69,16 +70,20 @@ export async function readDecidingHostEvents(
 export async function attachTaskInEventState(
   client: PoolClient,
   entries: CalendarTimelineEntry[],
-  context: Pick<CalendarTimelineContext, "timezone" | "at">,
+  context: Pick<CalendarTimelineContext, "timezone" | "at" | "lookups">,
 ): Promise<CalendarTimelineEntry[]> {
   const taskIds = entries.flatMap((entry) => (entry.kind === "task" && !entry.readOnly ? [entry.id] : []));
-  const deciding = await readDecidingHostEvents(client, taskIds);
+  const deciding = await readDecidingHostEvents(client, context.lookups, taskIds);
   const eventIds = [...deciding.values()].map((hostEvent) => hostEvent.eventId);
   for (const entry of entries) {
     const eventId = entry.kind === "event" ? storedEventId(entry) : null;
     if (eventId !== null) eventIds.push(eventId);
   }
-  const eventTasks: Map<string, EventTasks> = await readEventsTasks(client, eventIds, context.at);
+  const eventTasks: Map<string, EventTasks> = await readEventsTasksIn(client, eventIds, context.at, {
+    eventsDatabaseId: (await context.lookups.database(EVENTS_MODULE_ID))?.id ?? null,
+    hostEventsRelation: await context.lookups.hostEventsRelation(),
+    timezone: context.timezone,
+  });
 
   return entries.map((entry): CalendarTimelineEntry => {
     if (entry.kind === "event") {

@@ -31,8 +31,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABOzvonA",
         "number": 90,
         "title": "[implementation-audit-fixes 20/23] Implement structured mail read and flag search",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/90",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/90",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "f96ac1cce4ad0a0f319b224c40b5a9824c64c2ce7967408df55db803d0ff4554"
       }
@@ -70,8 +70,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kH_A",
         "number": 205,
         "title": "[mail-search-czech-dict] Czech Hunspell search — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/205",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/205",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "c330d0bd7a74ff66e51b6e783fac732e0cdb430ac22201b22771909e4af7a558"
       }
@@ -109,8 +109,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kIKQ",
         "number": 206,
         "title": "[mail-search-czech-dict 01/02] Provision PostgreSQL Czech Hunspell assets",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/206",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/206",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "aa53fbbf010ce961f57aaa0dc2042f191ef1e6a058e30b3a28c4ffeee1e47333"
       }
@@ -148,17 +148,17 @@
         "node_id": "I_kwDOUFuQ4c8AAAABO0kIWw",
         "number": 207,
         "title": "[mail-search-czech-dict 02/02] Activate Hunspell-backed Czech full-text search with fallback",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/207",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/207",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "6503b43a1278ed83771603cd9e6557297362d2f97bb74c51a7e4a606199e8377"
       }
     }
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465854987",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/74#issuecomment-5465854987",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/74",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5465854987",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/74#issuecomment-5465854987",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/74",
     "id": 5465854987,
     "node_id": "IC_kwDOUFuQ4c8AAAABRcpUCw",
     "user": {
@@ -188,7 +188,7 @@
     "author_association": "OWNER",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5465854987/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5465854987/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -227,7 +227,7 @@
   {
     "id": 30224402272,
     "node_id": "CE_lADOUFuQ4c8AAAABOt8x9c8AAAAHCYPHYA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/30224402272",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/30224402272",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

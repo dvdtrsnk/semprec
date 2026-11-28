@@ -63,12 +63,14 @@ extension SharedMailThreadScreenModel {
             draft: state.draft.map { MailSempDraft(id: $0.id, body: $0.body, recipients: $0.recipients) },
             sendPhase: MailSendPhase(state.sendPhase),
             sendFailure: state.sendFailure.map(FailureKind.init),
+            sendRefusal: state.sendRefusal.map(\.refusal),
             sentFrom: state.sentFrom,
             archivedOrTrashed: state.archivedOrTrashed,
             canReply: state.canReply,
             acting: state.acting,
             creatingTask: state.creatingTask,
-            actionFailed: state.actionFailed
+            actionFailed: state.actionFailed,
+            actionRefusal: state.actionRefusal.map(\.refusal)
         )
     }
 
@@ -77,6 +79,9 @@ extension SharedMailThreadScreenModel {
         case .retry: SharedSDK.MailThreadActionRetry.shared
         case .refresh: SharedSDK.MailThreadActionRefresh.shared
         case .toggleMessage(let id): SharedSDK.MailThreadActionToggleMessage(emailId: id)
+        case .loadBody(let id): SharedSDK.MailThreadActionLoadBody(emailId: id)
+        case .saveAttachment(let emailId, let attachmentId):
+            SharedSDK.MailThreadActionSaveAttachment(emailId: emailId, attachmentId: attachmentId)
         case .toggleFlag: SharedSDK.MailThreadActionToggleFlag.shared
         case .move(let move): SharedSDK.MailThreadActionMove(to: sharedMove(move))
         case .sendDraft(let body): SharedSDK.MailThreadActionSendDraft(body: body)
@@ -91,6 +96,7 @@ extension SharedMailThreadScreenModel {
         case .close: .close
         case .compose(let compose): .compose(MailComposeStart(compose.start))
         case .openTask(let task): .openTask(taskId: task.taskId)
+        case .openFile(let file): .openFile(fileItemId: file.fileItemId)
         }
     }
 
@@ -99,6 +105,7 @@ extension SharedMailThreadScreenModel {
         case .draft: SharedSDK.MailThreadTargetDraft.shared
         case .reply(let mode): SharedSDK.MailThreadTargetReply(mode: mode.shared)
         case .task(let id): SharedSDK.MailThreadTargetTask(taskId: id)
+        case .file(let id): SharedSDK.MailThreadTargetFile(fileItemId: id)
         }
     }
 
@@ -127,18 +134,45 @@ extension SharedMailThreadScreenModel {
             toNames: item.toNames,
             date: item.date,
             bodyText: item.bodyText,
+            preview: item.preview,
+            bodyPhase: bodyPhase(item.bodyPhase),
+            bodyFailure: item.bodyFailure.map(FailureKind.init),
+            bodyUnavailable: item.bodyUnavailable.map(\.unavailable),
             attachments: item.attachments.map(attachment),
             expanded: item.expanded
         )
     }
 
+    private static func bodyPhase(_ phase: SharedSDK.MailBodyPhase) -> MailBodyPhase {
+        switch phase {
+        case .ready: .ready
+        case .remote: .remote
+        case .loading: .loading
+        case .failed: .failed
+        }
+    }
+
     private static func attachment(_ item: SharedSDK.MailAttachmentItem) -> MailAttachmentItem {
         MailAttachmentItem(
+            attachmentId: item.attachmentId,
             filename: item.filename,
             contentType: item.contentType,
             byteSize: item.byteSize,
-            project: MailLinkedValue(item.project)
+            project: MailLinkedValue(item.project),
+            fileItemId: item.fileItemId,
+            savePhase: savePhase(item.savePhase),
+            saveFailure: item.saveFailure.map(FailureKind.init),
+            saveUnavailable: item.saveUnavailable.map(\.unavailable)
         )
+    }
+
+    private static func savePhase(_ phase: SharedSDK.MailAttachmentSavePhase) -> MailAttachmentSavePhase {
+        switch phase {
+        case .idle: .idle
+        case .saving: .saving
+        case .saved: .saved
+        case .failed: .failed
+        }
     }
 
     private static func task(_ item: SharedSDK.MailTaskItem) -> MailTaskItem {

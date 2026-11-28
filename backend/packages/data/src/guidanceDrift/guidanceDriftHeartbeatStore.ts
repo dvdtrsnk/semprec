@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { GuidanceHeartbeatStore } from "@semprec/shared";
+import type { GuidanceHeartbeatStore } from "@alldots/shared";
 import { getSystemTimezone } from "../systemSettings.js";
 import { computeNextFireAt } from "../scheduler/nextFireAt.js";
 

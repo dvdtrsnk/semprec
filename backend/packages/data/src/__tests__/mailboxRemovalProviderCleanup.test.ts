@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { inspect } from "node:util";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import {
@@ -200,7 +200,6 @@ function createMailbox(fixture: MailboxFixture, tenantId = tenant): Promise<stri
     if (fixture.gmailWatch) {
       if (gmailAccount === null) throw new Error("a mailbox with a recorded watch records its Google account");
       await recordGmailWatchRegistration(client, mailbox.id, {
-        historyId: "1",
         expiresAt: WATCH_EXPIRY,
         emailAddress: gmailAccount,
       });
@@ -368,7 +367,7 @@ function gate(): { promise: Promise<void>; release: () => void } {
 describe("mailbox removal cleanup outside the database (gh-2030)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
-import { AiGatewayFailedError, type AiGatewayClientPort, type AiGatewayCompletionInput } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@alldots/queue";
+import { AiGatewayFailedError, type AiGatewayClientPort, type AiGatewayCompletionInput } from "@alldots/shared";
 import { getTenantZeroId, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import {
   DEFAULT_CONTRACT_TOOLS,

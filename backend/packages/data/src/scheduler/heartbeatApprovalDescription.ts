@@ -7,7 +7,7 @@
 //   approval.heartbeatUpdate      {heartbeatName, projectName, changes}   (localized "field: value; ..." list)
 //   approval.heartbeatSetEnabled  {heartbeatName, projectName, state}     (localized on/off)
 // For `update` and `setEnabled`, `heartbeatName` is the current name.
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import type { PoolClient } from "pg";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { NotFoundError, ValidationError } from "../errors.js";

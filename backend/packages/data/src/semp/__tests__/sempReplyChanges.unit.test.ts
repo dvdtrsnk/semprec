@@ -207,7 +207,7 @@ describe("projectSempReplyChanges", () => {
         relations: [
           { propertyKey: "project", targetItemIds: [TASK_A] },
           { propertyKey: "people", targetItemIds: [TASK_A, TASK_B] },
-          { propertyKey: "area", targetItemIds: [] },
+          { propertyKey: "company", targetItemIds: [] },
           { propertyKey: 5, targetItemIds: [TASK_A] },
         ],
       },

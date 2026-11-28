@@ -1,6 +1,7 @@
 import type { PoolClient } from "pg";
 import type { WallClock } from "../calendarTime.js";
 import type { EventTaskCounts, EventTaskRow, EventTaskState } from "../tasks/taskStateInEvent.js";
+import type { CalendarTimelineLookups } from "./timelineLookups.js";
 import { readBirthdayTimelineItems } from "./timelineBirthdaySource.js";
 import { readHolidayTimelineItems } from "./timelineHolidaySource.js";
 import { readEventTimelineItems, readTaskTimelineItems } from "./timelineRead.js";
@@ -61,7 +62,10 @@ export interface CalendarTimelineItem {
   updatedAt: string;
   /** The item's `version`; a write passes it back as `ifVersion`. */
   version: string;
-  /** `true` for an entry that is not a stored row, or whose row no client may edit (a subscribed event). */
+  /**
+   * `true` for an entry that is not a stored row, or whose row no client may edit (a subscribed event, an Event of a
+   * read-only account calendar).
+   */
   readOnly: boolean;
 }
 
@@ -131,6 +135,11 @@ export interface CalendarSleepTimelineItem {
   wakeTime: string;
   alarm: boolean;
   changed: boolean;
+  /** The plan's own times for the night, which `changed` departs from; `null` without a plan. */
+  planBedTime: string | null;
+  planWakeTime: string | null;
+  /** The sleep goal of the settings, in minutes; `null` when it is not a whole number of minutes. */
+  goalMinutes: number | null;
   /** ISO with the tenant zone's offset. */
   bedAt: string;
   wakeAt: string;
@@ -182,6 +191,7 @@ export interface CalendarTimelineContext {
   at: Date;
   /** `false` for a caller without access to the sensitive sleep databases (an ungranted run, an `/mcp` session). */
   includeSleep: boolean;
+  lookups: CalendarTimelineLookups;
 }
 
 export interface CalendarTimelineSource {

@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
@@ -22,6 +22,7 @@ import {
 } from "../../testSupport/testDb.js";
 import { CALENDAR_MODULE_ID } from "../calendarModuleId.js";
 import { logger } from "../logger.js";
+import { createCalendarTimelineLookups } from "../timelineLookups.js";
 import { readCalendarTimeline } from "../timelineRead.js";
 import { createCalendarTimelineRouteHandler } from "../timelineRouteHandler.js";
 import { CALENDAR_TIMELINE_SOURCES, type CalendarTimelineContext } from "../timelineSources.js";
@@ -220,7 +221,7 @@ function world(tenantId: string) {
 describe("calendar timeline source of subscribed events (issue gh-2005)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -517,7 +518,7 @@ describe("calendar timeline source of subscribed events (issue gh-2005)", () => 
 
   it("returns nothing for a tenant without the subscribed events database", async () => {
     const tenantId = await createTestTenant(adminPool);
-    const context: CalendarTimelineContext = {
+    const context: Omit<CalendarTimelineContext, "lookups"> = {
       from: "2026-10-20",
       to: "2026-10-20",
       timezone: "Europe/Prague",
@@ -527,7 +528,9 @@ describe("calendar timeline source of subscribed events (issue gh-2005)", () => 
       includeSleep: true,
     };
     const items = await runInTenant(tenantId, () =>
-      withTransaction(dataPool, (client) => readSubscribedEventTimelineItems(client, context)),
+      withTransaction(dataPool, (client) =>
+        readSubscribedEventTimelineItems(client, { ...context, lookups: createCalendarTimelineLookups(client) }),
+      ),
     );
     expect(items).toEqual([]);
   });

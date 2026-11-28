@@ -1,0 +1,41 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p33g1b2nv0rp40g\"",
+  "summary": "Holidays in Czechia",
+  "description": "Holidays and Observances in Czechia",
+  "updated": "2026-11-01T00:00:00.000Z",
+  "timeZone": "Europe/Prague",
+  "accessRole": "reader",
+  "defaultReminders": [],
+  "nextSyncToken": "CMDQwfiFx5EDEMDQwfiFx5EDGAEgwP7g",
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3500000000000000\"",
+      "id": "20270101_newyear",
+      "status": "confirmed",
+      "htmlLink": "https://www.google.com/calendar/event?eid=MjAyNzAxMDFfbmV3eWVhcg",
+      "created": "2026-01-01T00:00:00.000Z",
+      "updated": "2026-01-01T00:00:00.000Z",
+      "summary": "New Year's Day",
+      "description": "Public holiday",
+      "creator": {
+        "email": "cs.czech#holiday@group.v.calendar.google.com",
+        "displayName": "Holidays in Czechia",
+        "self": true
+      },
+      "organizer": {
+        "email": "cs.czech#holiday@group.v.calendar.google.com",
+        "displayName": "Holidays in Czechia",
+        "self": true
+      },
+      "start": { "date": "2027-01-01" },
+      "end": { "date": "2027-01-02" },
+      "transparency": "transparent",
+      "visibility": "public",
+      "iCalUID": "20270101_newyear@google.com",
+      "sequence": 0,
+      "eventType": "default"
+    }
+  ]
+}

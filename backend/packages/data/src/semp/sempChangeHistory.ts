@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import type { SempThreadChange } from "@semprec/shared";
+import type { SempThreadChange } from "@alldots/shared";
 import { boundValue } from "../agentRuns/agentRunStepPages.js";
 import { sensitiveSourceDatabaseIdsByItem } from "../agentGrants/inheritedSensitivity.js";
 import { listDatabaseLabelsByIds } from "../chokePoint/databasesStore.js";

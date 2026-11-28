@@ -11,9 +11,9 @@ final class RouterSpy: CollectionsRouting {
     var items: [String] = []
     var collections: [CollectionTarget] = []
     var events: [String] = []
-    var areas: [String] = []
     var tasks: [String] = []
     var mail: [String] = []
+    var mailSignals: [String] = []
     var notes: [String] = []
     var agents: [String] = []
 
@@ -24,9 +24,9 @@ final class RouterSpy: CollectionsRouting {
 
     func showCollection(_ target: CollectionTarget) { collections.append(target) }
     func showEvent(itemId: String) { events.append(itemId) }
-    func showArea(areaId: String) { areas.append(areaId) }
     func showProjectTasks(projectId: String) { tasks.append(projectId) }
     func showProjectMail(projectId: String) { mail.append(projectId) }
+    func showProjectMailSignals(projectId: String) { mailSignals.append(projectId) }
     func showProjectNotes(projectId: String) { notes.append(projectId) }
     func showProjectAgent(projectId: String) { agents.append(projectId) }
 }

@@ -1,6 +1,6 @@
 import { connect, isIP, Socket, type LookupFunction } from "node:net";
 import { TLSSocket } from "node:tls";
-import { ImapFlow } from "imapflow";
+import { ImapFlow, type ListOptions } from "imapflow";
 import { createTransport, type SendMailOptions } from "nodemailer";
 import {
   OutboundAddressNotAllowedError,
@@ -9,10 +9,17 @@ import {
   isOutboundAddressNotAllowed,
   type OutboundAddressPolicy,
 } from "../net/outboundAddressPolicy.js";
-import { ImapFlowMailClient } from "./imapFlowClient.js";
+import { sharedImapConnectionLimiter, type ImapConnectionLimiter } from "./imapConnectionLimiter.js";
+import { ImapFlowMailClient, isImapConnectionLimitError } from "./imapFlowClient.js";
+import type { ImapFolderRef } from "./imapReconcile.js";
+import { imapListOptions } from "./imapSpecialUseHints.js";
 import { logger } from "./logger.js";
 import type { MailServerEndpoint } from "./mailServerSettingsStore.js";
-import { MailServerUnreachableError } from "./providerTypes.js";
+import {
+  MailConnectionLimitError,
+  MailReauthorizationRequiredError,
+  MailServerUnreachableError,
+} from "./providerTypes.js";
 
 /**
  * Connections to tenant-chosen IMAP and SMTP hosts. The host name is resolved once through the outbound address
@@ -37,6 +44,14 @@ export interface MailServerConnectionOptions {
   maxIdleTime?: number;
   /** IMAP only, as `maxIdleTime`: how long the socket may stay silent before imapflow gives up on it. */
   socketTimeout?: number;
+  /** IMAP only, imapflow's `autoIdleDelay`: how long a selected connection stays inactive before it starts IDLE. */
+  autoIdleDelay?: number;
+  /** IMAP only: ENABLE QRESYNC where the server advertises it. Defaults to `true`. */
+  qresync?: boolean;
+  /** IMAP only: admits the login under the server host's login rate. Defaults to `sharedImapConnectionLimiter`. */
+  loginAdmission?: Pick<ImapConnectionLimiter, "admitLogin">;
+  /** IMAP only: abandons the wait for a login admission. */
+  signal?: AbortSignal;
 }
 
 /** In each library and for the TCP connect of SMTP. */
@@ -178,15 +193,18 @@ function buildImapFlow(
     tls: { servername: endpoint.host, lookup: createPolicyLookup(policy), ...(testCa ? { ca: testCa } : {}) },
     connectionTimeout,
     greetingTimeout: GREETING_TIMEOUT_MS,
+    // imapflow ENABLEs QRESYNC only where the server advertises it; a sync pass then receives VANISHED for expunges.
+    qresync: options.qresync ?? true,
     ...(verification ? { disableCompression: true } : {}),
     ...(options.maxIdleTime !== undefined ? { maxIdleTime: options.maxIdleTime } : {}),
     ...(options.socketTimeout !== undefined ? { socketTimeout: options.socketTimeout } : {}),
+    ...(options.autoIdleDelay !== undefined ? { autoIdleDelay: options.autoIdleDelay } : {}),
     // ImapFlow's protocol logger can emit user content.
     logger: false,
   });
 }
 
-type VerificationAttempt = "success" | "authentication" | "tls" | "unreachable";
+export type VerificationAttempt = "success" | "authentication" | "tls" | "unreachable";
 
 export interface VerificationTestOptions {
   deadlineMs?: number;
@@ -201,6 +219,60 @@ function verificationImapSocket(client: ImapFlow): Socket {
   return value;
 }
 
+/** Spans the LIST a verification sends on its verified connection. */
+const FOLDER_LISTING_DEADLINE_MS = 15_000;
+
+class FolderListingTimeoutError extends Error {
+  constructor() {
+    super(`The IMAP folder listing did not finish within ${FOLDER_LISTING_DEADLINE_MS} ms`);
+    this.name = "FolderListingTimeoutError";
+  }
+}
+
+/**
+ * The folders without STATUS: path and special-use are all a connect needs. Not `listOnly`, which returns before
+ * imapflow assigns special-use, so the purposes match the sync pass's listing. `null` when it failed or expired, with
+ * the cause in `failures`; on expiry the caller's close fails the LIST still running.
+ */
+async function listVerifiedFolders(
+  client: ImapFlow,
+  options: ListOptions,
+  failures: unknown[],
+): Promise<ImapFolderRef[] | null> {
+  let timer: NodeJS.Timeout | undefined;
+  const expiry = new Promise<"expired">((resolve) => {
+    timer = setTimeout(() => resolve("expired"), FOLDER_LISTING_DEADLINE_MS);
+  });
+  const listed = client.list(options).then(
+    (entries) => ({ ok: true as const, entries }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  try {
+    const outcome = await Promise.race([listed, expiry]);
+    if (outcome === "expired") {
+      failures.push(new FolderListingTimeoutError());
+      return null;
+    }
+    if (!outcome.ok) {
+      failures.push(outcome.error);
+      return null;
+    }
+    return outcome.entries.map((entry) => ({
+      path: entry.path,
+      ...(entry.specialUse ? { specialUse: entry.specialUse } : {}),
+    }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function logFolderListingFailure(failure: unknown): void {
+  logger.warn(
+    { stage: "listing", errorName: failure instanceof Error ? failure.name : typeof failure },
+    "The connect could not list the IMAP folders; the first sync pass discovers them",
+  );
+}
+
 /** Does not return the library client. */
 export async function verifyImapServerConnection(
   settings: MailServerConnectionSettings,
@@ -208,9 +280,41 @@ export async function verifyImapServerConnection(
   options: MailServerConnectionOptions = {},
   testOptions?: VerificationTestOptions,
 ): Promise<VerificationAttempt> {
+  return (await verifyImapAttempt(settings, credential, options, testOptions, false)).attempt;
+}
+
+export interface ImapVerification {
+  attempt: VerificationAttempt;
+  /**
+   * Listed on the verified connection; `null` when not asked for, for any attempt but `success`, and when the listing
+   * failed (logged).
+   */
+  folders: ImapFolderRef[] | null;
+}
+
+/**
+ * `verifyImapServerConnection` that, once the login succeeded, lists the folders on the same connection before closing
+ * it. A failed or expired listing never changes the attempt: the login is verified either way.
+ */
+export function verifyImapServerConnectionAndListFolders(
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+  options: MailServerConnectionOptions = {},
+  testOptions?: VerificationTestOptions,
+): Promise<ImapVerification> {
+  return verifyImapAttempt(settings, credential, options, testOptions, true);
+}
+
+async function verifyImapAttempt(
+  settings: MailServerConnectionSettings,
+  credential: MailServerCredential,
+  options: MailServerConnectionOptions,
+  testOptions: VerificationTestOptions | undefined,
+  listFolders: boolean,
+): Promise<ImapVerification> {
   if (testOptions && process.env.NODE_ENV !== "test") throw new Error("Verification test options require test mode");
   const policy = policyOf(options);
-  if (literalRefusal(settings.endpoint.host, policy)) return "unreachable";
+  if (literalRefusal(settings.endpoint.host, policy)) return { attempt: "unreachable", folders: null };
   const client = buildImapFlow(
     settings,
     credential,
@@ -223,8 +327,13 @@ export async function verifyImapServerConnection(
   );
   const observations: Array<{ source: "client" | "socket"; value: unknown; beforeOwner: boolean }> = [];
   let ownerAction = false;
-  const observe = (source: "client" | "socket", value: unknown) =>
-    observations.push({ source, value, beforeOwner: !ownerAction });
+  // While set, what the client and its sockets report belongs to the folder listing, not to the verification.
+  let listing = false;
+  const listingFailures: unknown[] = [];
+  const observe = (source: "client" | "socket", value: unknown) => {
+    if (listing) listingFailures.push(value);
+    else observations.push({ source, value, beforeOwner: !ownerAction });
+  };
   const clientError = (error: unknown) => observe("client", error);
   client.on("error", clientError);
   const observed = new Map<Socket, { closed: Promise<void>; listener: (error: Error) => void }>();
@@ -283,6 +392,14 @@ export async function verifyImapServerConnection(
   } catch (error) {
     failures.push(error);
   }
+  let folders: ImapFolderRef[] | null = null;
+  if (listFolders && result.ok && !expired && failures.length === 0 && observations.length === 0) {
+    listing = true;
+    folders = await listVerifiedFolders(client, imapListOptions(settings.endpoint.host), listingFailures);
+    if (listingFailures.length > 0) folders = null;
+    // A listing that failed leaves a connection in an unknown state; what its close reports is the listing's too.
+    if (folders !== null) listing = false;
+  }
   if (!result.ok && result.error === ownerCancellation) {
     await Promise.all([...observed.values()].map((entry) => entry.closed));
   }
@@ -307,6 +424,7 @@ export async function verifyImapServerConnection(
   for (const [socket, entry] of observed) {
     socket.removeListener("error", entry.listener);
   }
+  if (listingFailures.length > 0) logFolderListingFailure(listingFailures[0]);
   const secondary = observations.filter(
     (entry) => entry.value !== ownerCancellation && (result.ok || entry.value !== result.error),
   );
@@ -342,7 +460,7 @@ export async function verifyImapServerConnection(
         );
       }
     }
-    return "unreachable";
+    return { attempt: "unreachable", folders: null };
   }
   if (secondary.length) {
     const distinct = [
@@ -355,18 +473,18 @@ export async function verifyImapServerConnection(
   }
   if (result.ok) {
     if (expired) throw new Error("IMAP verification completed after its deadline");
-    return "success";
+    return { attempt: "success", folders };
   }
   if (ownerAction) throw result.error;
-  if (isAuthenticationFailure(result.error)) return "authentication";
-  if (isOutboundAddressNotAllowed(result.error)) return "unreachable";
+  if (isAuthenticationFailure(result.error)) return { attempt: "authentication", folders: null };
+  if (isOutboundAddressNotAllowed(result.error)) return { attempt: "unreachable", folders: null };
   if (
     errorChain(result.error).some(
       (error) => propertyOf(error, "tlsFailed") === true || TLS_FAILURE_CODES.has(codeOf(error) ?? ""),
     )
   )
-    return "tls";
-  if (isConnectionFailure(result.error)) return "unreachable";
+    return { attempt: "tls", folders: null };
+  if (isConnectionFailure(result.error)) return { attempt: "unreachable", folders: null };
   throw result.error;
 }
 
@@ -384,6 +502,7 @@ export async function openImapFlow(
   const policy = policyOf(options);
   const refusal = literalRefusal(endpoint.host, policy);
   if (refusal !== undefined) throw mapConnectionFailure(refusal);
+  await (options.loginAdmission ?? sharedImapConnectionLimiter).admitLogin(endpoint.host, options.signal);
   const client = buildImapFlow(settings, credential, options, policy, CONNECT_TIMEOUT_MS);
   // imapflow throws from its event emitter when an error has no listener, and it can emit after connect() settles.
   client.on("error", (error: unknown) => {
@@ -399,13 +518,54 @@ export async function openImapFlow(
   return client;
 }
 
+/**
+ * RFC 5530 codes of a refused LOGIN that say nothing against the credential: the server is unavailable or busy for a
+ * while, and a later login with the same password can succeed.
+ */
+const TRANSIENT_LOGIN_RESPONSE_CODES: ReadonlySet<string> = new Set(["UNAVAILABLE", "INUSE", "LIMIT", "SERVERBUG"]);
+
+/** imapflow sets `authenticationFailed` on every refused LOGIN or AUTHENTICATE, with the response code it got. */
+function isImapLoginRejection(error: unknown): boolean {
+  return errorChain(error).some((link) => {
+    if (propertyOf(link, "authenticationFailed") !== true) return false;
+    const code = propertyOf(link, "serverResponseCode");
+    return typeof code !== "string" || !TRANSIENT_LOGIN_RESPONSE_CODES.has(code.toUpperCase());
+  });
+}
+
+/**
+ * What a caller of `openImapFlow` may report about its failure: too many open sessions becomes
+ * `MailConnectionLimitError`, so the caller backs off instead of retrying at once; a login the server rejected (other
+ * than for a transient reason) becomes `MailReauthorizationRequiredError`, which stops every retry until the user signs
+ * in again. Every other error
+ * becomes a fixed generic error without claiming a known failure kind. None keeps the original as its cause, which can
+ * carry the authentication exchange.
+ */
+export function classifyImapConnectFailure(error: unknown): Error {
+  try {
+    if (error instanceof MailServerUnreachableError) return new MailServerUnreachableError();
+    if (error instanceof MailConnectionLimitError || isImapConnectionLimitError(error)) {
+      return new MailConnectionLimitError("The IMAP server reports too many simultaneous connections for this account");
+    }
+    if (error instanceof MailReauthorizationRequiredError || isImapLoginRejection(error)) {
+      return new MailReauthorizationRequiredError("The IMAP server rejected the stored login; reauthorize the mailbox");
+    }
+  } catch {
+    // A hostile error object (a throwing getter) is classified as unknown.
+  }
+  return new Error("IMAP connection failed unexpectedly");
+}
+
 /** Wraps the raw client in the narrow `ImapFlowMailClient`, which keeps it private. */
 export async function openImapConnection(
   settings: MailServerConnectionSettings,
   credential: MailServerCredential,
   options: MailServerConnectionOptions = {},
 ): Promise<ImapFlowMailClient> {
-  return new ImapFlowMailClient(await openImapFlow(settings, credential, options));
+  return new ImapFlowMailClient(
+    await openImapFlow(settings, credential, options),
+    imapListOptions(settings.endpoint.host),
+  );
 }
 
 /** Connect and send failures map as the IMAP factory's do. */

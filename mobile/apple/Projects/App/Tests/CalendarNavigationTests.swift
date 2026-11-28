@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The Calendar router presents its sheets, and the sleep sheets, over the Calendar tab's stack.
 final class CalendarNavigationTests: XCTestCase {

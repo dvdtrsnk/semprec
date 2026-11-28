@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import * as queue from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import * as queue from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -351,7 +351,7 @@ const fixtureCancellations = new Set<Set<() => void>>();
  * released when cleanup starts, and clients still checked out then are destroyed.
  */
 async function withRuntimePool<T>(body: (runtime: Pool, operations: RuntimeOperations) => Promise<T>): Promise<T> {
-  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  const runtime = await createRuntimeRolePool(pool, "alldots_data");
   runtime.options.connectionTimeoutMillis = 2500;
   runtime.options.statement_timeout = 5000;
   const active = new Map<PoolClient, object>();

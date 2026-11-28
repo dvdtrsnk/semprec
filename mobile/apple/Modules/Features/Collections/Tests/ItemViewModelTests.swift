@@ -46,12 +46,28 @@ final class ItemViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testANewTagOfTheProjectSettingsIsSentAsANewChoiceOfTheTags() throws {
+        let model = ScriptedItemScreenModel(state: state(databaseKey: "projects"))
+        let viewModel = ItemViewModel(itemId: "i1", model: model, router: RouterSpy())
+        let tags = FieldView(
+            propertyKey: "tags",
+            name: "Tags",
+            kind: .multiSelect,
+            content: .choices([FieldOption(key: "home", label: "Home", color: nil)]),
+            options: [FieldOption(key: "home", label: "Home", color: nil)],
+            editable: true,
+            origin: nil
+        )
+        viewModel.send(try XCTUnwrap(ProjectTagsSheet.creating("Client", in: tags, saving: false)))
+        XCTAssertEqual(model.actions, [.edit(.addChoice(propertyKey: "tags", label: "Client"))])
+    }
+
+    @MainActor
     func testOpenItemEffectsGoToTheScreenOfTheirKind() async throws {
         let model = ScriptedItemScreenModel(
             state: state(databaseKey: "projects"),
             effects: [
                 .openItem(itemId: "e1", databaseKey: "events"),
-                .openItem(itemId: "a1", databaseKey: "areas"),
                 .openItem(itemId: "c1", databaseKey: "companies"),
                 .openItem(itemId: "u1", databaseKey: nil)
             ]
@@ -60,7 +76,6 @@ final class ItemViewModelTests: XCTestCase {
         let observer = Task { await ItemViewModel(itemId: "i1", model: model, router: router).observe() }
         try await eventually { router.items.count == 2 }
         XCTAssertEqual(router.events, ["e1"])
-        XCTAssertEqual(router.areas, ["a1"])
         XCTAssertEqual(router.items, ["c1:companies", "u1:-"])
         observer.cancel()
     }
@@ -111,11 +126,13 @@ final class ItemViewModelTests: XCTestCase {
         )
         viewModel.showProject(.tasks)
         viewModel.showProject(.mail)
+        viewModel.showProject(.mailSignals)
         viewModel.showProject(.notes)
         viewModel.showProject(.agent)
         viewModel.showProject(.files)
         XCTAssertEqual(router.tasks, ["p1"])
         XCTAssertEqual(router.mail, ["p1"])
+        XCTAssertEqual(router.mailSignals, ["p1"])
         XCTAssertEqual(router.notes, ["p1"])
         XCTAssertEqual(router.agents, ["p1"])
         XCTAssertEqual(router.collections, [.ofItem(databaseKey: "files", relationKey: "projects", itemId: "p1")])

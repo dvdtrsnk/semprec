@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { countJobsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { countJobsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { databaseArchiveWithClient } from "../chokePoint/databaseOps.js";
 import { requireRollupCoordinationTransaction } from "../chokePoint/databaseRowLocks.js";
@@ -109,11 +109,11 @@ describe("rollup source archive coordination", () => {
       let waiter: ReturnType<typeof observe> | undefined;
       let failure: { error: unknown } | undefined;
       try {
-        const configPool = await createRuntimeRolePool(admin, "semprec_data");
+        const configPool = await createRuntimeRolePool(admin, "alldots_data");
         pools.push(configPool);
-        const databasePool = await createRuntimeRolePool(admin, "semprec_data");
+        const databasePool = await createRuntimeRolePool(admin, "alldots_data");
         pools.push(databasePool);
-        const workerPool = await createRuntimeRolePool(admin, "semprec_data");
+        const workerPool = await createRuntimeRolePool(admin, "alldots_data");
         pools.push(workerPool);
         const configCp = createChokePoint(configPool);
         const databaseCp = createChokePoint(databasePool);
@@ -307,9 +307,9 @@ describe("rollup source archive coordination", () => {
     let waiter: ReturnType<typeof observe> | undefined;
     let failure: { error: unknown } | undefined;
     try {
-      const configPool = await createRuntimeRolePool(admin, "semprec_data");
+      const configPool = await createRuntimeRolePool(admin, "alldots_data");
       pools.push(configPool);
-      const archivePool = await createRuntimeRolePool(admin, "semprec_data");
+      const archivePool = await createRuntimeRolePool(admin, "alldots_data");
       pools.push(archivePool);
       const configCp = createChokePoint(configPool);
       const archiveCp = createChokePoint(archivePool);
@@ -386,7 +386,7 @@ describe("rollup source archive coordination", () => {
   }, 30000);
 
   it("rejects unmanaged and non-READ-COMMITTED supplied clients before protected writes", async () => {
-    const runtime = await createRuntimeRolePool(admin, "semprec_data");
+    const runtime = await createRuntimeRolePool(admin, "alldots_data");
     let failure: { error: unknown } | undefined;
     try {
       const cp = createChokePoint(runtime);
@@ -460,7 +460,7 @@ describe("rollup source archive coordination", () => {
   });
 
   it("preserves the existing foreign-key failure and dependency on a missing source", async () => {
-    const runtime = await createRuntimeRolePool(admin, "semprec_data");
+    const runtime = await createRuntimeRolePool(admin, "alldots_data");
     let failure: { error: unknown } | undefined;
     try {
       const tenant = getTenantZeroId();

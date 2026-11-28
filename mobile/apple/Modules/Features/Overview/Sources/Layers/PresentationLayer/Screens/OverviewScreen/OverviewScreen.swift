@@ -2,7 +2,7 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The overview: what waits for the person, the areas, the pinned projects and the collections, with a search that
+/// The overview: what waits for the person, the pinned projects and the collections, with a search that
 /// opens in place and a profile button. Rows ask the shared ViewModel to open their target; the app shows it.
 ///
 /// The page is a native grouped list with a large navigation title. On iOS the search and profile buttons are toolbar
@@ -14,9 +14,14 @@ struct OverviewScreen: View {
     @StateObject private var viewModel: OverviewViewModel
     private let makeSearch: @MainActor () -> any SearchScreenModel
     private let router: any OverviewRouting
+    @Environment(\.scenePhase)
+    private var scenePhase
 
     // MARK: - State
     @State private var isSearching = false
+    @State private var hasAppeared = false
+    /// How far the list is scrolled, for the paper behind it alone.
+    @State private var paperScroll = PaperScroll()
 
     // MARK: - Init
     init(
@@ -37,13 +42,21 @@ struct OverviewScreen: View {
             .toolbar {
                 #if os(iOS)
                     if !isSearching {
-                        ToolbarItemGroup(placement: .primaryAction) { searchButton; profileButton }
+                        PlainToolbarItemGroup(placement: .primaryAction) { searchButton; profileButton }
                     }
                 #endif
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(OverviewIdentifiers.screen)
             .task { await viewModel.observe() }
+            // The server changes problems and counts on its own; coming back to the screen reads them again.
+            .onAppear {
+                if hasAppeared { viewModel.reload() }
+                hasAppeared = true
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { viewModel.reload() }
+            }
     }
 }
 
@@ -71,6 +84,8 @@ private extension OverviewScreen {
                     overview(content)
                 }
             }
+            // The diary's paper, its haze scrolling away with the list.
+            .background { PaperBackground(scroll: paperScroll) }
         }
     }
 
@@ -90,11 +105,12 @@ private extension OverviewScreen {
     func overview(_ content: OverviewContent) -> some View {
         List {
             section("overview.section.main", rows: OverviewRows.main(content))
-            section("overview.section.areas", rows: OverviewRows.areas(content))
             section("overview.section.projects", rows: OverviewRows.projects(content))
             section("overview.section.collections", rows: OverviewRows.collections(content))
         }
         .groupedListStyle()
+        .scrollContentBackground(.hidden)
+        .paperScroll(paperScroll)
         .refreshable { await viewModel.refresh() }
         .accessibilityIdentifier(OverviewIdentifiers.content)
     }

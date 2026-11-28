@@ -1,7 +1,7 @@
-import type { CollectionMetadataResolver } from "@semprec/data";
+import type { CollectionMetadataResolver } from "@alldots/data";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import * as application from "@semprec/application";
+import * as application from "@alldots/application";
 import type { Pool } from "pg";
 import {
   createRuntimeRolePool,
@@ -10,7 +10,7 @@ import {
   getTestPool,
   resetDatabase,
   upsertMailMessageMeta,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   createAgentRun,
   createItemWithClient,
@@ -22,9 +22,9 @@ import {
   withTransaction,
   updateItemWithClient,
   type ChokePoint,
-} from "@semprec/data";
-import { ModuleRegistry } from "@semprec/module-registry";
-import { GENERIC_OPERATION_NAMES, REST_ONLY_OPERATION_NAMES, runInTenant } from "@semprec/shared";
+} from "@alldots/data";
+import { ModuleRegistry } from "@alldots/module-registry";
+import { GENERIC_OPERATION_NAMES, REST_ONLY_OPERATION_NAMES, runInTenant } from "@alldots/shared";
 import {
   TOOL_CHANGE_VALUE_MAX_LENGTH,
   createGenericOperationAgentTools,
@@ -177,13 +177,13 @@ describe("generic operation AgentTools (issue #220)", () => {
 
     it("refuses mailbox address edits through the agent tool", async () =>
       runInTenant(getTenantZeroId(), async () => {
-        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        const runtime = await createRuntimeRolePool(pool, "alldots_data");
         const failures: unknown[] = [];
         try {
           const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
             "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
           );
-          expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+          expect(role.rows).toEqual([{ name: "alldots_data", bypass: false, superuser: false }]);
           const fixture = await withTransaction(runtime, async (client) => {
             const mailboxes = await getDatabaseByModuleId(client, "mailboxes");
             const projects = await getDatabaseByModuleId(client, "projects");
@@ -243,7 +243,7 @@ describe("generic operation AgentTools (issue #220)", () => {
 
     it("queues one mailbox sync for agent flag patches of two messages", async () =>
       runInTenant(getTenantZeroId(), async () => {
-        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        const runtime = await createRuntimeRolePool(pool, "alldots_data");
         try {
           const emails = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "emails"));
           const mailboxes = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "mailboxes"));
@@ -264,6 +264,8 @@ describe("generic operation AgentTools (issue #220)", () => {
                 mailboxItemId: mailbox.id,
                 messageId,
                 envelope: {},
+                arrival: "live",
+                contentState: "full",
               });
             }
             return { mailbox, first, second };
@@ -320,7 +322,7 @@ describe("generic operation AgentTools (issue #220)", () => {
       const projectItemId = await createProjectItem();
       const run = await createAgentRun(pool, { projectItemId, triggeredBy: "user", task: "plan a meeting" });
       const tools = createGenericOperationAgentTools(pool, moduleRegistry, testMetadataResolver);
-      const UID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@semprec$/;
+      const UID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}@alldots$/;
       const returnedItem = (outcome: { error: boolean; result: string }) => {
         expect(outcome.error).toBe(false);
         const value: unknown = JSON.parse(outcome.result);

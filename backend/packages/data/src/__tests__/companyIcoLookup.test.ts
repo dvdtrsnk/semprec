@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { lookupLiveCompanyIdByIco } from "../inbox/companyIcoLookup.js";
@@ -29,7 +29,7 @@ const lookup = (tenantId: string, ico: string) =>
 describe("lookupLiveCompanyIdByIco (issue gh-1992)", () => {
   beforeEach(async () => {
     admin ??= getTestPool();
-    runtime ??= await createRuntimeRolePool(admin, "semprec_data");
+    runtime ??= await createRuntimeRolePool(admin, "alldots_data");
     await resetDatabase(admin);
   });
   afterAll(async () => {

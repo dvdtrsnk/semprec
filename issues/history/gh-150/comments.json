@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609346317",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/150#issuecomment-5609346317",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/150",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609346317",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/150#issuecomment-5609346317",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/150",
     "id": 5609346317,
     "node_id": "IC_kwDOUFuQ4c8AAAABTlfVDQ",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609346317/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609346317/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609528404",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/150#issuecomment-5609528404",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/150",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609528404",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/150#issuecomment-5609528404",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/150",
     "id": 5609528404,
     "node_id": "IC_kwDOUFuQ4c8AAAABTlqcVA",
     "user": {
@@ -120,7 +120,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609528404/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609528404/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609699545",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/150#issuecomment-5609699545",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/150",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609699545",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/150#issuecomment-5609699545",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/150",
     "id": 5609699545,
     "node_id": "IC_kwDOUFuQ4c8AAAABTl042Q",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609699545/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609699545/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609784869",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/150#issuecomment-5609784869",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/150",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609784869",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/150#issuecomment-5609784869",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/150",
     "id": 5609784869,
     "node_id": "IC_kwDOUFuQ4c8AAAABTl6GJQ",
     "user": {
@@ -292,11 +292,11 @@
     },
     "created_at": "2026-09-09T22:47:42Z",
     "updated_at": "2026-09-09T22:47:42Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #361\n\nTokens: 0 · Cost: $0.0000\n\nPushed commit `a031183` to branch `bb/relay-150-notifications-v1-03-05-manage-session-thr_z3bt4hp9fu`, updating the existing pull request #361.\n\nThis push addresses the second medium-severity CI code-review finding: `readJsonBody` in `backend/services/semprec-api/src/pushSubscriptionsHandler.ts` now rejects non-object JSON bodies (null, arrays) with a 400 instead of letting a downstream property access throw and surface as a 500. A regression test covering the JSON-null-body case was added. The full check matrix (unit: 127/127, integration: 849/849, e2e: 5/5, ESLint, `tsc --noEmit`, Prettier, dependency-boundaries) passes cleanly.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #361\n\nTokens: 0 · Cost: $0.0000\n\nPushed commit `a031183` to branch `bb/relay-150-notifications-v1-03-05-manage-session-thr_z3bt4hp9fu`, updating the existing pull request #361.\n\nThis push addresses the second medium-severity CI code-review finding: `readJsonBody` in `backend/services/alldots-api/src/pushSubscriptionsHandler.ts` now rejects non-object JSON bodies (null, arrays) with a 400 instead of letting a downstream property access throw and surface as a 500. A regression test covering the JSON-null-body case was added. The full check matrix (unit: 127/127, integration: 849/849, e2e: 5/5, ESLint, `tsc --noEmit`, Prettier, dependency-boundaries) passes cleanly.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609784869/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609784869/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609946910",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/150#issuecomment-5609946910",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/150",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609946910",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/150#issuecomment-5609946910",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/150",
     "id": 5609946910,
     "node_id": "IC_kwDOUFuQ4c8AAAABTmD_Hg",
     "user": {
@@ -384,7 +384,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5609946910/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5609946910/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -440,9 +440,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5610041478",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/150#issuecomment-5610041478",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/150",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5610041478",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/150#issuecomment-5610041478",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/150",
     "id": 5610041478,
     "node_id": "IC_kwDOUFuQ4c8AAAABTmJwhg",
     "user": {
@@ -472,7 +472,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5610041478/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5610041478/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

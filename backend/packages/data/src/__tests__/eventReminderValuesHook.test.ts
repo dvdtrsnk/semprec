@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { EVENT_ALERT_MINUTES, EVENT_TRAVEL_MINUTES } from "../calendar/eventReminderValuesHook.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -19,11 +19,13 @@ let eventsId: string;
 
 const storedRow = z.object({ properties: z.record(z.string(), z.unknown()), updated_at: z.string() });
 
+const ALERT_VALUES = [0, 5, 7, 10, 15, 30, 60, 120, 1440, 2880, 10_080, 40_320];
+const TRAVEL_VALUES = [1, 5, 15, 20, 30, 45, 60, 90, 120, 1440];
+
 const ALERT_REFUSALS: Array<[string, unknown]> = [
-  ["7", 7],
   ["-5", -5],
   ["15.5", 15.5],
-  ["30, which only travelMinutes allows", 30],
+  ["40321, beyond four weeks", 40_321],
   ["the string 15", "15"],
   ["an empty string", ""],
   ["true", true],
@@ -31,11 +33,10 @@ const ALERT_REFUSALS: Array<[string, unknown]> = [
 ];
 
 const TRAVEL_REFUSALS: Array<[string, unknown]> = [
-  ["20", 20],
-  ["0", 0],
+  ["0, which only alertMinutes allows", 0],
   ["-15", -15],
   ["30.5", 30.5],
-  ["5, which only alertMinutes allows", 5],
+  ["1441, beyond a day", 1441],
   ["the string 30", "30"],
   ["an empty string", ""],
   ["true", true],
@@ -80,7 +81,7 @@ async function rejection(write: Promise<unknown>): Promise<ValidationError> {
 }
 
 /**
- * An Event holding values outside the allowed sets. Synthetic legacy state: the reminder-values hooks
+ * An Event holding values outside the allowed ranges. Synthetic legacy state: the reminder-values hooks
  * refuse such a value on every write, so the choke point cannot produce it.
  */
 async function legacyEvent(values: Record<string, unknown>): Promise<string> {
@@ -97,10 +98,10 @@ async function legacyEvent(values: Record<string, unknown>): Promise<string> {
   return item.id;
 }
 
-describe("Events alertMinutes and travelMinutes validation at the choke point (issue #1714)", () => {
+describe("Events alertMinutes and travelMinutes validation at the choke point", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -129,18 +130,18 @@ describe("Events alertMinutes and travelMinutes validation at the choke point (i
     await admin?.end();
   });
 
-  it("declares the allowed sets", () => {
-    expect(EVENT_ALERT_MINUTES).toEqual([0, 5, 15, 60, 1440]);
-    expect(EVENT_TRAVEL_MINUTES).toEqual([15, 30, 60]);
+  it("declares the allowed ranges", () => {
+    expect(EVENT_ALERT_MINUTES).toEqual({ min: 0, max: 40_320 });
+    expect(EVENT_TRAVEL_MINUTES).toEqual({ min: 1, max: 1440 });
   });
 
   describe("create", () => {
-    it.each([0, 5, 15, 60, 1440])("stores alertMinutes %d", async (alertMinutes) => {
+    it.each(ALERT_VALUES)("stores alertMinutes %d", async (alertMinutes) => {
       const item = await create({ name: "Alert", date: "2026-10-16", alertMinutes });
       expect((await stored(item.id)).properties.alertMinutes).toBe(alertMinutes);
     });
 
-    it.each([15, 30, 60])("stores travelMinutes %d", async (travelMinutes) => {
+    it.each(TRAVEL_VALUES)("stores travelMinutes %d", async (travelMinutes) => {
       const item = await create({ name: "Travel", date: "2026-10-16", travelMinutes });
       expect((await stored(item.id)).properties.travelMinutes).toBe(travelMinutes);
     });
@@ -190,13 +191,13 @@ describe("Events alertMinutes and travelMinutes validation at the choke point (i
   });
 
   describe("update", () => {
-    it.each([0, 5, 15, 60, 1440])("stores a patched alertMinutes %d", async (alertMinutes) => {
+    it.each(ALERT_VALUES)("stores a patched alertMinutes %d", async (alertMinutes) => {
       const item = await create({ name: "Alert", date: "2026-10-16" });
       await patch(item.id, { alertMinutes });
       expect((await stored(item.id)).properties.alertMinutes).toBe(alertMinutes);
     });
 
-    it.each([15, 30, 60])("stores a patched travelMinutes %d", async (travelMinutes) => {
+    it.each(TRAVEL_VALUES)("stores a patched travelMinutes %d", async (travelMinutes) => {
       const item = await create({ name: "Travel", date: "2026-10-16" });
       await patch(item.id, { travelMinutes });
       expect((await stored(item.id)).properties.travelMinutes).toBe(travelMinutes);
@@ -233,23 +234,23 @@ describe("Events alertMinutes and travelMinutes validation at the choke point (i
       expect(await stored(item.id)).toEqual(before);
     });
 
-    describe("an Event stored with values outside the allowed sets (synthetic: every new write is judged)", () => {
+    describe("an Event stored with values outside the allowed ranges (synthetic: every new write is judged)", () => {
       it("accepts a patch of only name and keeps the stored values", async () => {
-        const id = await legacyEvent({ alertMinutes: 7, travelMinutes: 20 });
+        const id = await legacyEvent({ alertMinutes: -7, travelMinutes: 0 });
         const updated = await patch(id, { name: "Renamed" });
-        expect(updated.properties).toMatchObject({ name: "Renamed", alertMinutes: 7, travelMinutes: 20 });
+        expect(updated.properties).toMatchObject({ name: "Renamed", alertMinutes: -7, travelMinutes: 0 });
       });
 
       it("judges only the key a patch names", async () => {
-        const id = await legacyEvent({ alertMinutes: 7, travelMinutes: 20 });
+        const id = await legacyEvent({ alertMinutes: -7, travelMinutes: 0 });
         const updated = await patch(id, { travelMinutes: 30 });
-        expect(updated.properties).toMatchObject({ alertMinutes: 7, travelMinutes: 30 });
+        expect(updated.properties).toMatchObject({ alertMinutes: -7, travelMinutes: 30 });
       });
 
       it("refuses a patch that names the key with the stored value", async () => {
-        const id = await legacyEvent({ alertMinutes: 7 });
+        const id = await legacyEvent({ alertMinutes: -7 });
         const before = await stored(id);
-        const error = await rejection(patch(id, { alertMinutes: 7 }));
+        const error = await rejection(patch(id, { alertMinutes: -7 }));
         expect(error.details).toEqual({ field: "alertMinutes" });
         expect(await stored(id)).toEqual(before);
       });

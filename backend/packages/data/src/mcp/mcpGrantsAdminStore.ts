@@ -17,7 +17,7 @@ import { rowToGrant, type ProjectMcpGrant, type ProjectMcpGrantRow } from "./mcp
  *
  * Not re-exported from `index.ts` (nor is the sync's classifying upsert): agents, including proposal confirmation,
  * must have no write path to grants, and keeping these off the public surface makes them mechanically unreachable
- * from `agent-runtime`. Only route handlers inside `@semprec/data` import them by relative path.
+ * from `agent-runtime`. Only route handlers inside `@alldots/data` import them by relative path.
  */
 
 /** Marks the classification `manual`, so no sync rewrites it. */

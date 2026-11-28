@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { randomUUID } from "node:crypto";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@alldots/queue";
 import type { Pool, PoolClient } from "pg";
 import { getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
@@ -161,12 +161,12 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
   });
 
   it("removes standalone Files-root bytes through the real API purge task", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "semprec-dual-root-"));
+    const directory = await mkdtemp(join(tmpdir(), "alldots-dual-root-"));
     const filesDir = join(directory, "files");
     const mailDir = join(directory, "mail");
     const files = new LocalFsBlobStorageWriter(filesDir);
     const mail = new LocalFsBlobStorageWriter(mailDir);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const blob = await runInTenant(getTenantZeroId(), () =>
         ingestUploadedBlob(runtime, {
@@ -218,12 +218,12 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
   ] as const)(
     "%s / %s: %s through the API purge task",
     async (taskName, order, scenario) => {
-      const directory = await mkdtemp(join(tmpdir(), "semprec-dual-origin-"));
+      const directory = await mkdtemp(join(tmpdir(), "alldots-dual-origin-"));
       const filesDir = join(directory, "files");
       const mailDir = join(directory, "mail");
       const files = new LocalFsBlobStorageWriter(filesDir);
       const mail = new LocalFsBlobStorageWriter(mailDir);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const ids = await withTransaction(pool, (client) => resolveMailModuleIds(client));
         const emails = await databaseIdFor("emails");
@@ -253,6 +253,8 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
           runInTenant(getTenantZeroId(), () =>
             withTransaction(runtime, (client) =>
               ingestEmailMessage(client, {
+                arrival: "live",
+                contentState: "full",
                 emailsDatabaseId: emails,
                 filesDatabaseId: ids.filesDatabaseId,
                 folderRelationPropertyId: folderProperty.id,
@@ -390,7 +392,7 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
   });
 
   it("rejects a purge without a tenant scope before looking up its root", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       await expect(
         runAsSystem("test missing purge tenant", () =>
@@ -403,10 +405,10 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
   });
 
   it("keeps rows and physical bytes after rollback, then removes them on retry", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "semprec-purge-rollback-"));
+    const directory = await mkdtemp(join(tmpdir(), "alldots-purge-rollback-"));
     const files = new LocalFsBlobStorageWriter(join(directory, "files"));
     const mail = new LocalFsBlobStorageWriter(join(directory, "mail"));
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const originals = new Map<PoolClient, PoolClient["query"]>();
     let injected = false;
     const instrument = (client: PoolClient) => {
@@ -485,9 +487,9 @@ describe("Inbox attachments as counted blob references (issue #1564)", () => {
       const rootX = order === "first" ? first : second;
       const rootY = order === "first" ? second : first;
       const otherTenant = await createTestTenant(pool);
-      const one = await createRuntimeRolePool(pool, "semprec_data");
-      const two = await createRuntimeRolePool(pool, "semprec_data");
-      const three = await createRuntimeRolePool(pool, "semprec_data");
+      const one = await createRuntimeRolePool(pool, "alldots_data");
+      const two = await createRuntimeRolePool(pool, "alldots_data");
+      const three = await createRuntimeRolePool(pool, "alldots_data");
       const competing = observeStatementPid(two, /pg_advisory_xact_lock/i);
       let release!: () => void;
       const hold = new Promise<void>((resolve) => {

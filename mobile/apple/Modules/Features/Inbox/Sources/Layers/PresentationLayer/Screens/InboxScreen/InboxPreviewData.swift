@@ -11,7 +11,8 @@ enum InboxPreviewData {
             text: "Tomorrow at 9 send the invoice to Alza for September.",
             date: "2026-10-16",
             time: "08:12",
-            typeLabel: "Task"
+            typeLabel: "Task",
+            attachments: [InboxAttachment(id: "a1", name: "Invoice.pdf", mediaType: "application/pdf")]
         ),
         targets: ["Tasks"],
         groups: [

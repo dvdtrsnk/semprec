@@ -67,8 +67,9 @@ export interface TaskStateInEventInput {
 /**
  * The state of a task in `event`, the first that applies:
  *
- * 1. `done`, no `completedInEvent` edge, `completedOn` differs from the Event's `date`: `doneElsewhere` (that day).
- * 2. The edge points here, or `done` without an edge on the Event's `date` (or with no `completedOn`): `done`.
+ * 1. `done`, no `completedInEvent` edge and a `completedOn`: `doneElsewhere` (that day). A task is done in an Event
+ *    only when it was completed there; completed from its own row, on whatever day, it was not done in the Event.
+ * 2. The edge points here, or `done` without an edge and without a `completedOn`: `done`.
  * 3. The edge points to another Event: `doneElsewhere` with its name.
  * 4. Not the last of `hostEvents`: `moved` to the last one.
  * 5. The Event has ended (end at or before `now`; no `date` means no end): `missed`.
@@ -78,7 +79,7 @@ export interface TaskStateInEventInput {
  */
 export function taskStateInEvent({ task, event, hostEvents, now, timezone }: TaskStateInEventInput): EventTaskState {
   const done = task.status === "done";
-  if (done && task.completedIn === null && task.completedOn !== null && task.completedOn !== event.date) {
+  if (done && task.completedIn === null && task.completedOn !== null) {
     return { kind: "doneElsewhere", completedOn: task.completedOn };
   }
   if (task.completedIn?.eventId === event.eventId || (done && task.completedIn === null)) return { kind: "done" };
@@ -180,12 +181,28 @@ async function readCompletedInEventIds(
   return byTask;
 }
 
+/** What reading the tasks of Events needs besides the Events, resolved once by a caller reading several batches. */
+export interface EventTasksReadScope {
+  eventsDatabaseId: string | null;
+  hostEventsRelation: HostEventsRelation | null;
+  /** The tenant's zone. */
+  timezone: string;
+}
+
+async function resolveEventTasksReadScope(client: PoolClient): Promise<EventTasksReadScope> {
+  const events = await getDatabaseByModuleId(client, EVENTS_MODULE_ID);
+  const hostEventsRelation = await loadHostEventsRelation(client);
+  const { zone } = await getCalendarClock(client);
+  return { eventsDatabaseId: events?.id ?? null, hostEventsRelation, timezone: zone };
+}
+
 async function buildEventTasks(
   client: PoolClient,
   events: readonly ItemRow[],
   now: Date,
+  scope: EventTasksReadScope,
 ): Promise<Map<string, EventTasks>> {
-  const relation = await loadHostEventsRelation(client);
+  const relation = scope.hostEventsRelation;
   const hosted = await readHostedTasks(
     client,
     relation,
@@ -218,7 +235,6 @@ async function buildEventTasks(
   }
   for (const hostEvents of hostEventsByTask.values()) hostEvents.sort(byAddedAtThenEventId);
 
-  const clock = await getCalendarClock(client);
   return new Map(
     events.map((event) => {
       const rows = (hosted.get(event.id) ?? []).map(({ task, completedInEventIds }): EventTaskRow => {
@@ -240,7 +256,7 @@ async function buildEventTasks(
             event: toTaskHostEvent(event, ""),
             hostEvents: hostEventsByTask.get(task.id) ?? [],
             now,
-            timezone: clock.zone,
+            timezone: scope.timezone,
           }),
         };
       });
@@ -249,12 +265,13 @@ async function buildEventTasks(
   );
 }
 
-async function liveEvents(client: PoolClient, eventIds: readonly string[]): Promise<ItemRow[]> {
-  const eventsDatabase = await getDatabaseByModuleId(client, EVENTS_MODULE_ID);
-  if (eventsDatabase === null) return [];
-  return (await itemsStore.getItemsByIds(client, [...eventIds])).filter(
-    (item) => item.databaseId === eventsDatabase.id,
-  );
+async function liveEvents(
+  client: PoolClient,
+  eventIds: readonly string[],
+  eventsDatabaseId: string | null,
+): Promise<ItemRow[]> {
+  if (eventsDatabaseId === null) return [];
+  return (await itemsStore.getItemsByIds(client, [...eventIds])).filter((item) => item.databaseId === eventsDatabaseId);
 }
 
 /**
@@ -262,9 +279,10 @@ async function liveEvents(client: PoolClient, eventIds: readonly string[]): Prom
  * `null` for an unknown id, another database's item, a trashed Event or another tenant's (RLS) alike.
  */
 export async function readEventTasks(client: PoolClient, eventId: string): Promise<EventTasks | null> {
-  const [event] = await liveEvents(client, [eventId]);
+  const scope = await resolveEventTasksReadScope(client);
+  const [event] = await liveEvents(client, [eventId], scope.eventsDatabaseId);
   if (event === undefined) return null;
-  return (await buildEventTasks(client, [event], new Date())).get(event.id) ?? null;
+  return (await buildEventTasks(client, [event], new Date(), scope)).get(event.id) ?? null;
 }
 
 /**
@@ -276,7 +294,17 @@ export async function readEventsTasks(
   eventIds: readonly string[],
   now: Date,
 ): Promise<Map<string, EventTasks>> {
-  return buildEventTasks(client, await liveEvents(client, [...new Set(eventIds)]), now);
+  return readEventsTasksIn(client, eventIds, now, await resolveEventTasksReadScope(client));
+}
+
+/** `readEventsTasks` with the scope the caller already resolved. */
+export async function readEventsTasksIn(
+  client: PoolClient,
+  eventIds: readonly string[],
+  now: Date,
+  scope: EventTasksReadScope,
+): Promise<Map<string, EventTasks>> {
+  return buildEventTasks(client, await liveEvents(client, [...new Set(eventIds)], scope.eventsDatabaseId), now, scope);
 }
 
 /** An Event without tasks has `{ open: 0, total: 0 }`; ids naming no live Event are absent. */

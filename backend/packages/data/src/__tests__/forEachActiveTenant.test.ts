@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { currentTenantScope, runInTenant, TenantScopeConflictError, type TenantScope } from "@semprec/shared";
+import { currentTenantScope, runInTenant, TenantScopeConflictError, type TenantScope } from "@alldots/shared";
 import { forEachActiveTenant } from "../index.js";
 import { withTransaction } from "../db/pool.js";
 import { logger } from "../tenancy/logger.js";

@@ -1,6 +1,6 @@
 ---
 name: fix-review-findings
-description: "How to address code-review-bot findings on a Semprec pull request - verify the bot's claim, check it against the issue's Task, Acceptance criteria and Out of scope, fix the whole class of defect rather than the one instance, prove a behaviour fix with a test, and reply only after the fix is committed. Load this BEFORE changing code in response to a review, whether in a Relay fix-review-findings run or by hand. Triggers on: review findings, review:changes-requested, an inline review thread, a review summary comment, FINAL_DECISION: blocked, a fix round, a Relay fix prompt, and any instruction to address, resolve or reply to review comments."
+description: "How to address code-review-bot findings on a Alldots pull request - verify the bot's claim, check it against the issue's Task, Acceptance criteria and Out of scope, fix the whole class of defect rather than the one instance, prove a behaviour fix with a test, and reply only after the fix is committed. Load this BEFORE changing code in response to a review, whether in a Relay fix-review-findings run or by hand. Triggers on: review findings, review:changes-requested, an inline review thread, a review summary comment, FINAL_DECISION: blocked, a fix round, a Relay fix prompt, and any instruction to address, resolve or reply to review comments."
 ---
 
 # Fixing review findings

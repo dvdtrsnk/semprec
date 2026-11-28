@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant, type SearchGroupType, type SearchOutput, type SearchThreadResult } from "@semprec/shared";
+import { runInTenant, type SearchGroupType, type SearchOutput, type SearchThreadResult } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -34,7 +34,7 @@ let cp: ChokePoint;
 let tenant: string;
 let other: string;
 
-const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"];
+const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "contact", "journal", "file", "mail", "chat"];
 
 interface Recorder {
   prepared: Array<string | undefined>;
@@ -89,7 +89,7 @@ function fixtureGroup(
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   const role = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );

@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/801",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/801/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/801/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/801/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/801",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/801",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/801/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/801/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/801/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/801",
   "id": 5631838289,
   "node_id": "I_kwDOUFuQ4c8AAAABT68IUQ",
   "number": 801,
@@ -34,7 +34,7 @@
     {
       "id": 12386016783,
       "node_id": "LA_kwDOUFuQ4c8AAAAC4kOeDw",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/followups:issue",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/followups:issue",
       "name": "followups:issue",
       "color": "bfd4f2",
       "default": false,
@@ -88,7 +88,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/801/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/801/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -99,7 +99,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/801/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/801/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

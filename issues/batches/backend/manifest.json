@@ -627,7 +627,7 @@
       "id": "sp-cf3300f1-216a-4f23-b35a-32ed074552d0",
       "sequence": 6,
       "status": "proposed",
-      "title": "[backend-delivery 06/74] Implement agent-runtime, semprec-agents, data/agentRuns changes",
+      "title": "[backend-delivery 06/74] Implement agent-runtime, alldots-agents, data/agentRuns changes",
       "bodyCharacters": 59911,
       "specSha256": "25a594b2b54e2d30298d986169eba1d75ed98480225406f6edf6686fbae08bcc",
       "members": [
@@ -893,7 +893,7 @@
       "id": "sp-6ae4040a-6669-4c5d-b236-3e20eb9fb477",
       "sequence": 9,
       "status": "proposed",
-      "title": "[backend-delivery 09/74] Implement data/inbox, data/transcription, semprec-transcribe changes",
+      "title": "[backend-delivery 09/74] Implement data/inbox, data/transcription, alldots-transcribe changes",
       "bodyCharacters": 59446,
       "specSha256": "f36a457a6a434f92376499f5e87eb12010d290db62186a1afc3104aeec60314b",
       "members": [
@@ -997,7 +997,7 @@
       "id": "sp-ea66e986-936d-4135-ac13-d49d81e64540",
       "sequence": 10,
       "status": "proposed",
-      "title": "[backend-delivery 10/74] Implement ai-gateway-client, semprec-ai-gateway, shared changes",
+      "title": "[backend-delivery 10/74] Implement ai-gateway-client, alldots-ai-gateway, shared changes",
       "bodyCharacters": 59877,
       "specSha256": "0466e7e709bcbf0ee26b20c381f1a9963dc7076703bb4151349ad05fab3f00b0",
       "members": [
@@ -1263,7 +1263,7 @@
       "id": "sp-de8ab38c-761c-4ec7-b5f5-e7a7f4207af7",
       "sequence": 13,
       "status": "proposed",
-      "title": "[backend-delivery 13/74] Implement data/mail, semprec-api/adapter changes",
+      "title": "[backend-delivery 13/74] Implement data/mail, alldots-api/adapter changes",
       "bodyCharacters": 59982,
       "specSha256": "0d53e86b4f62f06ff099e4c585511023d0a92e33dade2a0907404ab11636d1ab",
       "members": [
@@ -1481,7 +1481,7 @@
       "id": "sp-144a2408-c4a8-4b9f-b68b-a5eec527dba7",
       "sequence": 15,
       "status": "proposed",
-      "title": "[backend-delivery 15/74] Implement agent-runtime, semprec-agents, application changes",
+      "title": "[backend-delivery 15/74] Implement agent-runtime, alldots-agents, application changes",
       "bodyCharacters": 57637,
       "specSha256": "7a5c08997c5428fc16ae86013c7bc30f7b14a04509ffe4e347c597cdf7c279f3",
       "members": [
@@ -1676,7 +1676,7 @@
       "id": "sp-db5e1165-5ccf-4fba-bce0-fd7a1f2bc098",
       "sequence": 17,
       "status": "proposed",
-      "title": "[backend-delivery 17/74] Implement data/mail, data/inbox, semprec-api/adapter changes",
+      "title": "[backend-delivery 17/74] Implement data/mail, data/inbox, alldots-api/adapter changes",
       "bodyCharacters": 58840,
       "specSha256": "2a65785f46ee5be794cab51068240444124dadbdbf5887dde8eed418c6ab874a",
       "members": [
@@ -2724,7 +2724,7 @@
       "id": "sp-4d935482-f3ce-4604-aeed-b447d1fed82c",
       "sequence": 28,
       "status": "proposed",
-      "title": "[backend-delivery 28/74] Implement data/mail, data/transcription, semprec-transcribe changes",
+      "title": "[backend-delivery 28/74] Implement data/mail, data/transcription, alldots-transcribe changes",
       "bodyCharacters": 59996,
       "specSha256": "42bb509b4cc2e2520249ebd33ab9c77bce8e84d0e808c531db7ef8766df2b090",
       "members": [
@@ -2814,7 +2814,7 @@
       "id": "sp-77c2a124-6206-4790-ae09-a222243339dc",
       "sequence": 29,
       "status": "proposed",
-      "title": "[backend-delivery 29/74] Implement data/library, semprec-transcribe, queue changes",
+      "title": "[backend-delivery 29/74] Implement data/library, alldots-transcribe, queue changes",
       "bodyCharacters": 59924,
       "specSha256": "be7920582118430a3a46ef47a1df6b2637e9b1e4bd79b4afea039cb29eba55a8",
       "members": [
@@ -3000,7 +3000,7 @@
       "id": "sp-7cce8a1c-44bb-4290-9d85-64dfbac693a0",
       "sequence": 31,
       "status": "proposed",
-      "title": "[backend-delivery 31/74] Implement semprec-agents, data/semp, queue changes",
+      "title": "[backend-delivery 31/74] Implement alldots-agents, data/semp, queue changes",
       "bodyCharacters": 59832,
       "specSha256": "00f71b1b032689e88506944158aafbbea91a452ad0da2e6fd48ca16cb07c9665",
       "members": [
@@ -3102,7 +3102,7 @@
       "id": "sp-3c22fa5a-50b2-4eba-a22b-61220f6289dd",
       "sequence": 32,
       "status": "proposed",
-      "title": "[backend-delivery 32/74] Implement data/inbox, data/semp, semprec-agents changes",
+      "title": "[backend-delivery 32/74] Implement data/inbox, data/semp, alldots-agents changes",
       "bodyCharacters": 59819,
       "specSha256": "c158efd50fae0e01e6b585dcad1b4d69dc41226a5c481c6937598e02583f5c18",
       "members": [
@@ -5339,7 +5339,7 @@
       "id": "sp-404ad782-8ff8-4a64-80b4-a29fdf333e36",
       "sequence": 53,
       "status": "merged",
-      "title": "[backend-delivery 53/74] Implement data/transcription, semprec-transcribe, data/inbox changes",
+      "title": "[backend-delivery 53/74] Implement data/transcription, alldots-transcribe, data/inbox changes",
       "bodyCharacters": 53845,
       "specSha256": "a60221c5fd25ce3fa16301897b8e0bd6fcd3e896da203828ee6787ae8b6f86cf",
       "members": [
@@ -5607,7 +5607,7 @@
       "id": "sp-9f4aa1e3-40d6-4408-bc51-577c8bbbef38",
       "sequence": 56,
       "status": "merged",
-      "title": "[backend-delivery 56/74] Implement data/semp, semprec-agents, application/projectAgentGuidance changes",
+      "title": "[backend-delivery 56/74] Implement data/semp, alldots-agents, application/projectAgentGuidance changes",
       "bodyCharacters": 54477,
       "specSha256": "b1a5fe8fe92c4b8ee220f345e2a66b99945a07582c86cddde935ae8fe56b859a",
       "members": [
@@ -6295,7 +6295,7 @@
       "id": "sp-559d3b2a-9178-4247-b9e1-67ece8a18fa4",
       "sequence": 63,
       "status": "merged",
-      "title": "[backend-delivery 63/74] Implement data/mail, data/inbox, semprec-api/adapter changes",
+      "title": "[backend-delivery 63/74] Implement data/mail, data/inbox, alldots-api/adapter changes",
       "bodyCharacters": 57790,
       "specSha256": "a20526dda336a54c0cb5bf4a9285095b897be26b733898d078704679ef7acf46",
       "members": [
@@ -7032,7 +7032,7 @@
       "id": "sp-9c059097-487d-4e51-950d-2ea975f0ed08",
       "sequence": 71,
       "status": "merged",
-      "title": "[backend-delivery 71/74] Implement data/inbox, data/transcription, semprec-transcribe changes",
+      "title": "[backend-delivery 71/74] Implement data/inbox, data/transcription, alldots-transcribe changes",
       "bodyCharacters": 55908,
       "specSha256": "f0cb987118df077f72cbdbe5c6b38ea5884817c5ef0a0eec7e3ee1c753581156",
       "members": [

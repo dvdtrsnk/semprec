@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 
 export interface MailThreadRefTarget {
   currentThreadId: string;
-  /** Subject of the latest live message, else the thread's subject hint. */
+  /** Subject of the earliest live message, else the thread's subject hint. */
   label: string | null;
   /** `trashed` when every live copy is in Trash or no live copy is left. */
   state: "active" | "trashed";
@@ -57,6 +57,8 @@ export async function resolveMailThreadRefTargets(
   LEFT JOIN LATERAL (
     SELECT bool_and(COALESCE(folder.properties->>'specialPurpose' = 'trash', false)) AS all_trash
     FROM folder_definition fd JOIN item_relations r ON r.tenant_id = m.tenant_id AND r.relation_definition_id = fd.id
+      -- The OR lets the item_a and item_b indexes find the edges; the CASE keeps the email's own side.
+      AND (r.item_a = i.id OR r.item_b = i.id)
       AND (CASE WHEN fd.email_is_a THEN r.item_a ELSE r.item_b END) = i.id
     JOIN items folder ON folder.tenant_id = m.tenant_id AND folder.database_id = (SELECT folders FROM schema_ids)
       AND folder.id = CASE WHEN fd.email_is_a THEN r.item_b ELSE r.item_a END AND folder.deleted_at IS NULL
@@ -70,7 +72,7 @@ FROM wanted w
 LEFT JOIN mail_threads t ON t.tenant_id = app_tenant_default() AND t.id = w.thread_id
 LEFT JOIN LATERAL (
   SELECT count(*)::int AS live_copies, bool_and(l.in_trash) AS all_in_trash,
-    (array_agg(l.subject ORDER BY l.activity DESC NULLS LAST, l.item_id DESC))[1] AS subject
+    (array_agg(l.subject ORDER BY l.activity ASC NULLS LAST, l.item_id ASC))[1] AS subject
   FROM live l WHERE l.thread_id = w.thread_id
 ) s ON true
 ORDER BY w.ordinal`,

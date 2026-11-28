@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Client, Pool, type PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { prepareJob, SEARCH_TASK_IDENTIFIERS } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { prepareJob, SEARCH_TASK_IDENTIFIERS } from "@alldots/queue";
 import {
   markManagedTransactionRollbackOnly,
   registerSearchJob,
@@ -53,7 +53,7 @@ function sqlOf(query: ReturnType<typeof fakeConnection>["query"]): string[] {
     .map(([sql]) => sql)
     .filter((sql) => !sql.startsWith("SELECT set_config"))
     .map((sql) =>
-      sql.replace(/semprec_savepoint_\d+/g, (name) => {
+      sql.replace(/alldots_savepoint_\d+/g, (name) => {
         if (!names.includes(name)) names.push(name);
         return `<savepoint ${names.indexOf(name) + 1}>`;
       }),

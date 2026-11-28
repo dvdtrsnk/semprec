@@ -1,7 +1,7 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { compareByCodePoint } from "@semprec/shared";
+import { compareByCodePoint } from "@alldots/shared";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import * as Y from "yjs";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { deleteBlocks, insertBlocks, readPageBlocks, writeBlock } from "@semprec/block-model";
+import { deleteBlocks, insertBlocks, readPageBlocks, writeBlock } from "@alldots/block-model";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { withTransaction } from "../db/pool.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -136,7 +136,7 @@ async function restorePage(pageItemId: string): Promise<void> {
 }
 
 function link(page: { pageItemId: string }, caption: string): string {
-  return `[${caption}](semprec://page/${page.pageItemId})`;
+  return `[${caption}](alldots://page/${page.pageItemId})`;
 }
 
 describe("replace a page from Markdown (issue #1765)", () => {
@@ -150,6 +150,62 @@ describe("replace a page from Markdown (issue #1765)", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  it("keeps strike, underline, colors, toggle blocks and toggle headings through the diff and their ids where unchanged", async () => {
+    const formatted =
+      '[<span data-color="red"><mark data-color="yellow"><u>~~**all**~~</u></mark></span>](https://example.com) \\~\\~';
+    const host = await hostWithText(
+      [
+        "<!-- alldots:block id=h type=h2 indent=0 toggle=true -->",
+        "## Section",
+        "",
+        "<!-- alldots:block id=t type=toggle indent=0 -->",
+        formatted,
+        "",
+        "<!-- alldots:block id=c type=text indent=1 -->",
+        "child",
+      ].join("\n"),
+    );
+    const before = await blocksOf(host.id);
+    const current = await markdownOf(host.id);
+    const changed = current.replace("child", '<mark data-color="green">child</mark>');
+    expect(changed).not.toBe(current);
+
+    await replace(host.id, `${changed}\n\n<!-- alldots:block id=x type=h1 indent=0 toggle=true -->\n# New`);
+
+    const after = await blocksOf(host.id);
+    expect(after.map(({ type, indent, toggle, text }) => ({ type, indent, toggle, text }))).toEqual([
+      { type: "h2", indent: 0, toggle: true, text: [{ insert: "Section" }] },
+      {
+        type: "toggle",
+        indent: 0,
+        toggle: false,
+        text: [
+          {
+            insert: "all",
+            attributes: {
+              link: { href: "https://example.com" },
+              color: "red",
+              highlight: "yellow",
+              underline: true,
+              strike: true,
+              bold: true,
+            },
+          },
+          { insert: " ~~" },
+        ],
+      },
+      { type: "text", indent: 1, toggle: false, text: [{ insert: "child", attributes: { highlight: "green" } }] },
+      { type: "h1", indent: 0, toggle: true, text: [{ insert: "New" }] },
+    ]);
+    // The unchanged toggle heading and toggle block keep their ids; the edited child is a new block.
+    expect(after.slice(0, 2).map((block) => block.id)).toEqual(before.slice(0, 2).map((block) => block.id));
+    expect(after[2]?.id).not.toBe(before[2]?.id);
+    const stored = await markdownOf(host.id);
+    expect(stored).toContain(`type=toggle indent=0 -->\n${formatted}`);
+    expect(stored).toContain("type=h2 indent=0 toggle=true -->\n## Section");
+    expect(stored).toContain("type=h1 indent=0 toggle=true -->\n# New");
   });
 
   it("refuses a stale token with the current one and writes nothing", async () => {
@@ -183,7 +239,7 @@ describe("replace a page from Markdown (issue #1765)", () => {
     const host = await makeHost();
     const before = await footprint();
 
-    const error = await replace(host.id, `See [it](semprec://items/${randomUUID()})`).catch(
+    const error = await replace(host.id, `See [it](alldots://items/${randomUUID()})`).catch(
       (caught: unknown) => caught,
     );
 
@@ -276,7 +332,7 @@ describe("replace a page from Markdown (issue #1765)", () => {
       [
         "Intro",
         "",
-        "<!-- semprec:block id=ignored type=text indent=2 -->",
+        "<!-- alldots:block id=ignored type=text indent=2 -->",
         link(one, "One \\*renamed\\*"),
         "",
         `\u00a0${link(two, "Two, with a leading no-break space")}`,
@@ -297,7 +353,7 @@ describe("replace a page from Markdown (issue #1765)", () => {
     const host = await hostWithText("Intro");
     const page = await subpageOf(host.id, "Named");
 
-    await replace(host.id, `Intro\n\n[](semprec://page/${page.pageItemId})`);
+    await replace(host.id, `Intro\n\n[](alldots://page/${page.pageItemId})`);
 
     expect(await titleOf(page.pageItemId)).toBe("");
   });

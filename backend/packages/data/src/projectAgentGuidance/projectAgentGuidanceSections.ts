@@ -6,7 +6,7 @@ import {
   MAX_PROJECT_AGENT_GUIDANCE_MARKDOWN_BYTES,
   parseProjectAgentGuidanceMarkdown,
   type ProjectAgentGuidanceSections,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { guidanceReferenceStore, projectAgentGuidanceStore } from "../projectAgentGuidanceStore.js";
 import { guidanceDriftHeartbeatStore } from "../guidanceDrift/guidanceDriftHeartbeatStore.js";

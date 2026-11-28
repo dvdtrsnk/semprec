@@ -32,20 +32,13 @@ final class OverviewMappingTests: XCTestCase {
         let state = overviewState(
             .content,
             refreshing: true,
-            areas: [
-                SharedSDK.OverviewAreaItem(
-                    id: "a", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6
-                )
-            ],
             projects: [
-                SharedSDK.OverviewProjectItem(
-                    id: "p", name: "Semprec", color: nil, areaName: "Work", status: "inProgress"
-                )
+                SharedSDK.OverviewProjectItem(id: "p", name: "Alldots", color: nil, status: "inProgress")
             ],
             collections: [
                 SharedSDK.OverviewCollectionItem(
                     databaseId: "d", ownerModuleId: "events", name: "Events",
-                    icon: nil, color: "#FF3B30", itemCount: 214
+                    icon: nil, color: "#FF3B30"
                 )
             ]
         )
@@ -57,23 +50,14 @@ final class OverviewMappingTests: XCTestCase {
                     accountEmail: "a@b.cz",
                     inboxPending: 9,
                     mailUnread: 5,
-                    tasksToday: 4,
                     problemCount: 2,
-                    journalTodayItemId: "j1",
-                    areas: [
-                        OverviewArea(
-                            id: "a", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6
-                        )
-                    ],
                     projects: [
-                        OverviewProject(
-                            id: "p", name: "Semprec", color: nil, areaName: "Work", status: "inProgress"
-                        )
+                        OverviewProject(id: "p", name: "Alldots", color: nil, status: "inProgress")
                     ],
                     collections: [
                         OverviewCollection(
                             databaseId: "d", ownerModuleId: "events", name: "Events",
-                            icon: nil, color: "#FF3B30", itemCount: 214
+                            icon: nil, color: "#FF3B30"
                         )
                     ]
                 )
@@ -94,8 +78,7 @@ final class OverviewMappingTests: XCTestCase {
     func testEveryOverviewTargetMapsBothWays() {
         let targets: [CoreKit.OverviewTarget] = [
             .inbox, .mail, .recordings, .tasks, .finance, .profile,
-            .journal(itemId: "j1"), .journal(itemId: nil),
-            .area(id: "a"), .project(id: "p"), .collection(ownerModuleId: "events", databaseId: "d")
+            .project(id: "p"), .collection(ownerModuleId: "events", databaseId: "d")
         ]
         for target in targets {
             let shared = SharedOverviewScreenModel.sharedTarget(target)
@@ -183,7 +166,7 @@ final class OverviewMappingTests: XCTestCase {
     @MainActor
     func testEverySearchKindMapsFromKotlin() {
         let groups: [(SharedSDK.SearchGroupType, CoreKit.SearchGroupType)] = [
-            (.task, .task), (.event, .event), (.project, .project), (.area, .area), (.contact, .contact),
+            (.task, .task), (.event, .event), (.project, .project), (.contact, .contact),
             (.journal, .journal), (.file, .file), (.mail, .mail), (.chat, .chat)
         ]
         for (shared, native) in groups {
@@ -193,8 +176,8 @@ final class OverviewMappingTests: XCTestCase {
         XCTAssertEqual(groups.count, CoreKit.SearchGroupType.allCases.count)
         let kinds: [(SharedSDK.SearchSubtitleKind, CoreKit.SearchSubtitleKind)] = [
             (.date, .date), (.time, .time), (.timeRange, .timeRange), (.place, .place), (.recurrence, .recurrence),
-            (.project, .project), (.area, .area), (.people, .people), (.phone, .phone),
-            (.relationship, .relationship), (.status, .status), (.count, .count), (.sender, .sender),
+            (.project, .project), (.people, .people), (.phone, .phone),
+            (.relationship, .relationship), (.status, .status), (.sender, .sender),
             (.movedFrom, .movedFrom), (.missedInEvent, .missedInEvent)
         ]
         for (shared, native) in kinds {
@@ -259,7 +242,6 @@ private extension OverviewMappingTests {
         failure: SharedSDK.FailureKind? = nil,
         refreshing: Bool = false,
         accountName: String? = nil,
-        areas: [SharedSDK.OverviewAreaItem] = [],
         projects: [SharedSDK.OverviewProjectItem] = [],
         collections: [SharedSDK.OverviewCollectionItem] = []
     ) -> SharedSDK.OverviewState {
@@ -271,10 +253,7 @@ private extension OverviewMappingTests {
             accountName: accountName,
             inboxPending: 9,
             mailUnread: 5,
-            tasksToday: 4,
             problemCount: 2,
-            journalTodayItemId: "j1",
-            areas: areas,
             projects: projects,
             collections: collections
         )

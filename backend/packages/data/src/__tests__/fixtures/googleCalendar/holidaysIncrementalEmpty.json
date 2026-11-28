@@ -1,0 +1,11 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p33g1b2nv0rp40g\"",
+  "summary": "Holidays in Czechia",
+  "updated": "2026-11-01T00:00:00.000Z",
+  "timeZone": "Europe/Prague",
+  "accessRole": "reader",
+  "defaultReminders": [],
+  "nextSyncToken": "CMDQwfiFx5EDEMDQwfiFx5EDGAEgwP7h",
+  "items": []
+}

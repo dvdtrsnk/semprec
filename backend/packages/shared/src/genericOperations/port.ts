@@ -35,6 +35,7 @@ export interface OutputByOperation {
   "property.delete": Property;
   "property.option.add": PropertyOption;
   "property.option.update": PropertyOption;
+  "property.option.remove": void;
   "view.list": Page<View>;
   "view.get": View;
   "view.create": View;
@@ -151,7 +152,16 @@ export interface PageSummary {
   docId: string | null;
   kind: "page";
   title: string;
-  blocks: Array<{ id: string; type: string; indent: number; done: boolean; text: string; pageId?: string }>;
+  blocks: Array<{
+    id: string;
+    type: string;
+    indent: number;
+    done: boolean;
+    /** A toggle heading; false on every type but `h1`-`h3`. */
+    toggle: boolean;
+    text: string;
+    pageId?: string;
+  }>;
   blockCount: number;
   subpageCount: number;
   headings: Array<{ id: string; type: string; text: string }>;
@@ -247,6 +257,10 @@ export interface GenericApplicationPort {
     actor: AuthenticatedActor,
     input: InputByOperation["property.option.update"],
   ): Promise<OutputByOperation["property.option.update"]>;
+  removePropertyOption(
+    actor: AuthenticatedActor,
+    input: InputByOperation["property.option.remove"],
+  ): Promise<OutputByOperation["property.option.remove"]>;
   listViews(actor: AuthenticatedActor, input: InputByOperation["view.list"]): Promise<OutputByOperation["view.list"]>;
   getView(actor: AuthenticatedActor, input: InputByOperation["view.get"]): Promise<OutputByOperation["view.get"]>;
   createView(

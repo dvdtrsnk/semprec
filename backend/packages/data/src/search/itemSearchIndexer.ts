@@ -7,7 +7,7 @@ import { requireAffectedRows } from "../db/pool.js";
 import { createCatalogResolver, toManifestLocale } from "../manifest/catalogResolution.js";
 import { loadFullModuleRegistry } from "../manifest/fullModuleRegistry.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
-import { AREAS_MODULE_ID, COMPANIES_MODULE_ID, PEOPLE_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { COMPANIES_MODULE_ID, PEOPLE_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { buildItemSearchBody, buildItemSearchDocument } from "./itemSearchDocument.js";
 
 const SEARCH_VECTOR_SQL = "to_tsvector('czech', $3) || to_tsvector('czech_simple', $3)";
@@ -75,7 +75,7 @@ async function storedProjection(
 export async function indexItem(
   client: PoolClient,
   itemId: string,
-  options: { onlyMissing?: boolean; pageText?: string; preserveBody?: boolean } = {},
+  options: { pageText?: string; preserveBody?: boolean } = {},
 ): Promise<void> {
   const databaseIds = await visibleDatabaseIds(client);
   const { rows } = await client.query<SearchItemDbRow>(
@@ -99,17 +99,9 @@ export async function indexItem(
   const catalogs = await (await createCatalogResolver(registry)).getCatalogsForDbKey(item.owner_module_id);
   const linked = await relatedTitles(client, [itemId], databaseIds, descriptor?.searchFields ?? [], [
     PROJECTS_MODULE_ID,
-    AREAS_MODULE_ID,
     PEOPLE_MODULE_ID,
     COMPANIES_MODULE_ID,
   ]);
-  const projectAreas = await relatedTitles(
-    client,
-    [...new Set(linked.filter((row) => row.owner_module_id === PROJECTS_MODULE_ID).map((row) => row.id))],
-    databaseIds,
-    ["area"],
-    [],
-  );
   const stored =
     options.pageText === undefined || options.preserveBody
       ? await storedProjection(client, item.id)
@@ -121,35 +113,33 @@ export async function indexItem(
     databaseKey: item.owner_module_id,
     descriptor,
     properties,
-    relatedTitles: [...linked, ...projectAreas].flatMap((row) => (typeof row.title === "string" ? [row.title] : [])),
+    relatedTitles: linked.flatMap((row) => (typeof row.title === "string" ? [row.title] : [])),
     pageText,
     locale,
     catalogs,
   });
   const searchDocument = options.preserveBody && stored.body ? `${document} ${stored.body}` : document;
   const body = buildItemSearchBody({ item: itemInput, databaseKey: item.owner_module_id, pageText });
-  // A closed SQL constant; every value is bound. Only the page-text job (`$7`) replaces `page_text`.
+  // A closed SQL constant; every value is bound. Only the page-text job (`$6`) replaces `page_text`.
   const result = await client.query(
     `INSERT INTO item_search_index (item_id, database_id, search_vector, body, page_text, updated_at)
      VALUES ($1, $2, ${SEARCH_VECTOR_SQL}, $4, $5, now())
      ON CONFLICT (item_id) DO UPDATE SET search_vector = EXCLUDED.search_vector,
        database_id = EXCLUDED.database_id,
-       body = CASE WHEN $8::boolean THEN item_search_index.body ELSE EXCLUDED.body END,
-       page_text = CASE WHEN $7::boolean THEN EXCLUDED.page_text ELSE item_search_index.page_text END,
-       updated_at = now()
-     WHERE NOT $6::boolean`,
+       body = CASE WHEN $7::boolean THEN item_search_index.body ELSE EXCLUDED.body END,
+       page_text = CASE WHEN $6::boolean THEN EXCLUDED.page_text ELSE item_search_index.page_text END,
+       updated_at = now()`,
     [
       item.id,
       item.database_id,
       searchDocument,
       body,
       pageText ?? null,
-      options.onlyMissing ?? false,
       options.pageText !== undefined,
       options.preserveBody ?? false,
     ],
   );
-  if (!options.onlyMissing) requireAffectedRows(result, "item search index upsert");
+  requireAffectedRows(result, "item search index upsert");
 }
 
 export const itemSearchCreateHook: ItemCreateHook = async ({ client, item }) => {

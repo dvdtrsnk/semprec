@@ -25,7 +25,7 @@ struct FilePreviewSheet: View {
                         Button { send(.preview(.close)) } label: { Text("preview.done", bundle: .module) }
                     }
                     if let shareURL {
-                        ToolbarItem(placement: .primaryAction) { ShareLink(item: shareURL) }
+                        PlainToolbarItem(placement: .primaryAction) { ShareLink(item: shareURL) }
                     }
                 }
         }

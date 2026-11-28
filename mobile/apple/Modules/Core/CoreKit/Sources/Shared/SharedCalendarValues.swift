@@ -114,7 +114,14 @@ extension CalendarSleep {
             wakeMinutes: Int(sleep.wakeMinutes),
             alarm: sleep.alarm,
             changed: sleep.changed,
-            prepMinutes: sleep.prepMinutes.map { Int(truncating: $0) }
+            prepMinutes: sleep.prepMinutes.map { Int(truncating: $0) },
+            fromMinutes: Int(sleep.fromMinutes),
+            toMinutes: Int(sleep.toMinutes),
+            planBedMinutes: sleep.planBedMinutes.map { Int(truncating: $0) },
+            planWakeMinutes: sleep.planWakeMinutes.map { Int(truncating: $0) },
+            durationMinutes: Int(sleep.durationMinutes),
+            goalMinutes: sleep.goalMinutes.map { Int(truncating: $0) },
+            meetsGoal: sleep.meetsGoal.map { $0.boolValue }
         )
     }
 }
@@ -141,11 +148,14 @@ extension CalendarItem {
             editable: item.editable,
             column: Int(item.column),
             columns: Int(item.columns),
+            depth: Int(item.depth),
             tasks: item.tasks.map(CalendarEventTask.init),
             hostEventTitle: item.hostEventTitle,
             carriedFrom: item.carriedFrom,
             trace: item.trace.map(CalendarTraceOutcome.init),
-            traceNote: item.traceNote
+            traceNote: item.traceNote,
+            timeFrom: item.timeFrom.map { Int(truncating: $0) },
+            timeTo: item.timeTo.map { Int(truncating: $0) }
         )
     }
 }
@@ -197,78 +207,6 @@ extension CalendarClipboard {
 
     init(_ clipboard: SharedSDK.CalendarClipboard) {
         self.init(mode: CalendarClipboardMode(clipboard.mode), title: clipboard.title)
-    }
-}
-
-// MARK: - CalendarDeleteRequest
-extension CalendarDeleteRequest {
-
-    init(_ request: SharedSDK.CalendarDeleteRequest) {
-        self.init(itemId: request.itemId, title: request.title, kind: CalendarItemKind(request.kind))
-    }
-}
-
-// MARK: - Calendars list
-extension CalendarListPhase {
-
-    init(_ phase: SharedSDK.CalendarListPhase, failure: SharedSDK.FailureKind?) {
-        switch phase {
-        case .loading: self = .loading
-        case .content: self = .content
-        case .error: self = .failure(failure.map(FailureKind.init))
-        }
-    }
-}
-
-// MARK: - CalendarGroup
-extension CalendarGroup {
-
-    init(_ group: SharedSDK.CalendarGroup) {
-        switch group {
-        case .own: self = .own
-        case .system: self = .system
-        case .subscription: self = .subscription
-        }
-    }
-}
-
-// MARK: - CalendarSwatch
-extension CalendarSwatch {
-
-    init(_ swatch: SharedSDK.CalendarSwatch) {
-        self.init(key: swatch.key, hex: swatch.hex)
-    }
-}
-
-// MARK: - CalendarRow
-extension CalendarRow {
-
-    init(_ row: SharedSDK.CalendarRow) {
-        self.init(
-            id: row.id,
-            name: row.name,
-            color: row.color,
-            hidden: row.hidden,
-            notify: row.notify,
-            group: CalendarGroup(row.group),
-            systemKey: row.systemKey,
-            isDefault: row.isDefault,
-            canRename: row.canRename,
-            canDelete: row.canDelete
-        )
-    }
-}
-
-// MARK: - CalendarImpact
-extension CalendarImpact {
-
-    init(_ impact: SharedSDK.CalendarImpact) {
-        self.init(
-            calendarId: impact.calendarId,
-            eventCount: Int(impact.eventCount),
-            recipientCount: Int(impact.recipientCount),
-            cancellationCount: Int(impact.cancellationCount)
-        )
     }
 }
 
@@ -384,10 +322,62 @@ extension NewItemKind {
     }
 }
 
+// MARK: - NewItemCalendarGroup
+extension NewItemCalendarGroup {
+
+    init(_ group: SharedSDK.NewItemCalendarGroup) {
+        self.init(account: group.account.map(NewItemAccount.init), calendars: group.calendars.map(NewItemCalendar.init))
+    }
+}
+
+// MARK: - NewItemAccount
+extension NewItemAccount {
+
+    init(_ account: SharedSDK.NewItemAccount) {
+        self.init(id: account.id, name: account.name, address: account.address)
+    }
+}
+
 // MARK: - NewItemCalendar
 extension NewItemCalendar {
 
     init(_ calendar: SharedSDK.NewItemCalendar) {
-        self.init(id: calendar.id, name: calendar.name, color: calendar.color, isDefault: calendar.isDefault)
+        self.init(
+            id: calendar.id,
+            name: calendar.name,
+            color: calendar.color,
+            isDefault: calendar.isDefault,
+            account: calendar.account.map(NewItemAccount.init),
+            qualifier: NewItemCalendarQualifier(calendar.qualifier)
+        )
+    }
+}
+
+// MARK: - NewItemCalendarQualifier
+extension NewItemCalendarQualifier {
+
+    init(_ qualifier: SharedSDK.NewItemCalendarQualifier) {
+        switch qualifier {
+        case .none: self = .unqualified
+        case .own: self = .own
+        case .accountName: self = .accountName
+        case .accountAddress: self = .accountAddress
+        }
+    }
+}
+
+// MARK: - CalendarSleepDrag
+extension CalendarSleepDrag {
+
+    init(_ drag: SharedSDK.CalendarSleepDrag) {
+        self.init(
+            night: drag.night,
+            bedMinutes: Int(drag.bedMinutes),
+            wakeMinutes: Int(drag.wakeMinutes),
+            committing: drag.committing,
+            evening: drag.evening.map(CalendarSleep.init),
+            morning: drag.morning.map(CalendarSleep.init),
+            morningDay: drag.morningDay
+        )
     }
 }

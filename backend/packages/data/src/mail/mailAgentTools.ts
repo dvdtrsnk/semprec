@@ -27,6 +27,13 @@ import { findOpenAgentDraftOfThread, MAIL_DRAFT_MODES } from "./mailDraftsStore.
 import { getMailMessageMetaByItemId, resolveMergedThreadId } from "./mailMessageMetaStore.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 import { requestMailSendApproval } from "./mailSendApproval.js";
+import {
+  boundMailAgentRemoteSearch,
+  MAIL_SEARCH_QUERY_MAX_LENGTH,
+  searchMail,
+  type MailSearchCredentialActor,
+  type MailSearchRouteDependencies,
+} from "./mailRemoteSearch.js";
 import { getMailThreadDetail } from "./mailThreadDetail.js";
 import { proposeThreadTask, threadTaskProposalNameSchema } from "./threadTaskProposals.js";
 
@@ -61,6 +68,35 @@ export const mailDraftUpdateArgsSchema = z.strictObject({
 });
 
 export const mailDraftSendArgsSchema = z.strictObject({ draftId: z.uuid() });
+
+/** At most this many threads per `mail.search` call. */
+const MAIL_SEARCH_TOOL_MAX_LIMIT = 50;
+const MAIL_SEARCH_TOOL_DEFAULT_LIMIT = 20;
+
+/** The descriptions are what the model reads: this schema is the tool's parameters. */
+export const mailSearchArgsSchema = z
+  .strictObject({
+    query: z
+      .string()
+      .min(1)
+      .max(MAIL_SEARCH_QUERY_MAX_LENGTH)
+      .describe(
+        "Words to find, with the operators of the mail search if needed: from:<name or address>, has:attachment, " +
+          "before:<YYYY-MM-DD>, after:<YYYY-MM-DD>, is:read, is:unread, is:flagged, a quoted phrase, -word to exclude.",
+      ),
+    mailboxId: z.uuid().optional().describe("Search only this internet account's mail."),
+    limit: z
+      .int()
+      .min(1)
+      .max(MAIL_SEARCH_TOOL_MAX_LIMIT)
+      .optional()
+      .describe(`How many threads to return, newest first; ${MAIL_SEARCH_TOOL_DEFAULT_LIMIT} when not given.`),
+  })
+  .describe(
+    "Search the user's mail. Older messages are kept only as subject, addresses and a short preview, so the words " +
+      "are also searched at the mail providers, which hold the whole messages. Returns the matching threads; read one " +
+      "with mail.thread.get.",
+  );
 
 /** The descriptions are what the model reads: this schema is the tool's parameters. */
 export const mailThreadProposeTaskArgsSchema = z
@@ -207,6 +243,10 @@ async function startedByHeartbeat(client: PoolClient, run: AgentRunRow): Promise
   return false;
 }
 
+/** What `mail.thread.get` says of a message whose body is with the provider only. */
+const REMOTE_CONTENT_NOTE =
+  "The content of this older message is not downloaded; bodyText is only its stored preview of up to 200 characters.";
+
 /** Cuts by code points, never splitting a surrogate pair. */
 function cutText(text: string, max: number): string {
   return Array.from(text).slice(0, max).join("");
@@ -236,7 +276,11 @@ function mailThreadGet(pool: Pool): MailToolCore {
           const thread = await getMailThreadDetail(client, args.data.threadId, false);
           let remaining = MAX_THREAD_TEXT_LENGTH;
           const messages = [...thread.messages].reverse().map((message) => {
-            const bodyText = cutText(message.bodyText, Math.max(0, Math.min(MAX_MESSAGE_TEXT_LENGTH, remaining)));
+            // An older message whose content was never fetched (or whose fetched copy expired) shows its preview;
+            // nothing is fetched from the provider here.
+            const remote = message.contentState === "remote";
+            const text = remote ? (message.preview ?? "") : message.bodyText;
+            const bodyText = cutText(text, Math.max(0, Math.min(MAX_MESSAGE_TEXT_LENGTH, remaining)));
             remaining -= bodyText.length;
             return {
               emailId: message.emailId,
@@ -248,7 +292,8 @@ function mailThreadGet(pool: Pool): MailToolCore {
               cc: message.cc,
               date: message.date,
               bodyText,
-              bodyTruncated: bodyText.length < message.bodyText.length,
+              bodyTruncated: bodyText.length < text.length,
+              ...(remote ? { contentNote: REMOTE_CONTENT_NOTE } : {}),
               attachments: message.attachments.map((attachment) => attachment.filename),
             };
           });
@@ -270,6 +315,109 @@ function mailThreadGet(pool: Pool): MailToolCore {
         { isolation: "repeatable_read" },
       ),
     );
+  };
+}
+
+/** Provider searches one agent run may make; later calls of the run search the local index only. */
+export const MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN = 5;
+/** Runs whose provider searches this process remembers; the least recently searching ones are forgotten first. */
+const MAX_TRACKED_RUNS = 10_000;
+
+/**
+ * Provider searches per run in this process. Module tools have no per-run budget of their own, so it lives here; a
+ * restart of the process forgets the counts.
+ */
+const providerSearchesByRun = new Map<string, number>();
+
+/** Counts one provider search of the run in the same synchronous step as the check; `false` once it has spent all. */
+function reserveRunProviderSearch(runId: string): boolean {
+  const used = providerSearchesByRun.get(runId) ?? 0;
+  if (used >= MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN) return false;
+  providerSearchesByRun.delete(runId);
+  providerSearchesByRun.set(runId, used + 1);
+  if (providerSearchesByRun.size > MAX_TRACKED_RUNS) {
+    const oldest = providerSearchesByRun.keys().next();
+    if (oldest.done !== true) providerSearchesByRun.delete(oldest.value);
+  }
+  return true;
+}
+
+function releaseRunProviderSearch(runId: string): void {
+  const used = providerSearchesByRun.get(runId);
+  if (used !== undefined) providerSearchesByRun.set(runId, Math.max(0, used - 1));
+}
+
+/** Whether the providers were searched, and if not, why not. */
+type MailSearchToolRemote = "searched" | "notNeeded" | "unavailable" | "runBudgetSpent" | "rateLimited";
+
+/**
+ * Read-only. The local index and, for a query with words, the providers of every live account, as
+ * `GET /api/mail/search` searches them; the provider part is skipped (the answer says why) in a process without
+ * provider clients, once the run made `MAIL_SEARCH_PROVIDER_SEARCHES_PER_RUN` provider searches, or when the user's
+ * `mailRemoteSearch` throttle refuses. An unknown, foreign or trashed `mailboxId` is the 404 of a random id.
+ */
+export function createMailSearchTool(pool: Pool): MailAgentTool {
+  return asRunTool(mailSearch(pool, boundMailAgentRemoteSearch));
+}
+
+export function createMailSearchUserTool(pool: Pool, dependencies: MailSearchRouteDependencies): MailUserTool {
+  return asUserTool(mailSearch(pool, () => dependencies));
+}
+
+function mailSearch(pool: Pool, dependenciesOf: () => MailSearchRouteDependencies | undefined): MailToolCore {
+  return async function mailSearchCore(caller, rawArgs) {
+    const args = mailSearchArgsSchema.safeParse(rawArgs);
+    const query = args.success ? args.data.query.trim() : "";
+    if (!args.success || query === "") return refusal(new ValidationError("Invalid arguments"));
+    return answering(async () => {
+      const context = await withTransaction(pool, (client) => callerContext(client, caller));
+      const dependencies = dependenciesOf() ?? {};
+      const actor: MailSearchCredentialActor =
+        caller.kind === "run"
+          ? { actorType: "ai_agent", actorId: caller.runId }
+          : { actorType: "user", actorId: caller.userId };
+      let remote: MailSearchToolRemote = "notNeeded";
+      const admit = (): boolean => {
+        const throttle = dependencies.throttle;
+        if (dependencies.mailContent === undefined || throttle === undefined) {
+          remote = "unavailable";
+          return false;
+        }
+        if (caller.kind === "run" && !reserveRunProviderSearch(caller.runId)) {
+          remote = "runBudgetSpent";
+          return false;
+        }
+        if (!throttle.tryAcquire("mailRemoteSearch", context.actorUserId).granted) {
+          if (caller.kind === "run") releaseRunProviderSearch(caller.runId);
+          remote = "rateLimited";
+          return false;
+        }
+        remote = "searched";
+        return true;
+      };
+      const found = await searchMail(pool, dependencies, {
+        q: query,
+        mailboxId: args.data.mailboxId ?? null,
+        limit: args.data.limit ?? MAIL_SEARCH_TOOL_DEFAULT_LIMIT,
+        actor,
+        admit,
+      });
+      return {
+        error: false,
+        result: JSON.stringify({
+          threads: found.threads.map((thread) => ({
+            threadId: thread.threadId,
+            subject: thread.subject,
+            lastMessageAt: thread.lastMessageAt,
+            lastSender: { name: thread.lastSender.name, address: thread.lastSender.address },
+            snippet: thread.preview,
+          })),
+          localCount: found.localCount,
+          remoteSearch: remote,
+          remote: found.remote,
+        }),
+      };
+    });
   };
 }
 
@@ -463,7 +611,7 @@ function mailDraftUpdate(pool: Pool): MailToolCore {
   };
 }
 
-/** Same wording as `moduleToolPendingApprovalText` in semprec-agents, so the model sees one phrasing. */
+/** Same wording as `moduleToolPendingApprovalText` in alldots-agents, so the model sees one phrasing. */
 function pendingApprovalText(toolName: string, approvalRequestId: string): string {
   return `Tool '${toolName}' requires human approval before it can run. Approval request ${approvalRequestId} has been created and is awaiting a decision; this call has not been executed.`;
 }

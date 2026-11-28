@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { readPageBlocks, writeBlock } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
+import { readPageBlocks, writeBlock } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createDocStore } from "../docs/docStore.js";
@@ -15,7 +15,7 @@ let tenant: string;
 describe("read-only page summary", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(data);
   });
   beforeEach(async () => {

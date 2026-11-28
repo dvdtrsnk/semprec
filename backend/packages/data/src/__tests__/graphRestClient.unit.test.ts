@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GraphRestClient, toFetchedGraphMessage } from "../mail/graphRestClient.js";
+import { GraphRestClient, toGraphMessageContent, toGraphMessageEnvelope } from "../mail/graphRestClient.js";
 import { MailReauthorizationRequiredError, MailRecipientRejectedError } from "../mail/providerTypes.js";
 
 afterEach(() => {
@@ -15,7 +15,7 @@ describe("Graph sync provider privacy", () => {
   ])("sanitizes an unknown %s fetch failure", async (_name, original) => {
     const fetchImpl = vi.fn<typeof fetch>().mockRejectedValue(original);
     const client = new GraphRestClient(async () => "GRAPH-PRIVATE-SENTINEL", fetchImpl);
-    const error = await client.fetchDelta(null).then(
+    const error = await client.fetchDeltaPage(null).then(
       () => null,
       (value: unknown) => value,
     );
@@ -38,7 +38,7 @@ describe("Graph sync provider privacy", () => {
       async () => "GRAPH-PRIVATE-SENTINEL",
       async () => new Response(body),
     );
-    const error = await client.fetchDelta(null).then(
+    const error = await client.fetchDeltaPage(null).then(
       () => null,
       (value: unknown) => value,
     );
@@ -49,7 +49,7 @@ describe("Graph sync provider privacy", () => {
     await expect(
       new GraphRestClient(async () => {
         throw tokenError;
-      }, fetchImpl).fetchDelta(null),
+      }, fetchImpl).fetchDeltaPage(null),
     ).rejects.toBe(tokenError);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -79,7 +79,7 @@ describe("Graph sync provider privacy", () => {
       async () => "token",
       async () => new Response(null, { status: 404 }),
     )
-      .fetchDelta(null)
+      .fetchDeltaPage(null)
       .then(
         () => null,
         (error: unknown) => error,
@@ -104,7 +104,7 @@ describe("Graph sync provider privacy", () => {
     await expect(
       new GraphRestClient(async () => {
         throw source410;
-      }).fetchDelta(null),
+      }).fetchDeltaPage(null),
     ).rejects.toBe(source410);
   });
 
@@ -113,20 +113,18 @@ describe("Graph sync provider privacy", () => {
       async () => "token",
       async () => new Response(null, { status: 410 }),
     );
-    await expect(client.fetchDelta(null)).resolves.toEqual({ invalidated: true, newDeltaLink: "", changes: [] });
+    await expect(client.fetchDeltaPage(null)).resolves.toBeNull();
   });
 
   it("treats real attachment metadata 404 as missing without misclassifying a thrown 410 lookalike", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(Response.json({ value: [{ id: "m", hasAttachments: true }], "@odata.deltaLink": "next" }))
+      .mockResolvedValueOnce(Response.json({ id: "m", hasAttachments: true }))
       .mockResolvedValueOnce(new Response(null, { status: 404 }));
-    const delta = await new GraphRestClient(async () => "token", fetchImpl).fetchDelta(null);
-    const change = delta.changes[0];
-    if (!change || change.removed || !change.message) throw new Error("Missing Graph message");
-    expect(change.message.attachments).toEqual([]);
+    const content = await new GraphRestClient(async () => "token", fetchImpl).fetchMessageContent("m");
+    expect(content?.attachments).toEqual([]);
     const fake410 = vi.fn<typeof fetch>().mockRejectedValue({ status: 410 });
-    await expect(new GraphRestClient(async () => "token", fake410).fetchDelta(null)).rejects.toThrow(
+    await expect(new GraphRestClient(async () => "token", fake410).fetchDeltaPage(null)).rejects.toThrow(
       "Graph sync provider request failed unexpectedly",
     );
   });
@@ -146,15 +144,13 @@ describe("Graph sync provider privacy", () => {
     });
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(Response.json({ value: [{ id: "m", hasAttachments: true }], "@odata.deltaLink": "next" }))
+      .mockResolvedValueOnce(Response.json({ id: "m", hasAttachments: true }))
       .mockResolvedValueOnce(
         Response.json({ value: [{ "@odata.type": "#microsoft.graph.fileAttachment", id: "a", name: "a.pdf" }] }),
       )
       .mockResolvedValueOnce(new Response(body));
-    const delta = await new GraphRestClient(async () => "GRAPH-PRIVATE-SENTINEL", fetchImpl).fetchDelta(null);
-    const change = delta.changes[0];
-    if (!change || change.removed || !change.message) throw new Error("Missing Graph message");
-    const attachment = change.message.attachments[0];
+    const content = await new GraphRestClient(async () => "GRAPH-PRIVATE-SENTINEL", fetchImpl).fetchMessageContent("m");
+    const attachment = content?.attachments[0];
     if (!attachment) throw new Error("Missing Graph attachment");
     const stream = await attachment.openStream();
     const closed = new Promise<void>((resolve) => stream.once("close", resolve));
@@ -186,15 +182,13 @@ describe("Graph sync provider privacy", () => {
     });
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(Response.json({ value: [{ id: "m", hasAttachments: true }], "@odata.deltaLink": "next" }))
+      .mockResolvedValueOnce(Response.json({ id: "m", hasAttachments: true }))
       .mockResolvedValueOnce(
         Response.json({ value: [{ "@odata.type": "#microsoft.graph.fileAttachment", id: "a", name: "a.pdf" }] }),
       )
       .mockResolvedValueOnce(new Response(body));
-    const delta = await new GraphRestClient(async () => "token", fetchImpl).fetchDelta(null);
-    const change = delta.changes[0];
-    if (!change || change.removed || !change.message) throw new Error("Missing Graph message");
-    const attachment = change.message.attachments[0];
+    const content = await new GraphRestClient(async () => "token", fetchImpl).fetchMessageContent("m");
+    const attachment = content?.attachments[0];
     if (!attachment) throw new Error("Missing Graph attachment");
     const stream = await attachment.openStream();
     const downstream = new Error("storage failure identity");
@@ -220,15 +214,13 @@ describe("Graph sync provider privacy", () => {
     });
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(Response.json({ value: [{ id: "m", hasAttachments: true }], "@odata.deltaLink": "next" }))
+      .mockResolvedValueOnce(Response.json({ id: "m", hasAttachments: true }))
       .mockResolvedValueOnce(
         Response.json({ value: [{ "@odata.type": "#microsoft.graph.fileAttachment", id: "a", name: "a.pdf" }] }),
       )
       .mockResolvedValueOnce(new Response(body));
-    const delta = await new GraphRestClient(async () => "token", fetchImpl).fetchDelta(null);
-    const change = delta.changes[0];
-    if (!change || change.removed || !change.message) throw new Error("Missing Graph message");
-    const attachment = change.message.attachments[0];
+    const content = await new GraphRestClient(async () => "token", fetchImpl).fetchMessageContent("m");
+    const attachment = content?.attachments[0];
     if (!attachment) throw new Error("Missing Graph attachment");
     const stream = await attachment.openStream();
     const downstream = new Error("storage failure identity");
@@ -269,7 +261,8 @@ describe("Graph flag write-back", () => {
     vi.stubGlobal("fetch", fetchMock);
     const client = new GraphRestClient(async () => "test-token");
 
-    const delta = await client.fetchDelta("https://graph.example/old-delta");
+    const delta = await client.fetchDeltaPage("https://graph.example/old-delta");
+    if (!delta) throw new Error("Expected a Graph delta page");
 
     expect(delta.changes).toHaveLength(1);
     const [change] = delta.changes;
@@ -282,17 +275,13 @@ describe("Graph flag write-back", () => {
 
 describe("Graph bulk-mail headers (issue #1502)", () => {
   it("captures the four raw headers from internetMessageHeaders and null when absent", async () => {
-    const message = await toFetchedGraphMessage(
-      {
-        id: "message-1",
-        internetMessageHeaders: [
-          { name: "List-Id", value: "<list.example.test>" },
-          { name: "Auto-Submitted", value: "auto-generated" },
-        ],
-      },
-      async () => [],
-      async () => Readable.from(""),
-    );
+    const message = toGraphMessageEnvelope({
+      id: "message-1",
+      internetMessageHeaders: [
+        { name: "List-Id", value: "<list.example.test>" },
+        { name: "Auto-Submitted", value: "auto-generated" },
+      ],
+    });
     expect(message.bulkHeaders).toEqual({
       listUnsubscribe: null,
       listId: "<list.example.test>",
@@ -304,7 +293,7 @@ describe("Graph bulk-mail headers (issue #1502)", () => {
 
 describe("Graph non-file attachments (issue #203)", () => {
   it("streams file attachments while appending item/reference annotations in deterministic safe order", async () => {
-    const message = await toFetchedGraphMessage(
+    const message = await toGraphMessageContent(
       {
         id: "message-1",
         hasAttachments: true,
@@ -336,7 +325,7 @@ describe("Graph non-file attachments (issue #203)", () => {
   });
 
   it("adds annotations to plain text when an attachment name is missing", async () => {
-    const message = await toFetchedGraphMessage(
+    const message = await toGraphMessageContent(
       { id: "message-2", hasAttachments: true, body: { contentType: "text", content: "Message" } },
       async () => [{ "@odata.type": "#microsoft.graph.itemAttachment", id: "item-1" }],
       async () => Readable.from([]),
@@ -347,7 +336,7 @@ describe("Graph non-file attachments (issue #203)", () => {
   });
 
   it("retains annotations when Graph provides an empty HTML body", async () => {
-    const message = await toFetchedGraphMessage(
+    const message = await toGraphMessageContent(
       { id: "message-3", hasAttachments: true, body: { contentType: "html", content: "" } },
       async () => [{ "@odata.type": "#microsoft.graph.referenceAttachment", id: "reference-1", name: "link" }],
       async () => Readable.from([]),
@@ -358,8 +347,6 @@ describe("Graph non-file attachments (issue #203)", () => {
 });
 
 describe("Graph Reply-To envelope", () => {
-  const noAttachments = async () => [];
-  const noStream = async () => Readable.from("");
   const addresses = {
     from: { emailAddress: { name: "Sender", address: "sender@example.test" } },
     toRecipients: [{ emailAddress: { name: "To Person", address: "to@example.test" } }],
@@ -374,42 +361,35 @@ describe("Graph Reply-To envelope", () => {
   };
 
   it("stores the replyTo recipients", async () => {
-    const message = await toFetchedGraphMessage(
-      {
-        id: "message-1",
-        replyTo: [{ emailAddress: { name: "Support", address: "support@example.test" } }],
-      },
-      noAttachments,
-      noStream,
-    );
+    const message = toGraphMessageEnvelope({
+      id: "message-1",
+      replyTo: [{ emailAddress: { name: "Support", address: "support@example.test" } }],
+    });
     expect(message.envelope.replyTo).toEqual([{ name: "Support", address: "support@example.test" }]);
   });
 
   it("leaves replyTo absent when Graph supplies an empty address", async () => {
-    const message = await toFetchedGraphMessage(
-      { id: "message-1", ...addresses, replyTo: [{ emailAddress: { address: "" } }] },
-      noAttachments,
-      noStream,
-    );
+    const message = toGraphMessageEnvelope({
+      id: "message-1",
+      ...addresses,
+      replyTo: [{ emailAddress: { address: "" } }],
+    });
     expect(message.envelope).toEqual(expectedEnvelope);
   });
 
   it("preserves the complete envelope when Graph omits replyTo", async () => {
-    const message = await toFetchedGraphMessage({ id: "message-1", ...addresses }, noAttachments, noStream);
+    const message = toGraphMessageEnvelope({ id: "message-1", ...addresses });
     expect(message.envelope).toEqual(expectedEnvelope);
   });
 
   it("leaves replyTo absent when Graph returns none", async () => {
-    const message = await toFetchedGraphMessage(
-      { id: "message-1", ...addresses, replyTo: [] },
-      noAttachments,
-      noStream,
-    );
+    const message = toGraphMessageEnvelope({ id: "message-1", ...addresses, replyTo: [] });
     expect(message.envelope).toEqual(expectedEnvelope);
   });
 });
 
 const GRAPH_TOKEN = "graph-test-access-token";
+const GRAPH_IMMUTABLE_ID = 'IdType="ImmutableId"';
 const GRAPH_BASE = "https://graph.microsoft.com/v1.0/me";
 
 function graphClient(fetchImpl: typeof fetch): GraphRestClient {
@@ -509,7 +489,7 @@ describe("Graph mail send (issue #1753)", () => {
       expect.objectContaining({
         method: "POST",
         body: raw.toString("base64"),
-        headers: { Authorization: `Bearer ${GRAPH_TOKEN}`, "Content-Type": "text/plain" },
+        headers: { Authorization: `Bearer ${GRAPH_TOKEN}`, Prefer: GRAPH_IMMUTABLE_ID, "Content-Type": "text/plain" },
       }),
     );
   });
@@ -570,7 +550,11 @@ describe("Graph mail send (issue #1753)", () => {
       `${GRAPH_BASE}/messages`,
       expect.objectContaining({
         method: "POST",
-        headers: { Authorization: `Bearer ${GRAPH_TOKEN}`, "Content-Type": "application/json" },
+        headers: {
+          Authorization: `Bearer ${GRAPH_TOKEN}`,
+          Prefer: GRAPH_IMMUTABLE_ID,
+          "Content-Type": "application/json",
+        },
         body: JSON.stringify(sampleDraft),
       }),
     );
@@ -713,7 +697,10 @@ describe("Graph mail send (issue #1753)", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${GRAPH_BASE}/messages/draft-1/send`,
-      expect.objectContaining({ method: "POST", headers: { Authorization: `Bearer ${GRAPH_TOKEN}` } }),
+      expect.objectContaining({
+        method: "POST",
+        headers: { Authorization: `Bearer ${GRAPH_TOKEN}`, Prefer: GRAPH_IMMUTABLE_ID },
+      }),
     );
   });
 
@@ -724,7 +711,163 @@ describe("Graph mail send (issue #1753)", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       `${GRAPH_BASE}/messages/draft-1`,
-      expect.objectContaining({ method: "DELETE", headers: { Authorization: `Bearer ${GRAPH_TOKEN}` } }),
+      expect.objectContaining({
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${GRAPH_TOKEN}`, Prefer: GRAPH_IMMUTABLE_ID },
+      }),
     );
+  });
+});
+
+describe("Graph immutable ids and the paged delta", () => {
+  const hrefOf = (input: string | URL | Request): string =>
+    typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const preferOf = (init: RequestInit | undefined): string | null => new Headers(init?.headers).get("prefer");
+
+  it("asks for one page of 50 messages without the body, with immutable ids", async () => {
+    const nextLink = `${GRAPH_BASE}/messages/delta?$skiptoken=page-2`;
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        value: [
+          {
+            id: "immutable-1",
+            parentFolderId: "folder-1",
+            internetMessageId: "<m-1@graph.test>",
+            subject: "Hello",
+            bodyPreview: "Hello there",
+            receivedDateTime: "2026-01-05T10:00:00Z",
+            hasAttachments: true,
+          },
+          { id: "immutable-gone", "@removed": { reason: "deleted" } },
+        ],
+        "@odata.nextLink": nextLink,
+      }),
+    );
+
+    const page = await graphClient(fetchImpl).fetchDeltaPage(null);
+
+    const [input, init] = fetchImpl.mock.calls[0] ?? [];
+    if (!input) throw new Error("Expected a delta request");
+    const selected = new URL(hrefOf(input)).searchParams.get("$select")?.split(",") ?? [];
+    expect(selected).not.toContain("body");
+    expect(selected).toEqual(expect.arrayContaining(["bodyPreview", "hasAttachments", "receivedDateTime"]));
+    expect(preferOf(init)).toBe('IdType="ImmutableId", odata.maxpagesize=50');
+    expect(page).toEqual({
+      changes: [
+        {
+          id: "immutable-1",
+          parentFolderId: "folder-1",
+          removed: false,
+          message: expect.objectContaining({
+            messageId: "<m-1@graph.test>",
+            subject: "Hello",
+            date: new Date("2026-01-05T10:00:00Z"),
+          }),
+          preview: "Hello there",
+        },
+        { id: "immutable-gone", removed: true },
+      ],
+      nextLink,
+      deltaLink: null,
+    });
+
+    await graphClient(fetchImpl).fetchDeltaPage(nextLink);
+    expect(hrefOf(fetchImpl.mock.calls[1]?.[0] ?? "")).toBe(nextLink);
+    expect(preferOf(fetchImpl.mock.calls[1]?.[1])).toBe('IdType="ImmutableId", odata.maxpagesize=50');
+  });
+
+  it.each([
+    ["neither link", {}],
+    ["both links", { "@odata.nextLink": `${GRAPH_BASE}/n`, "@odata.deltaLink": `${GRAPH_BASE}/d` }],
+  ])("refuses a delta page with %s", async (_name, links) => {
+    const client = graphClient(async () => Response.json({ value: [], ...links }));
+    await expect(client.fetchDeltaPage(null)).rejects.toThrow(/next link and a delta link/);
+  });
+
+  it("fetches a full message's body and attachment list by its immutable id", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({ body: { contentType: "html", content: "<p>Hi</p>" }, bodyPreview: "Hi", hasAttachments: true }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          value: [
+            { "@odata.type": "#microsoft.graph.fileAttachment", id: "attachment-1", name: "a.pdf", contentType: "x/y" },
+          ],
+        }),
+      );
+
+    const content = await graphClient(fetchImpl).fetchMessageContent("AAMk/immutable=");
+
+    expect(hrefOf(fetchImpl.mock.calls[0]?.[0] ?? "")).toBe(
+      `${GRAPH_BASE}/messages/AAMk%2Fimmutable%3D?$select=body,bodyPreview,hasAttachments`,
+    );
+    expect(hrefOf(fetchImpl.mock.calls[1]?.[0] ?? "")).toBe(
+      `${GRAPH_BASE}/messages/AAMk%2Fimmutable%3D/attachments?$select=id,name,contentType,isInline,contentId`,
+    );
+    for (const [, init] of fetchImpl.mock.calls) expect(preferOf(init)).toBe(GRAPH_IMMUTABLE_ID);
+    expect(content).toMatchObject({
+      bodyText: "Hi",
+      bodyHtml: "<p>Hi</p>",
+      attachments: [{ filename: "a.pdf", contentType: "x/y", providerPart: "attachment-1" }],
+    });
+  });
+
+  it.each([
+    ["a body without content", { body: { contentType: "html" } }],
+    ["a body that is no object", { body: "text" }],
+    ["a preview that is no string", { bodyPreview: 3 }],
+  ])("refuses a message content response with %s", async (_name, resource) => {
+    const client = graphClient(async () => Response.json(resource));
+    await expect(client.fetchMessageContent("immutable-1")).rejects.toThrow();
+  });
+
+  it("refuses a JSON response over the cap", async () => {
+    const oversized = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(64 * 1024 * 1024 + 1).fill(0x20));
+        controller.close();
+      },
+    });
+    const client = graphClient(async () => new Response(oversized));
+    await expect(client.fetchMessageContent("immutable-1")).rejects.toThrow(
+      "Graph sync provider response could not be read",
+    );
+  });
+
+  it("streams one attachment's bytes by its encoded immutable ids, and answers null when Graph has none", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("bytes"))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const client = graphClient(fetchImpl);
+
+    const stream = await client.openAttachmentContent("AAMk/immutable=", "attachment/1");
+    if (!stream) throw new Error("Missing Graph attachment stream");
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk as Uint8Array));
+
+    expect(Buffer.concat(chunks).toString()).toBe("bytes");
+    expect(hrefOf(fetchImpl.mock.calls[0]?.[0] ?? "")).toBe(
+      `${GRAPH_BASE}/messages/AAMk%2Fimmutable%3D/attachments/attachment%2F1/$value`,
+    );
+    expect(preferOf(fetchImpl.mock.calls[0]?.[1])).toBe(GRAPH_IMMUTABLE_ID);
+    await expect(client.openAttachmentContent("immutable-1", "gone")).resolves.toBeNull();
+  });
+
+  it("answers null for a message gone before its body was fetched", async () => {
+    const client = graphClient(async () => new Response(null, { status: 404 }));
+    await expect(client.fetchMessageContent("immutable-1")).resolves.toBeNull();
+  });
+
+  it("asks for immutable ids on folder listing and flag write-back", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async (input) =>
+      hrefOf(input).includes("?$top=") ? Response.json({ value: [] }) : Response.json({ id: "folder" }),
+    );
+    await graphClient(fetchImpl).listFolders();
+    await graphClient(fetchImpl).patchMessage("immutable-1", { isRead: true });
+    expect(fetchImpl.mock.calls.length).toBeGreaterThan(1);
+    for (const [, init] of fetchImpl.mock.calls) expect(preferOf(init)).toBe(GRAPH_IMMUTABLE_ID);
   });
 });

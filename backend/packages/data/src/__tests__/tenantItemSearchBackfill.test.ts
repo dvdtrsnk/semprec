@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { CORE_TASK_AFFINITY, CORE_TASK_NAMES, TASK_TENANCY, runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { CORE_TASK_AFFINITY, CORE_TASK_NAMES, TASK_TENANCY, runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import "../domainWriteHooks.js";
 import {
   createRuntimeRolePool,
@@ -102,7 +102,6 @@ async function runQueuedBackfill(): Promise<void> {
 
 async function overlapBackfill(
   databaseId: string,
-  onlyMissing: boolean,
   finish: "commit" | "rollback",
   write: (client: PoolClient) => Promise<void>,
 ): Promise<void> {
@@ -116,7 +115,7 @@ async function overlapBackfill(
       const pid = pids[0]?.pid;
       if (pid === undefined) throw new Error("Writer backend pid missing");
       // Observe rejection immediately; the writer must release its locks before awaiting completion.
-      backfill = Promise.allSettled([handleItemSearchBackfillTask(pool, { databaseId, onlyMissing })]);
+      backfill = Promise.allSettled([handleItemSearchBackfillTask(pool, { databaseId })]);
       await vi.waitFor(
         async () => {
           const { rows: blocked } = await pool.query<{ query: string }>(
@@ -124,9 +123,7 @@ async function overlapBackfill(
             [pid],
           );
           expect(blocked).toHaveLength(1);
-          // In missing-only mode, reaching the indexer's read proves candidate selection finished.
-          if (onlyMissing) expect(blocked[0]?.query).toContain("FROM items i JOIN databases d");
-          else expect(blocked[0]?.query).toMatch(/FROM items i JOIN databases d|INSERT INTO item_search_index/);
+          expect(blocked[0]?.query).toMatch(/FROM items i JOIN databases d|INSERT INTO item_search_index/);
         },
         { timeout: 5_000, interval: 20 },
       );
@@ -144,7 +141,7 @@ async function overlapBackfill(
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   cp = createChokePoint(pool);
 });
 beforeEach(async () => {
@@ -269,25 +266,26 @@ describe("item search create/update hooks", () => {
     });
   });
 
-  it("includes a Task's project and the project's area from real inverse edges", async () => {
+  it("includes a Task's project from a real inverse edge, and not the project's company", async () => {
     await runInTenant(tenant, async () => {
-      const area = await cp.createItem({ databaseId: await db("areas"), properties: { name: "Finance" } });
+      const company = await cp.createItem({ databaseId: await db("companies"), properties: { name: "Finance" } });
       const project = await cp.createItem({ databaseId: await db("projects"), properties: { name: "Billing" } });
-      await link(project.databaseId, "area", project.id, area.id);
+      await link(project.databaseId, "company", project.id, company.id);
       const item = await task();
       await link(item.databaseId, "project", item.id, project.id);
       expect(await has(item.id, "Billing")).toBe(false);
       // The next item update runs the indexing hook.
       await cp.updateItem({ databaseId: item.databaseId, itemId: item.id, propertiesPatch: { name: "Invoice" } });
-      expect(await has(item.id, "Invoice Billing Finance")).toBe(true);
+      expect(await has(item.id, "Invoice Billing")).toBe(true);
+      expect(await has(item.id, "Finance")).toBe(false);
     });
   });
 
-  it("always includes live project, area, people and company titles in custom collections, excluding deleted titles", async () => {
+  it("always includes live project, people and company titles in custom collections, excluding deleted titles", async () => {
     await runInTenant(tenant, async () => {
       const collection = await cp.createDatabase({ name: "Custom collection" });
       const item = await cp.createItem({ databaseId: collection.id, properties: {} });
-      for (const key of ["projects", "areas", "people", "companies"] as const) {
+      for (const key of ["projects", "people", "companies"] as const) {
         const target = await cp.createItem({ databaseId: await db(key), properties: { name: `${key}Visible` } });
         const property = await cp.createRelationProperty({
           sourceDatabaseId: collection.id,
@@ -306,7 +304,7 @@ describe("item search create/update hooks", () => {
       // Retains the historical edge so this tests the indexer's deleted-target guard itself.
       await withTransaction(pool, (client) => softDeleteItem(client, deleted.databaseId, deleted.id));
       await withTransaction(pool, (client) => indexItem(client, item.id));
-      expect(await has(item.id, "projectsVisible areasVisible peopleVisible companiesVisible")).toBe(true);
+      expect(await has(item.id, "projectsVisible peopleVisible companiesVisible")).toBe(true);
       expect(await has(item.id, "DeletedPerson")).toBe(false);
     });
   });
@@ -481,9 +479,9 @@ describe("item search create/update hooks", () => {
     });
   });
 
-  it("declares seeded title/text/select fields and the requested relation fields for all ten databases", async () => {
+  it("declares seeded title/text/select fields and the requested relation fields for all nine core databases", async () => {
     await runInTenant(tenant, async () => {
-      expect(manifest.databases).toHaveLength(10);
+      expect(manifest.databases).toHaveLength(9);
       for (const descriptor of manifest.databases) {
         const props = await pool.query<{ key: string; type: string; owner: string; owner_process: string | null }>(
           "SELECT key, type, owner, owner_process FROM properties WHERE database_id = $1 AND type = ANY($2::text[])",
@@ -509,8 +507,6 @@ describe("item search create/update hooks", () => {
         for (const property of props.rows) {
           // An event's place is an address or a call link; it is deliberately not searched (asserted below).
           if (descriptor.key === "events" && property.key === "place") continue;
-          // An area's icon is a closed key validated by the area write hook, not searchable free text.
-          if (descriptor.key === "areas" && property.key === "icon") continue;
           if (descriptor.key === "tasks" && property.key === "seriesId") {
             continue;
           }
@@ -518,21 +514,27 @@ describe("item search create/update hooks", () => {
           if (descriptor.key === "events" && property.key === "seriesId") continue;
           // An event's iCalendar UID is a system identifier, not searchable text (asserted below).
           if (descriptor.key === "events" && property.key === "icalUid") continue;
+          // A synced Event's zone, raw rule and original start are provider identifiers, not searchable text.
+          if (descriptor.key === "events" && ["timeZone", "recurrenceRule", "recurrenceId"].includes(property.key)) {
+            continue;
+          }
           expect(descriptor.searchFields).toContain(property.key);
         }
       }
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("place");
-      expect(manifest.databases.find((d) => d.key === "areas")?.searchFields).not.toContain("icon");
       expect(manifest.databases.find((d) => d.key === "tasks")?.searchFields).not.toContain("seriesId");
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("icalUid");
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("seriesId");
       expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain("occurrenceDate");
+      for (const key of ["timeZone", "recurrenceRule", "recurrenceId"]) {
+        expect(manifest.databases.find((d) => d.key === "events")?.searchFields).not.toContain(key);
+      }
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("emails");
       expect(manifest.databases.find((d) => d.key === "people")?.searchFields).toContain("phones");
       for (const [key, fields] of Object.entries({
         tasks: ["project"],
         events: ["project", "people"],
-        projects: ["area", "company"],
+        projects: ["company"],
         people: ["companies"],
         files: ["projects", "healthRecords", "companies"],
         healthRecords: ["projects"],
@@ -545,12 +547,12 @@ describe("item search create/update hooks", () => {
 
 describe("tenant item search backfill task", () => {
   it("refuses an enqueue outside a tenant before writing a queue row", async () => {
-    await expect(
-      withTransaction(admin, (client) => enqueueItemSearchBackfill(client, { onlyMissing: true })),
-    ).rejects.toThrow(/tenant scope/);
+    await expect(withTransaction(admin, (client) => enqueueItemSearchBackfill(client, {}))).rejects.toThrow(
+      /tenant scope/,
+    );
     await expect(
       runAsSystem("test invalid enqueue", () =>
-        withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: true })),
+        withTransaction(pool, (client) => enqueueItemSearchBackfill(client, {})),
       ),
     ).rejects.toThrow(/tenant scope/);
     expect(await readJobPayloadsByIdentifier(admin, taskName)).toEqual([]);
@@ -563,20 +565,20 @@ describe("tenant item search backfill task", () => {
     expect(createApiCoreTaskList(pool, createActionRegistry())[taskName]).toBeTypeOf("function");
   });
 
-  it("backfills unindexed items across committed chunks, queues a distinct cursor on the tenant lane, and preserves existing rows on a repeat run", async () => {
+  it("indexes items across committed chunks and queues a distinct cursor on the tenant lane", async () => {
     const items: string[] = [];
     let databaseId = "";
     await runInTenant(tenant, async () => {
-      for (let index = 0; index < 101; index++) items.push((await task(`Legacy ${index}`)).id);
+      for (let index = 0; index < 101; index++) items.push((await task(`Unindexed ${index}`)).id);
       await removeIndex(items);
       const existing = await task("Already indexed");
       databaseId = existing.databaseId;
-      const existingRow = (await rows()).find((row) => row.item_id === existing.id);
-      await withTransaction(pool, (client) =>
-        enqueueItemSearchBackfill(client, { databaseId: existing.databaseId, onlyMissing: true }),
+      await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { databaseId: existing.databaseId }));
+      await handleItemSearchBackfillTask(pool, { databaseId: existing.databaseId });
+      const firstChunk = [...items, existing.id].sort().slice(0, 100);
+      expect((await rows()).filter((row) => items.includes(row.item_id))).toHaveLength(
+        firstChunk.filter((id) => items.includes(id)).length,
       );
-      await handleItemSearchBackfillTask(pool, { databaseId: existing.databaseId, onlyMissing: true });
-      expect((await rows()).filter((row) => items.includes(row.item_id))).toHaveLength(100);
       const jobs = await admin.query<{ key: string; queue_name: string; payload: unknown }>(
         `SELECT j.key, q.queue_name, j.payload FROM graphile_worker._private_jobs j
          JOIN graphile_worker._private_tasks t ON t.id = j.task_id
@@ -587,25 +589,15 @@ describe("tenant item search backfill task", () => {
       expect(jobs.rows).toHaveLength(2);
       expect(new Set(jobs.rows.map((row) => row.key)).size).toBe(2);
       expect(jobs.rows.every((row) => row.queue_name === `item-search-index:${tenant}`)).toBe(true);
-      expect(jobs.rows.some((row) => row.key.endsWith([...items].sort()[99] ?? "missing"))).toBe(true);
-      expect((await rows()).find((row) => row.item_id === existing.id)).toEqual(existingRow);
+      expect(jobs.rows.some((row) => row.key.endsWith(firstChunk[99] ?? "missing"))).toBe(true);
     });
+    // The start job and the continuation share a serial lane; each runOnce drains one of them.
+    await runQueuedBackfill();
     await runQueuedBackfill();
     await runInTenant(tenant, async () => {
-      const before = await rows();
-      expect(before.filter((row) => row.database_id === databaseId)).toHaveLength(102);
-      expect(before.filter((row) => items.includes(row.item_id))).toHaveLength(101);
-      await handleItemSearchBackfillTask(pool, { databaseId, onlyMissing: true });
-      expect(await rows()).toEqual(before);
-    });
-  });
-
-  it("onlyMissing preserves an existing index row at the upsert guard", async () => {
-    await runInTenant(tenant, async () => {
-      const item = await task();
-      const before = await rows();
-      await withTransaction(pool, (client) => indexItem(client, item.id, { onlyMissing: true }));
-      expect(await rows()).toEqual(before);
+      const after = await rows();
+      expect(after.filter((row) => row.database_id === databaseId)).toHaveLength(102);
+      expect(after.filter((row) => items.includes(row.item_id))).toHaveLength(101);
     });
   });
 
@@ -617,7 +609,7 @@ describe("tenant item search backfill task", () => {
         const before = (await rows()).find((row) => row.item_id === item.id);
         expect(before).toBeDefined();
         let updated: IndexRow | undefined;
-        await overlapBackfill(item.databaseId, false, finish, async (client) => {
+        await overlapBackfill(item.databaseId, finish, async (client) => {
           await updateItemWithClient(client, {
             databaseId: item.databaseId,
             itemId: item.id,
@@ -645,42 +637,6 @@ describe("tenant item search backfill task", () => {
     },
   );
 
-  it.each(["commit", "rollback"] as const)(
-    "onlyMissing respects the %s of an index row appearing after candidate selection",
-    async (finish) => {
-      await runInTenant(tenant, async () => {
-        const item = await task("Original");
-        const original = (await rows()).find((row) => row.item_id === item.id);
-        expect(original).toBeDefined();
-        await removeIndex([item.id]);
-        let appearing: IndexRow | undefined;
-        await overlapBackfill(item.databaseId, true, finish, async (client) => {
-          await indexItem(client, item.id);
-          // A different document makes overwriting the winning row observable; the item API cannot supply an arbitrary vector.
-          await reindexItemSearch(client, {
-            itemId: item.id,
-            databaseId: item.databaseId,
-            text: "Protected concurrent document",
-          });
-          appearing = (
-            await client.query<IndexRow>(
-              "SELECT item_id, database_id, search_vector::text AS vector, updated_at::text FROM item_search_index WHERE item_id = $1",
-              [item.id],
-            )
-          ).rows[0];
-          expect(appearing).toBeDefined();
-          // Candidate selection sees no row until this writer commits.
-          expect((await rows()).some((row) => row.item_id === item.id)).toBe(false);
-        });
-        const committed = (await rows()).find((row) => row.item_id === item.id);
-        expect(committed?.vector).toBe((finish === "commit" ? appearing : original)?.vector);
-        if (finish === "commit") expect(committed).toEqual(appearing);
-        expect(await has(item.id, "Protected concurrent document")).toBe(finish === "commit");
-        expect(await has(item.id, "Original")).toBe(finish === "rollback");
-      });
-    },
-  );
-
   it("a full rebuild refreshes existing documents and a database/cursor filter bounds selection", async () => {
     await runInTenant(tenant, async () => {
       const first = await task("First");
@@ -694,7 +650,6 @@ describe("tenant item search backfill task", () => {
       await handleItemSearchBackfillTask(pool, {
         databaseId: selected.databaseId,
         afterItemId: ordered[0].id,
-        onlyMissing: false,
       });
       expect(await has(selected.id, "Stale")).toBe(false);
       expect(await has(selected.id, selected.id === first.id ? "First" : "Second")).toBe(true);
@@ -723,14 +678,14 @@ describe("tenant item search backfill task", () => {
       const email = await cp.createItem({ databaseId: await db("emails"), properties: {} });
       await removeIndex([live.id, trashed.id]);
       const before = await rows();
-      await handleItemSearchBackfillTask(pool, { databaseId: foreignDb, onlyMissing: true });
-      await handleItemSearchBackfillTask(pool, { databaseId: randomUUID(), onlyMissing: true });
+      await handleItemSearchBackfillTask(pool, { databaseId: foreignDb });
+      await handleItemSearchBackfillTask(pool, { databaseId: randomUUID() });
       await withTransaction(pool, async (client) => {
         await indexItem(client, foreignId);
         await indexItem(client, randomUUID());
       });
       expect(await rows()).toEqual(before);
-      await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: true }));
+      await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, {}));
       expect((await rows()).some((row) => row.item_id === live.id)).toBe(false);
       expect((await rows()).some((row) => row.item_id === email.id)).toBe(false);
     });
@@ -747,11 +702,10 @@ describe("tenant item search backfill task", () => {
 
   it.each([
     null,
-    {},
-    { onlyMissing: "yes" },
-    { onlyMissing: true, databaseId: "not-uuid" },
-    { onlyMissing: true, afterItemId: "not-uuid" },
-    { onlyMissing: true, tenantId: "untrusted" },
+    { onlyMissing: true },
+    { databaseId: "not-uuid" },
+    { afterItemId: "not-uuid" },
+    { tenantId: "untrusted" },
   ])("rejects malformed task payload %j without changes or continuation", async (payload) => {
     await runInTenant(tenant, async () => {
       const before = await rows();
@@ -762,7 +716,7 @@ describe("tenant item search backfill task", () => {
     });
   });
 
-  it("full and missing-only jobs retain distinct keys and preserve stored page text", async () => {
+  it("a full rebuild job preserves stored page text", async () => {
     const item = await runInTenant(tenant, async () => {
       const created = await task("Rebuild target");
       await withTransaction(pool, (client) => indexItem(client, created.id, { pageText: "Retained page projection" }));
@@ -771,20 +725,10 @@ describe("tenant item search backfill task", () => {
       );
       return created;
     });
-    await runInTenant(tenant, async () => {
-      await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: true }));
-      await withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: false }));
-    });
-    const jobs = await readJobPayloadsByIdentifier(admin, taskName);
-    expect(jobs).toHaveLength(2);
-    expect(jobs).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ tenantId: tenant, payload: { onlyMissing: true } }),
-        expect.objectContaining({ tenantId: tenant, payload: { onlyMissing: false } }),
-      ]),
-    );
-    // Both jobs share a serial lane; each runOnce drains one available job on that lane.
-    await runQueuedBackfill();
+    await runInTenant(tenant, () => withTransaction(pool, (client) => enqueueItemSearchBackfill(client, {})));
+    expect(await readJobPayloadsByIdentifier(admin, taskName)).toEqual([
+      expect.objectContaining({ tenantId: tenant, payload: {} }),
+    ]);
     await runQueuedBackfill();
     await runInTenant(tenant, async () => {
       expect(await has(item.id, "Rebuild target")).toBe(true);
@@ -818,9 +762,7 @@ describe("tenant item search backfill task", () => {
       }
       return { withPage, withoutPage };
     });
-    await runInTenant(tenant, () =>
-      withTransaction(pool, (client) => enqueueItemSearchBackfill(client, { onlyMissing: false })),
-    );
+    await runInTenant(tenant, () => withTransaction(pool, (client) => enqueueItemSearchBackfill(client, {})));
     await runQueuedBackfill();
     await runInTenant(tenant, async () => {
       for (const [item, body, page] of [
@@ -850,9 +792,9 @@ describe("tenant item search backfill task", () => {
       await removeIndex(items.map((item) => item.id));
       const before = await rows();
       await rejectIndexWrites(true);
-      await expect(
-        handleItemSearchBackfillTask(pool, { databaseId: last.databaseId, onlyMissing: true }),
-      ).rejects.toThrow("test index failure");
+      await expect(handleItemSearchBackfillTask(pool, { databaseId: last.databaseId })).rejects.toThrow(
+        "test index failure",
+      );
       expect(await rows()).toEqual(before);
       expect(await readJobPayloadsByIdentifier(admin, taskName)).toEqual([]);
     });

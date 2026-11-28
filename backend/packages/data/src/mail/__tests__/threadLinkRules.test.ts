@@ -2,8 +2,8 @@ import "../../domainWriteHooks.js";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { itemDeleteWithClient, restoreItemWithClient } from "../../chokePoint/itemTrash.js";
@@ -194,6 +194,8 @@ async function ingest(
 ): Promise<Ingested> {
   const result = await tx((client) =>
     ingestEmailMessage(client, {
+      arrival: "live",
+      contentState: "full",
       emailsDatabaseId: world.ids.emails,
       filesDatabaseId: world.ids.files,
       folderRelationPropertyId: world.props.emailFolder,
@@ -312,7 +314,7 @@ async function companyInOtherTenant(web: string): Promise<void> {
 describe("the Threads company and project link rules", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("check thread link rule role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -486,15 +488,28 @@ describe("the Threads company and project link rules", () => {
       expect(await valueOf(first.threadItemId, "company")).toEqual([acme]);
     });
 
-    it("evaluates both rules for the thread when the new message is its first inbound one, and nothing for an outgoing first message", async () => {
+    it("evaluates the company rule for the thread when the new message is its first inbound one, and nothing for an outgoing first message", async () => {
       await company("Acme", "https://acme.cz");
       const spy = enqueueSpy();
       await ingest("<own@x>", OWN_ADDRESS, { folder: "sent" });
       expect(spy).not.toHaveBeenCalled();
       const first = await ingest("<m1@acme>", "sales@acme.cz");
+      // The thread has no company and no project link yet: the project rule follows the company edge's write.
       expect(spy.mock.calls.map(([, ruleKey, itemId, hop]) => [ruleKey, itemId, hop])).toEqual([
         ["threadCompanyFromSender", first.threadItemId, 1],
-        ["threadProjectFromCompany", first.threadItemId, 1],
+      ]);
+    });
+
+    it("also evaluates the project rule at the first inbound message of a thread that already has a company", async () => {
+      const acme = await company("Acme", "https://acme.cz");
+      const own = await ingest("<own@x>", OWN_ADDRESS, { folder: "sent" });
+      await cp.createRelation(edge(world.props.threadCompany, own.threadItemId, acme), USER);
+      const spy = enqueueSpy();
+      const reply = await ingest("<m1@acme>", "sales@acme.cz", { inReplyTo: "<own@x>" });
+      expect(reply.threadItemId).toBe(own.threadItemId);
+      expect(spy.mock.calls.map(([, ruleKey, itemId, hop]) => [ruleKey, itemId, hop])).toEqual([
+        ["threadCompanyFromSender", own.threadItemId, 1],
+        ["threadProjectFromCompany", own.threadItemId, 1],
       ]);
     });
 

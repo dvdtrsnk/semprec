@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { requireAffectedRows, requireSingleRow, type Queryable } from "../db/pool.js";
-import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
+import { RISK_CLASSES, type RiskClass } from "@alldots/shared";
 import { AGENT_RUN_ROOT_MAX_HOPS } from "../agentRuns/agentRunsStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { assertKnownValue, assertShape } from "../dbRowValidation.js";

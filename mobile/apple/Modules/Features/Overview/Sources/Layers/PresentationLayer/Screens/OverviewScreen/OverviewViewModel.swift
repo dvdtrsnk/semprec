@@ -38,6 +38,11 @@ final class OverviewViewModel: ObservableObject {
         model.send(.retry)
     }
 
+    /// Reads the overview again in place, without the wait a pull to refresh shows.
+    func reload() {
+        model.send(.refresh)
+    }
+
     /// Reloads in place and returns once the content is no longer refreshing, which is what ends a pull to refresh.
     func refresh() async {
         model.send(.refresh)

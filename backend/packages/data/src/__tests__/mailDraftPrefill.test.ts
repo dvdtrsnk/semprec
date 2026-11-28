@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { DateTime } from "luxon";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
@@ -66,8 +66,8 @@ interface ReceiveOptions {
 describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-draft-prefill-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-draft-prefill-"));
   });
 
   beforeEach(async () => {
@@ -145,6 +145,8 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
   async function receive(f: Fixture, options: ReceiveOptions = {}): Promise<string> {
     const { db, emailProperties, property } = await schema();
     const input: IngestEmailMessageInput = {
+      arrival: "live",
+      contentState: "full",
       emailsDatabaseId: db("emails"),
       filesDatabaseId: db("files"),
       folderRelationPropertyId: property(emailProperties, "folder"),
@@ -676,7 +678,7 @@ describe("the prefill of a reply, a reply-all and a forward draft (issue gh-1899
       });
     });
 
-    it("dates the quote by the time the message entered Semprec when it has no date, and by its creation time when it has neither", async () => {
+    it("dates the quote by the time the message entered Alldots when it has no date, and by its creation time when it has neither", async () => {
       await runInTenant(tenant, async () => {
         const f = await setup();
         const source = await receive(f, { bodyText: "Hi" });

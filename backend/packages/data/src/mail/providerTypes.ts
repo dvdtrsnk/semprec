@@ -133,6 +133,18 @@ export const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 export class AttachmentCapExceededError extends Error {}
 
 /**
+ * The IMAP server answered `NO` to selecting a folder because it holds no such folder (deleted or renamed by another
+ * client) or will not let this login open it. The connection itself stays usable, so a caller looking for a message
+ * folder by folder goes on to the next one.
+ */
+export class ImapFolderUnavailableError extends Error {
+  constructor() {
+    super("The IMAP server holds no such folder for this login");
+    this.name = "ImapFolderUnavailableError";
+  }
+}
+
+/**
  * Without CONDSTORE the known-UID flag re-fetch cannot scope itself to changes, so this caps an
  * unbounded mailbox loading every UID's flags into memory. A backstop, not an expected outcome.
  */

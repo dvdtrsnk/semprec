@@ -6,8 +6,8 @@ import {
   finishAgentRunWithErrorNotification,
   getAgentRun,
   withTransaction,
-} from "@semprec/data";
-import { currentTenantScope, labeledSempMessageRefSchema, runInTenant, withTraceContext } from "@semprec/shared";
+} from "@alldots/data";
+import { currentTenantScope, labeledSempMessageRefSchema, runInTenant, withTraceContext } from "@alldots/shared";
 import type { CompactionAdapter } from "./compaction.js";
 import {
   persistCompaction,
@@ -35,7 +35,7 @@ export interface SempThreadWake {
 }
 
 /**
- * A tick thread's runs belong to its heartbeat's project; chat and item threads run in the Semprec project, which the
+ * A tick thread's runs belong to its heartbeat's project; chat and item threads run in the Alldots project, which the
  * registry resolves per wake.
  */
 export type SempThread =
@@ -104,7 +104,7 @@ export interface SempConversationOptions {
     currentSempMessage?: { current: string | null },
   ) => Promise<CreateAgentSession>;
   /**
-   * Resolves the tenant's Semprec project item id for a chat or item thread's wake run (tick threads supply their
+   * Resolves the tenant's Alldots project item id for a chat or item thread's wake run (tick threads supply their
    * heartbeat's project). Called once per wake, inside the tenant scope, before reconstruction and run creation.
    */
   resolveProjectItemId: (pool: Pool) => Promise<string>;

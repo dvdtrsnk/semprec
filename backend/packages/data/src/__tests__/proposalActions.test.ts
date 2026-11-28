@@ -4,7 +4,7 @@ import { insertPageMarkdown, readPageMarkdown } from "../docs/pageMarkdown.js";
 import { getDocByItemId } from "../docs/docsStore.js";
 import { ensureJournalPeriodDoc } from "../journal/journalStore.js";
 import { z } from "zod";
-import { readPageBlocks, writeBlock, type BlockInput } from "@semprec/block-model";
+import { readPageBlocks, writeBlock, type BlockInput } from "@alldots/block-model";
 import "../domainWriteHooks.js";
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
@@ -16,7 +16,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
@@ -32,7 +32,7 @@ import {
   type InboxCardsInvalidationEvent,
   type InvalidationEvent,
 } from "../realtimeHook.js";
-import { runOnce, type TaskList } from "@semprec/queue";
+import { runOnce, type TaskList } from "@alldots/queue";
 import { heartbeatFireJobKey } from "../scheduler/schedulerStore.js";
 import { COMPUTING_TIMEOUT_MS } from "../inbox/inboxCardsStore.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
@@ -43,10 +43,10 @@ import { createMarkdownPageContentProposal } from "../testSupport/pageProposalFi
 import {
   appendHistoryEntry,
   assertValidProposalEnvelope,
-  createSemprecTickAction,
+  createAlldotsTickAction,
   parseStoredProposalEnvelope,
   storedEnvelopeStillValid,
-  type ComputeSemprecProposalFn,
+  type ComputeAlldotsProposalFn,
   type ProposalEnvelope,
 } from "../inbox/inboxTickAction.js";
 import {
@@ -525,18 +525,18 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     role: "primary",
     ...rest,
   });
-  const areaProperty = async () => {
+  const peopleProperty = async () => {
     const projectsDb = await databaseIdFor("projects");
     const property = await withTransaction(pool, (client) =>
-      propertiesStore.getPropertyByKey(client, projectsDb, "area"),
+      propertiesStore.getPropertyByKey(client, projectsDb, "people"),
     );
-    if (!property) throw new Error("Missing Projects.area");
+    if (!property) throw new Error("Missing Projects.people");
     return property;
   };
-  const linkArea = async (project: string, area: string) => {
-    const relationPropertyId = (await areaProperty()).id;
+  const linkPerson = async (project: string, person: string) => {
+    const relationPropertyId = (await peopleProperty()).id;
     await withTransaction(pool, (client) =>
-      createRelationWithClient(client, { relationPropertyId, callerItemId: project, targetItemId: area }),
+      createRelationWithClient(client, { relationPropertyId, callerItemId: project, targetItemId: person }),
     );
   };
   /** The key of the inverse side of the relation property `key` of `databaseId`. */
@@ -613,7 +613,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
   }
   /** Runs `fn` on a pool of the runtime role, which row-level security applies to, and closes it. */
   async function withRuntimePool(fn: (runtime: Pool) => Promise<void>): Promise<void> {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );
@@ -652,8 +652,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     });
   }
 
-  async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
-    const handler = createSemprecTickAction(pool, computeProposal);
+  async function runTick(itemId: string, computeProposal: ComputeAlldotsProposalFn): Promise<void> {
+    const handler = createAlldotsTickAction(pool, computeProposal);
     await handler(
       { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
       { heartbeatId: "hb", projectItemId: "proj", itemId },
@@ -1198,7 +1198,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       const target = await projectWithPage([]);
       const linked = await createIn("projects", { name: "Linked" });
       const proposal = await createV2Proposal(target, {
-        markdown: `See [it](semprec://items/${linked})`,
+        markdown: `See [it](alldots://items/${linked})`,
         placement: "end",
       });
       await pool.query(`UPDATE items SET deleted_at = now() WHERE id = $1`, [linked]);
@@ -1628,24 +1628,24 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       expect(await countIn("people")).toBe(0);
     });
 
-    it("an update step moves a project to another area: old edge gone, new edge present", async () => {
-      const oldArea = await createIn("areas", { name: "Home" });
-      const newArea = await createIn("areas", { name: "Work" });
+    it("an update step moves a project to another person: old edge gone, new edge present", async () => {
+      const oldPerson = await createIn("people", { name: "Home" });
+      const newPerson = await createIn("people", { name: "Work" });
       const project = await createIn("projects", { name: "Move" });
-      await linkArea(project, oldArea);
+      await linkPerson(project, oldPerson);
       const card = await cardWithSteps("projects", [
         updateStep("project", project, {
           properties: { name: "Move" },
-          relations: { area: [newArea] },
-          before: { properties: { name: "Move" }, relations: { area: [oldArea] } },
-          after: { properties: { name: "Move" }, relations: { area: [newArea] } },
+          relations: { people: [newPerson] },
+          before: { properties: { name: "Move" }, relations: { people: [oldPerson] } },
+          after: { properties: { name: "Move" }, relations: { people: [newPerson] } },
         }),
       ]);
 
       const confirmed = await confirm(card);
       expect(confirmed.properties.resultItemId).toBe(project);
-      expect(await edgeExists(project, oldArea)).toBe(false);
-      expect(await edgeExists(project, newArea)).toBe(true);
+      expect(await edgeExists(project, oldPerson)).toBe(false);
+      expect(await edgeExists(project, newPerson)).toBe(true);
     });
 
     describe("a primary update that changes nothing, for an existing record (issue gh-1992)", () => {
@@ -1698,49 +1698,53 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     });
 
     it("guards an unchanged declared relation and rolls back an earlier create when it is stale", async () => {
-      const oldArea = await createIn("areas", { name: "Old" });
-      const newArea = await createIn("areas", { name: "New" });
+      const oldPerson = await createIn("people", { name: "Old" });
+      const newPerson = await createIn("people", { name: "New" });
       const project = await createIn("projects", { name: "Before" });
-      const oldEdge = { relationPropertyId: (await areaProperty()).id, callerItemId: project, targetItemId: oldArea };
+      const oldEdge = {
+        relationPropertyId: (await peopleProperty()).id,
+        callerItemId: project,
+        targetItemId: oldPerson,
+      };
       await withTransaction(pool, (client) => createRelationWithClient(client, oldEdge));
       const card = await cardWithSteps("companies", [
         { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
         updateStep("project", project, {
           role: "secondary",
           properties: { name: "After" },
-          before: { properties: { name: "Before" }, relations: { area: [oldArea] } },
+          before: { properties: { name: "Before" }, relations: { people: [oldPerson] } },
           after: { properties: { name: "After" } },
         }),
       ]);
       await withTransaction(pool, async (client) => {
         await deleteRelationWithClient(client, oldEdge);
-        await createRelationWithClient(client, { ...oldEdge, targetItemId: newArea });
+        await createRelationWithClient(client, { ...oldEdge, targetItemId: newPerson });
       });
-      await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "project", field: "area" } });
+      await expect(confirm(card)).rejects.toMatchObject({ status: 400, details: { ref: "project", field: "people" } });
       expect(await countIn("companies")).toBe(0);
       expect(await cardStatus(card)).toBe("proposed");
       expect((await readItem(project))?.properties.name).toBe("Before");
-      expect(await edgeExists(project, newArea)).toBe(true);
+      expect(await edgeExists(project, newPerson)).toBe(true);
     });
 
     it("rejects duplicate targets in an unchanged declared before relation without writing", async () => {
-      const area = await createIn("areas", { name: "Area" });
+      const person = await createIn("people", { name: "Anna" });
       const project = await createIn("projects", { name: "Before" });
       const card = await cardWithSteps("projects", [
         updateStep("project", project, {
           properties: { name: "After" },
-          before: { properties: { name: "Before" }, relations: { area: [area, area] } },
+          before: { properties: { name: "Before" }, relations: { people: [person, person] } },
           after: { properties: { name: "After" } },
         }),
       ]);
       await expect(confirm(card)).rejects.toMatchObject({
         status: 400,
         message: expect.stringContaining("contains duplicate targets"),
-        details: { ref: "project", field: "area" },
+        details: { ref: "project", field: "people" },
       });
       expect((await readItem(project))?.properties.name).toBe("Before");
       expect(await cardStatus(card)).toBe("proposed");
-      expect(await edgeExists(project, area)).toBe(false);
+      expect(await edgeExists(project, person)).toBe(false);
     });
 
     it("links an existing person to a created company once and rolls back a later failure", async () => {
@@ -1803,50 +1807,50 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     });
 
     it("writes a relation declared only in after using the validated targets", async () => {
-      const oldArea = await createIn("areas", { name: "Old" });
-      const newArea = await createIn("areas", { name: "New" });
+      const oldPerson = await createIn("people", { name: "Old" });
+      const newPerson = await createIn("people", { name: "New" });
       const project = await createIn("projects", { name: "Move" });
-      await linkArea(project, oldArea);
+      await linkPerson(project, oldPerson);
       const card = await cardWithSteps("projects", [
         updateStep("project", project, {
           properties: {},
-          before: { relations: { area: [oldArea] } },
-          after: { relations: { area: [newArea] } },
+          before: { relations: { people: [oldPerson] } },
+          after: { relations: { people: [newPerson] } },
         }),
       ]);
-      await addValueLink(project, "area");
-      await addValueLink(newArea, await inverseKeyOf(await databaseIdFor("projects"), "area"));
+      await addValueLink(project, "people");
+      await addValueLink(newPerson, await inverseKeyOf(await databaseIdFor("projects"), "people"));
       const actorId = randomUUID();
       await captureInvalidations(async (events) => {
         await expectConfirmRolledBack(card, actorId, events);
         expect((await valueLinkOf(project))?.state).toBe("on");
-        expect((await valueLinkOf(newArea))?.state).toBe("on");
+        expect((await valueLinkOf(newPerson))?.state).toBe("on");
         await confirm(card, actorId);
-        expect(await valueLinkOf(newArea)).toMatchObject({ state: "broken", brokenBy: "user" });
-        expect(itemEventsOf(events, newArea)).toEqual([expect.objectContaining({ userId: actorId })]);
+        expect(await valueLinkOf(newPerson)).toMatchObject({ state: "broken", brokenBy: "user" });
+        expect(itemEventsOf(events, newPerson)).toEqual([expect.objectContaining({ userId: actorId })]);
         expect(itemEventsOf(events, project)).toContainEqual(expect.objectContaining({ userId: actorId }));
       });
-      expect(await edgeExists(project, oldArea)).toBe(false);
-      expect(await edgeExists(project, newArea)).toBe(true);
+      expect(await edgeExists(project, oldPerson)).toBe(false);
+      expect(await edgeExists(project, newPerson)).toBe(true);
     });
 
     it("moves relations on a legacy pinned project without preparing an item write", async () => {
-      const oldArea = await createIn("areas", { name: "Old" });
-      const newArea = await createIn("areas", { name: "New" });
+      const oldPerson = await createIn("people", { name: "Old" });
+      const newPerson = await createIn("people", { name: "New" });
       const project = await createIn("projects", { name: "Project", pinned: false });
       await legacyPin(project);
-      await linkArea(project, oldArea);
+      await linkPerson(project, oldPerson);
       const card = await cardWithSteps("projects", [
         updateStep("project", project, {
           properties: {},
-          before: { relations: { area: [oldArea] } },
-          after: { relations: { area: [newArea] } },
+          before: { relations: { people: [oldPerson] } },
+          after: { relations: { people: [newPerson] } },
         }),
       ]);
       await confirm(card);
       expect((await readItem(project))?.properties).toMatchObject({ pinned: true, pinnedOrder: null });
-      expect(await edgeExists(project, oldArea)).toBe(false);
-      expect(await edgeExists(project, newArea)).toBe(true);
+      expect(await edgeExists(project, oldPerson)).toBe(false);
+      expect(await edgeExists(project, newPerson)).toBe(true);
     });
 
     it("requires before and no predicted after for implicit task completion, then confirms", async () => {
@@ -2223,7 +2227,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         (
           existingTaskId: string,
           update: Record<string, unknown> = { name: "Buy oat milk" },
-        ): ComputeSemprecProposalFn =>
+        ): ComputeAlldotsProposalFn =>
         async () => ({
           properties: { name: "Buy milk" },
           operations: [
@@ -2353,12 +2357,12 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     it("an update step's status goes through the choke point; a failing later step restores the old status and edge", async () => {
       const project = await createIn("projects", { name: "Ship" });
-      const area = await createIn("areas", { name: "Work" });
+      const person = await createIn("people", { name: "Work" });
       const update = updateStep("project", project, {
         properties: { status: "done" },
-        relations: { area: [area] },
-        before: { properties: { status: "inProgress" }, relations: { area: [] } },
-        after: { properties: { status: "done" }, relations: { area: [area] } },
+        relations: { people: [person] },
+        before: { properties: { status: "inProgress" }, relations: { people: [] } },
+        after: { properties: { status: "done" }, relations: { people: [person] } },
       });
       const statusOf = async () => (await readItem(project))?.properties.status;
 
@@ -2368,7 +2372,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       ]);
       await expect(confirm(failingCard)).rejects.toMatchObject({ details: { ref: "person" } });
       expect(await statusOf()).toBe("inProgress");
-      expect(await edgeExists(project, area)).toBe(false);
+      expect(await edgeExists(project, person)).toBe(false);
 
       await confirm(await cardWithSteps("projects", [update]));
       expect(await statusOf()).toBe("done");
@@ -2376,22 +2380,22 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
     type Change = "property" | "insert" | "delete" | "insert-extra" | "delete-extra";
     const CHANGES = ["property", "insert", "delete", "insert-extra", "delete-extra"] as const;
-    /** A project whose update step declares its name and its area edges as they were when the card was formed. */
-    async function areaPreconditionCard(change: Change) {
+    /** A project whose update step declares its name and its people edges as they were when the card was formed. */
+    async function peoplePreconditionCard(change: Change) {
       const project = await createIn("projects", { name: "Before" });
-      const area = await createIn("areas", { name: "Area" });
-      const property = await areaProperty();
-      const edge = { relationPropertyId: property.id, callerItemId: project, targetItemId: area };
+      const person = await createIn("people", { name: "Anna" });
+      const property = await peopleProperty();
+      const edge = { relationPropertyId: property.id, callerItemId: project, targetItemId: person };
       const deletes = change === "delete" || change === "delete-extra";
       if (deletes) await withTransaction(pool, (client) => createRelationWithClient(client, edge));
-      const beforeTargets = deletes ? [area] : [];
+      const beforeTargets = deletes ? [person] : [];
       const extraOnly = change.endsWith("-extra");
       const card = await cardWithSteps("projects", [
         updateStep("project", project, {
           properties: { name: "After" },
-          ...(extraOnly ? {} : { relations: { area: beforeTargets } }),
-          before: { properties: { name: "Before" }, relations: { area: beforeTargets } },
-          after: { properties: { name: "After" }, ...(extraOnly ? {} : { relations: { area: beforeTargets } }) },
+          ...(extraOnly ? {} : { relations: { people: beforeTargets } }),
+          before: { properties: { name: "Before" }, relations: { people: beforeTargets } },
+          after: { properties: { name: "After" }, ...(extraOnly ? {} : { relations: { people: beforeTargets } }) },
         }),
       ]);
       const definition = await withTransaction(pool, (client) =>
@@ -2412,17 +2416,17 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         }
       };
       const inserts = change === "insert" || change === "insert-extra";
-      return { project, area, card, definition, apply, deletes, inserts };
+      return { project, person, card, definition, apply, deletes, inserts };
     }
 
     it.each(CHANGES)(
       "rejects stale before state after an overlapping %s commits",
       async (change) => {
-        const { project, area, card, definition, apply, inserts } = await areaPreconditionCard(change);
+        const { project, person, card, definition, apply, inserts } = await peoplePreconditionCard(change);
         const cardBefore = await readItem(card);
         const refused = {
           status: "rejected",
-          reason: { status: 400, details: { ref: "project", field: change === "property" ? "name" : "area" } },
+          reason: { status: 400, details: { ref: "project", field: change === "property" ? "name" : "people" } },
         };
         const [writer, contender] = await runPreconditionOverlap(
           (client) => apply(client, "Changed"),
@@ -2432,7 +2436,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
               ? assertItemHeld(project, pid, observer)
               : inserts
                 ? assertDefinitionHeld(definition.id, pid, observer)
-                : assertEdgeHeld(definition.id, project, area, pid, observer),
+                : assertEdgeHeld(definition.id, project, person, pid, observer),
           ([first, second]) => {
             expect(first.status).toBe("fulfilled");
             expect(second).toMatchObject(refused);
@@ -2442,7 +2446,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         expect(contender).toMatchObject(refused);
         expect(await readItem(card)).toEqual(cardBefore);
         expect((await readItem(project))?.properties.name).toBe(change === "property" ? "Changed" : "Before");
-        expect(await edgeExists(project, area)).toBe(inserts);
+        expect(await edgeExists(project, person)).toBe(inserts);
       },
       25000,
     );
@@ -2450,21 +2454,21 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     it.each(CHANGES)(
       "holds precondition locks against a later overlapping %s",
       async (change) => {
-        const { project, area, card, definition, apply, deletes, inserts } = await areaPreconditionCard(change);
+        const { project, person, card, definition, apply, deletes, inserts } = await peoplePreconditionCard(change);
         const [confirmation, writer] = await runPreconditionOverlap(
           (client) => confirmProposalWithClient(client, config(), card),
           (client) => apply(client, "Later"),
           async (pid, observer) => {
             await assertItemHeld(project, pid, observer);
             await assertDefinitionHeld(definition.id, pid, observer);
-            if (deletes) await assertEdgeHeld(definition.id, project, area, pid, observer);
+            if (deletes) await assertEdgeHeld(definition.id, project, person, pid, observer);
           },
         );
         if (confirmation.status === "rejected") throw confirmation.reason;
         if (writer.status === "rejected") throw writer.reason;
         expect(await cardStatus(card)).toBe("confirmed");
         expect((await readItem(project))?.properties.name).toBe(change === "property" ? "Later" : "After");
-        expect(await edgeExists(project, area)).toBe(inserts);
+        expect(await edgeExists(project, person)).toBe(inserts);
       },
       25000,
     );
@@ -4710,11 +4714,11 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         });
 
         it("replaces a relation of an update step in both copies its validation compares", async () => {
-          const oldArea = await createIn("areas", { name: "Old" });
-          const newArea = await createIn("areas", { name: "New" });
-          const otherArea = await createIn("areas", { name: "Other" });
+          const oldPerson = await createIn("people", { name: "Old" });
+          const newPerson = await createIn("people", { name: "New" });
+          const otherPerson = await createIn("people", { name: "Other" });
           const project = await createIn("projects", { name: "Move" });
-          await linkArea(project, oldArea);
+          await linkPerson(project, oldPerson);
           const card = await storeCard({
             entityKind: "database",
             target: await databaseIdFor("projects"),
@@ -4722,23 +4726,23 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
             operations: [
               updateStep("project", project, {
                 properties: { name: "Move" },
-                relations: { area: [newArea] },
-                before: { properties: { name: "Move" }, relations: { area: [oldArea] } },
-                after: { properties: { name: "Move" }, relations: { area: [newArea] } },
+                relations: { people: [newPerson] },
+                before: { properties: { name: "Move" }, relations: { people: [oldPerson] } },
+                after: { properties: { name: "Move" }, relations: { people: [newPerson] } },
               }),
             ],
           });
 
-          const edited = await editParts(card, { relations: { project: { area: [otherArea] } } });
+          const edited = await editParts(card, { relations: { project: { people: [otherPerson] } } });
 
           expect(effectiveSteps(edited)[0]).toMatchObject({
-            relations: { area: [otherArea] },
-            after: { properties: { name: "Move" }, relations: { area: [otherArea] } },
+            relations: { people: [otherPerson] },
+            after: { properties: { name: "Move" }, relations: { people: [otherPerson] } },
           });
-          expect(edited.properties.userEditedKeys).toEqual(["project.relations.area"]);
+          expect(edited.properties.userEditedKeys).toEqual(["project.relations.people"]);
           await confirmCard(card);
-          expect(await edgeExists(project, oldArea)).toBe(false);
-          expect(await edgeExists(project, otherArea)).toBe(true);
+          expect(await edgeExists(project, oldPerson)).toBe(false);
+          expect(await edgeExists(project, otherPerson)).toBe(true);
         });
 
         it.each([
@@ -5680,6 +5684,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
     async function newMessage(messageId: string): Promise<{ threadId: string; itemId: string; emailItemId: string }> {
       return scoped(async (client) => {
         const ingested = await ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: await databaseIdFor("emails"),
           filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId: await propertyId("emails", "folder"),
@@ -6176,14 +6182,14 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
   });
 
   describe("journal entry proposals (issues gh-1975 and gh-1981)", () => {
-    const PAGE_LINK = "[Sub page](semprec://page/00000000-0000-4000-8000-000000000001)";
+    const PAGE_LINK = "[Sub page](alldots://page/00000000-0000-4000-8000-000000000001)";
     let journalId: string;
-    let areasId: string;
+    let companiesId: string;
     let projectsId: string;
 
     beforeEach(async () => {
       journalId = await databaseIdFor("journal");
-      areasId = await databaseIdFor("areas");
+      companiesId = await databaseIdFor("companies");
       projectsId = await databaseIdFor("projects");
     });
 
@@ -6243,19 +6249,13 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       };
     }
 
-    async function areaAndProject(): Promise<ProposalEnvelope> {
-      const area = await createLiveItem(areasId, "Health");
-      const project = await createLiveItem(projectsId, "Website");
-      return entry({ areaId: area.id, projectId: project.id });
-    }
-
     const refusal = (field: string, code?: string) => ({
       status: 400,
       details: { field, ...(code === undefined ? {} : { code }) },
     });
 
     describe("validation of the envelope, when the tick writes it and when revise supplies it", () => {
-      const inTrash = (databaseId: () => string, field: "areaId" | "projectId") => async () => {
+      const inTrash = (databaseId: () => string, field: "projectId") => async () => {
         const item = await createLiveItem(databaseId(), "Old");
         await trash(databaseId(), item.id);
         return entry({ [field]: item.id });
@@ -6274,21 +6274,14 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         ["a date in another format", () => entry({ date: "16.10.2026" }), "date"],
         ["a date with a time", () => entry({ date: "2026-10-16T08:00:00Z" }), "date"],
         ["an unknown property", () => entry({ mood: "good" }), "mood"],
-        ["an areaId that is not an id", () => entry({ areaId: "area" }), "areaId"],
+        ["an areaId, a field a journal entry does not have", () => entry({ areaId: randomUUID() }), "areaId"],
         ["a projectId that is not an id", () => entry({ projectId: "project" }), "projectId"],
-        ["an areaId that names no item", () => entry({ areaId: randomUUID() }), "areaId"],
         ["a projectId that names no item", () => entry({ projectId: randomUUID() }), "projectId"],
         [
-          "an areaId that is a Projects item",
-          async () => entry({ areaId: (await createLiveItem(projectsId, "Website")).id }),
-          "areaId",
-        ],
-        [
-          "a projectId that is an Areas item",
-          async () => entry({ projectId: (await createLiveItem(areasId, "Health")).id }),
+          "a projectId that is a Companies item",
+          async () => entry({ projectId: (await createLiveItem(companiesId, "Acme")).id }),
           "projectId",
         ],
-        ["an areaId that is in the Trash", inTrash(() => areasId, "areaId"), "areaId"],
         ["a projectId that is in the Trash", inTrash(() => projectsId, "projectId"), "projectId"],
         [
           "a projectId that is archived, which the day's edge could not point at",
@@ -6301,14 +6294,13 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         ],
         ["a target that is another database", () => entry({}, tasksId), "target"],
         ["a target that is not an id", () => entry({}, "journal"), "target"],
-        ["an area together with a project (issue gh-1991)", areaAndProject, "area"],
       ];
 
       it.each(INVALID)("refuses %s when the tick writes it", async (_label, build, field) => {
         const error: unknown = await tickWrite(await build()).catch((e: unknown) => e);
 
         expect(error).toBeInstanceOf(ValidationError);
-        expect(error).toMatchObject(refusal(field, field === "area" ? "derivedRelation" : undefined));
+        expect(error).toMatchObject(refusal(field));
       });
 
       it.each(INVALID)(
@@ -6320,7 +6312,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           const error: unknown = await revise(card.id, await build()).catch((e: unknown) => e);
 
           expect(error).toBeInstanceOf(ValidationError);
-          expect(error).toMatchObject(refusal(field, field === "area" ? "derivedRelation" : undefined));
+          expect(error).toMatchObject(refusal(field));
           expect(await readCard(card.id)).toEqual(before);
         },
       );
@@ -6330,18 +6322,19 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         const step = { ref: "primary", op: "create" as const, role: "primary" as const, databaseKey: "journal" };
 
         await expect(tickWrite({ ...entry(), operations: [step] })).rejects.toMatchObject(refusal("operations"));
-        await expect(tickWrite({ ...entry(), relations: { areas: [] } })).rejects.toMatchObject(refusal("relations"));
-        await expect(revise(card.id, { ...entry(), relations: { areas: [] } })).rejects.toMatchObject(
+        await expect(tickWrite({ ...entry(), relations: { projects: [] } })).rejects.toMatchObject(
+          refusal("relations"),
+        );
+        await expect(revise(card.id, { ...entry(), relations: { projects: [] } })).rejects.toMatchObject(
           refusal("relations"),
         );
       });
 
-      it("accepts a date with a Markdown body alone, with several blocks, with an area alone and with a project alone", async () => {
-        const area = await createLiveItem(areasId, "Health");
+      it("accepts a date with a Markdown body alone, with several blocks and with a project", async () => {
         const project = await createLiveItem(projectsId, "Website");
         const markdown = "# Evening\n\n- ran 5 km\n- called the bank\n\nA closing thought.";
 
-        for (const properties of [{}, { markdown }, { areaId: area.id }, { projectId: project.id }]) {
+        for (const properties of [{}, { markdown }, { projectId: project.id }]) {
           const card = await createDatabaseProposal("Buy milk");
           expect(await tickWrite(entry(properties))).toBeNull();
           const revised = await revise(card.id, entry(properties));
@@ -6351,16 +6344,17 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
         }
       });
 
-      it("refuses an area together with a project at confirm for a card that already holds it, and nothing is written", async () => {
+      it("refuses an areaId at confirm for a card that already holds it, and nothing is written", async () => {
         const card = await createDatabaseProposal("Buy milk");
-        // Stored without checks: revise can no longer produce this pair.
-        await setStoredProperty(card.id, "proposal", await areaAndProject());
+        const project = await createLiveItem(projectsId, "Website");
+        // Stored without checks: revise refuses an envelope with this field.
+        await setStoredProperty(card.id, "proposal", entry({ areaId: randomUUID(), projectId: project.id }));
         const before = await writtenState();
 
         const error: unknown = await confirmCard(card.id).catch((e: unknown) => e);
 
         expect(error).toBeInstanceOf(ValidationError);
-        expect(error).toMatchObject(refusal("area", "derivedRelation"));
+        expect(error).toMatchObject(refusal("areaId"));
         expect(await writtenState()).toEqual(before);
         expect((await readCard(card.id)).properties.status).toBe("proposed");
       });
@@ -6574,11 +6568,10 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
 
       describe("relations of the day", () => {
         it.each([
-          ["a project edge and no area edge of its own when the entry names a project", "project"],
-          ["an area edge when the entry names only an area", "area"],
-          ["no edge when the entry names neither", null],
+          ["a project edge when the entry names a project", "project"],
+          ["no edge when the entry names none", null],
         ] as const)("gives the day %s", async (_label, key) => {
-          const linked = key === null ? null : await createLiveItem(key === "project" ? projectsId : areasId, "Linked");
+          const linked = key === null ? null : await createLiveItem(projectsId, "Linked");
           const card = await journalCard(linked && key ? entry({ [`${key}Id`]: linked.id }) : entry());
 
           await confirmCard(card.id);
@@ -6617,14 +6610,13 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       describe("when something it needs is gone, the answer is 409 and nothing is written", () => {
         it.each([
           ["a project in the Trash", "projectId", "trash"],
-          ["an area in the Trash", "areaId", "trash"],
           [
             "a project archived since the card was computed, which the edge write would refuse with a 400",
             "projectId",
             "archive",
           ],
         ] as const)("%s", async (_label, field, removal) => {
-          const gone = await createLiveItem(field === "projectId" ? projectsId : areasId, "Gone");
+          const gone = await createLiveItem(projectsId, "Gone");
           const card = await journalCard(entry({ [field]: gone.id }));
           await (removal === "trash" ? trash : archive)(gone.databaseId, gone.id);
           const before = await readCard(card.id);
@@ -6735,7 +6727,7 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
       });
     });
 
-    it("answers another tenant's area, project and Journal database exactly as a random id, through the runtime role", async () => {
+    it("answers another tenant's project and Journal database exactly as a random id, through the runtime role", async () => {
       await withRuntimePool(async (runtime) => {
         const own = getTenantZeroId();
         const other = await createTestTenant(pool);
@@ -6755,9 +6747,8 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
               properties: { name },
             }),
           );
-        const foreignArea = await createInTenant(other, "areas", "Foreign area");
         const foreignProject = await createInTenant(other, "projects", "Foreign project");
-        const ownArea = await createInTenant(own, "areas", "Own area");
+        const ownProject = await createInTenant(own, "projects", "Own project");
         const ownJournalId = await moduleDatabaseId(own, "journal");
         const foreignJournalId = await moduleDatabaseId(other, "journal");
         const check = (envelope: ProposalEnvelope) =>
@@ -6768,16 +6759,13 @@ describe("Processing proposal confirm/reject/revise (issue #105)", () => {
           return errorShape(error);
         };
 
-        expect(await shape(entry({ areaId: foreignArea.id }, ownJournalId))).toEqual(
-          await shape(entry({ areaId: randomUUID() }, ownJournalId)),
-        );
         expect(await shape(entry({ projectId: foreignProject.id }, ownJournalId))).toEqual(
           await shape(entry({ projectId: randomUUID() }, ownJournalId)),
         );
         expect(await shape(entry({}, foreignJournalId))).toEqual(await shape(entry({}, randomUUID())));
-        expect((await shape(entry({ areaId: foreignArea.id }, ownJournalId))).field).toBe("areaId");
-        // The same envelope with the tenant's own area is accepted, so the refusals above are about the tenant.
-        expect(await check(entry({ areaId: ownArea.id }, ownJournalId))).toBeNull();
+        expect((await shape(entry({ projectId: foreignProject.id }, ownJournalId))).field).toBe("projectId");
+        // The same envelope with the tenant's own project is accepted, so the refusals above are about the tenant.
+        expect(await check(entry({ projectId: ownProject.id }, ownJournalId))).toBeNull();
       });
     });
   });

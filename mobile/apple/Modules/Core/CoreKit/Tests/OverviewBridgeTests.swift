@@ -33,9 +33,9 @@ final class OverviewBridgeTests: XCTestCase {
     func testOpeningRowsDeliversEachTargetOnceInOrder() async {
         let model = isolatedFactory().makeOverview()
         model.send(.open(.tasks))
-        model.send(.open(.journal(itemId: nil)))
+        model.send(.open(.mail))
         let buffered = await effects(of: model, count: 2)
-        XCTAssertEqual(buffered, [.tasks, .journal(itemId: nil)])
+        XCTAssertEqual(buffered, [.tasks, .mail])
         model.send(.open(.collection(ownerModuleId: "events", databaseId: "d1")))
         let next = await effects(of: model, count: 1)
         XCTAssertEqual(next, [.collection(ownerModuleId: "events", databaseId: "d1")])

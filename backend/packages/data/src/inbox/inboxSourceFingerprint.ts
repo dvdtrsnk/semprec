@@ -1,4 +1,4 @@
-import type { SemprecTickActionConfig } from "./proposalEnvelope.js";
+import type { AlldotsTickActionConfig } from "./proposalEnvelope.js";
 import { PROCESSING_METHODS, type ProcessingMethod } from "./inboxTypesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
@@ -50,7 +50,7 @@ export async function getRelationDefinitionByKey(client: PoolClient, databaseId:
  */
 export async function resolveRecognizedType(
   client: PoolClient,
-  config: SemprecTickActionConfig,
+  config: AlldotsTickActionConfig,
   item: ItemRow,
 ): Promise<{ type: ItemRow; processingMethod: ProcessingMethod } | null> {
   const typeRelationDefinition = await getRelationDefinitionByKey(client, config.inboxDatabaseId, "type");

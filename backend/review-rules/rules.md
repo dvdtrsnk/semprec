@@ -3,23 +3,21 @@
   endpoint or process that mutates rows directly, bypassing it, is a high-severity
   finding.
  
-- Before the first production release the migrations are a baseline edited in place,
-  with the seed alongside; a cutover, backfill or compatibility shim written for
-  development data is medium. After that release every migration is
-  additive/backward-compatible: a column drop, type narrowing, or `NOT NULL` without a
-  default on an existing table is critical unless the issue calls for the break
-  (`docs/architecture/migrations-and-seeding.md`).
+- The backend assumes the first version: the schema is `0001_baseline.sql`, edited in
+  place with the seed alongside. A second migration file, a backfill, a data cutover, a
+  reconcile of already seeded tenants, or a compatibility shim or reader branch for data
+  an older version wrote is medium (`docs/architecture/migrations-and-seeding.md`).
  
 - No new abstraction, helper, or config flag beyond what the current issue's Task
   section asks for — speculative generality is a smell, not a virtue.
  
-- Every LLM/AI-provider call goes through `semprec-ai-gateway` (which logs to
+- Every LLM/AI-provider call goes through `alldots-ai-gateway` (which logs to
   `ai_gateway_calls` and enforces the daily/monthly budget caps). A direct provider
   SDK import or HTTP call to a model API from any other package or service is a
   critical finding — it bypasses both cost control and observability — unless the
   diff is inside the gateway itself.
  
-- Only `semprec-transcribe` runs `ffmpeg`/`ffprobe`, and its production code spawns them
+- Only `alldots-transcribe` runs `ffmpeg`/`ffprobe`, and its production code spawns them
   only from `src/mediaNormalization.ts`. Spawning either binary anywhere else, or adding
   an npm package that bundles them, is a high-severity finding — it spreads a native host
   dependency and a parser of untrusted uploads to a process with neither the timeout nor
@@ -69,8 +67,8 @@
 - A numeric request field is validated against the storing column's domain (integer
   width, sign, range), not just `typeof number`. A value Postgres rejects reaching the
   query is high: the caller gets a 500 instead of a 400 naming the field.
-- A migration that creates a table states `COMMENT ON TABLE <t> IS 'semprec:tenancy=tenant'`
-  or `'semprec:tenancy=global'` in the same file. A tenant table also gets, in that file,
+- A migration that creates a table states `COMMENT ON TABLE <t> IS 'alldots:tenancy=tenant'`
+  or `'alldots:tenancy=global'` in the same file. A tenant table also gets, in that file,
   `tenant_id uuid NOT NULL DEFAULT app_tenant_default() REFERENCES tenants(id)`,
   `ENABLE ROW LEVEL SECURITY`, the RESTRICTIVE `tenant_isolation` policy
   (`USING`/`WITH CHECK (tenant_id = (SELECT app_tenant_default()))`) and the PERMISSIVE

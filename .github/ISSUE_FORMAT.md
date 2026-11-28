@@ -225,15 +225,10 @@ depend on (a registry entry, a shared type, a migration).
 
 Known hotspots and the convention for each:
 
-- **Migration ordinals** — `backend/packages/data/src/db/migrations/NNNN_*.sql`.
-  Two branches picking the same next number never conflict in git (different
-  filenames) and never fail at the database layer (the runner keys applied
-  migrations by full filename) — only `check-migration-numbering` in the
-  required `ci` job catches it (#288). Convention: take the next free ordinal
-  at commit time, right before pushing, not when the issue is drafted — the
-  free ordinal moves as sibling issues merge. On a rebase collision, renumber
-  only your own branch's migration file to the next free ordinal; never
-  renumber a migration that already merged.
+- **The baseline schema** — `backend/packages/data/src/db/migrations/0001_baseline.sql`
+  is the only migration file and every schema change edits it in place, so two
+  issues that change the schema touch the same file; list the tables they edit
+  in `## Touches`.
 - **Module manifests and registries** —
   `backend/packages/module-registry/src/{manifest,registry,catalog}.ts` and
   each module's own `*ModuleManifest.ts`. Two issues that both add an entry
@@ -276,9 +271,9 @@ nothing updates, so it goes stale as soon as the first issue closes. The epic:
 - does not appear in any `Blocked by:` line,
 - gets every implementation issue linked to it as a GitHub sub-issue as soon as
   that issue is created:
-  `gh api -X POST repos/dvdtrsnk/semprec/issues/<epic-number>/sub_issues -F sub_issue_id=<child-id>`
+  `gh api -X POST repos/dvdtrsnk/alldots/issues/<epic-number>/sub_issues -F sub_issue_id=<child-id>`
   — `<child-id>` is the child issue's numeric `id`, not its issue number; get it
-  with `gh api repos/dvdtrsnk/semprec/issues/<n> --jq .id`.
+  with `gh api repos/dvdtrsnk/alldots/issues/<n> --jq .id`.
 
 ### Closing
 

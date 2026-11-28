@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant, type SearchGroup, type SearchGroupType, type SearchOutput } from "@semprec/shared";
+import { runInTenant, type SearchGroup, type SearchGroupType, type SearchOutput } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { createUser, updateUserLocale } from "../auth/usersStore.js";
@@ -32,7 +32,7 @@ let other: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   cp = createChokePoint(pool);
   const role = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -54,7 +54,7 @@ afterAll(async () => {
   await admin?.end();
 });
 
-const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"];
+const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "contact", "journal", "file", "mail", "chat"];
 
 function search(
   q: string,
@@ -155,7 +155,7 @@ async function tickThread(name: string, text: string): Promise<string> {
   return runInTenant(tenant, () =>
     withTransaction(pool, async (client) => {
       const inbox = await getDatabaseByModuleId(client, "inbox");
-      if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing Alldots project");
       const heartbeat = await createHeartbeat(client, {
         projectItemId: inbox.ownerProjectItemId,
         name,

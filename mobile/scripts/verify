@@ -12,11 +12,11 @@ set -euo pipefail
 
 mobile_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 apple_root=$mobile_root/apple
-workspace=Semprec.xcworkspace
-scheme=Semprec
-# The XCUITest bundle of the app has its own scheme and runs on iOS only, so the Semprec scheme's tests on macOS never
+workspace=Alldots.xcworkspace
+scheme=Alldots
+# The XCUITest bundle of the app has its own scheme and runs on iOS only, so the Alldots scheme's tests on macOS never
 # need the automation permission XCUITest asks for there.
-ui_test_scheme=SemprecUITests
+ui_test_scheme=AlldotsUITests
 derived_data=$apple_root/build/DerivedData
 # The JDKs that can run the Gradle build: 17 or newer for the Android Gradle plugin, and at most the newest Java the
 # Gradle version in gradle/wrapper/gradle-wrapper.properties runs on (Gradle 8.13 runs on Java 23 at most, Java 24
@@ -36,6 +36,7 @@ usage: mobile/scripts/verify [all|architecture|shared|android|apple]... [--ios-s
   architecture    node scripts/architecture.mjs; node --test scripts/*.test.mjs
   shared          ./gradlew sharedJvmTest sharedAppleTest detektAll -PdetektAutoFix=false
   android         ./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug
+                  detektAll -PdetektAutoFix=false
   apple           tuist and swiftlint version checks, swiftlint lint, tuist install/generate, Debug and Release
                   builds for the iOS Simulator, an iOS device and macOS, a build of the UI tests for the iOS
                   Simulator, tests on macOS
@@ -436,8 +437,9 @@ step_android() {
     else
         prerequisites require_java require_android_sdk
     fi
-    run "gradle assemble + unit tests + lint" "$mobile_root" \
-        ./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug
+    run "gradle assemble + unit tests + lint + detekt" "$mobile_root" \
+        ./gradlew :android:app:assembleDebug :android:app:assembleRelease androidUnitTest :android:app:lintDebug \
+        detektAll -PdetektAutoFix=false
     if [[ -n $android_serial ]]; then
         run "connectedDebugAndroidTest on $android_serial" "$mobile_root" \
             env "ANDROID_SERIAL=$android_serial" ./gradlew connectedDebugAndroidTest
@@ -469,7 +471,7 @@ step_apple() {
                 -destination "generic/platform=$platform" -derivedDataPath "$derived_data" CODE_SIGNING_ALLOWED=NO
         done
     done
-    # The Semprec scheme never builds the iOS-only UI test target, so it is built here for the simulator without a
+    # The Alldots scheme never builds the iOS-only UI test target, so it is built here for the simulator without a
     # device: a UI test that no longer compiles fails every run, not only one with --ios-simulator.
     run "build the UI tests, iOS Simulator" "$apple_root" \
         xcodebuild build-for-testing -workspace "$workspace" -scheme "$ui_test_scheme" \

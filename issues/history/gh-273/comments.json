@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5561061587",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/273#issuecomment-5561061587",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/273",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5561061587",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/273#issuecomment-5561061587",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/273",
     "id": 5561061587,
     "node_id": "IC_kwDOUFuQ4c8AAAABS3cQ0w",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5561061587/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5561061587/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5561101329",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/273#issuecomment-5561101329",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/273",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5561101329",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/273#issuecomment-5561101329",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/273",
     "id": 5561101329,
     "node_id": "IC_kwDOUFuQ4c8AAAABS3esEQ",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-06T18:01:55Z",
     "updated_at": "2026-09-06T18:01:55Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #303\n\nTokens: 0 · Cost: $0.0000\n\n## Summary\n\nCloses the four test-coverage gaps flagged on merged PRs #97, #101, and #103, as described in issue #273:\n\n- **`web/src/api/__tests__/httpGenericOperations.test.ts`**: `linkItem`'s test now asserts the POST body (`{ targetItemId }`), and `unlinkItem`'s bodyless `DELETE` is asserted to carry no body.\n- **`backend/packages/data/src/__tests__/inboxPipeline.test.ts`**: the seed-idempotency test now asserts `inboxItemTypes` and `processingProposals` counts stay at 1 after a second `seedSystem` call, not just `inbox`.\n- **`backend/packages/data/src/__tests__/inboxTick.test.ts`**: `capturingTickRegistry` now validates `actionConfig` through the production `semprecTickActionConfigSchema` instead of casting, with a new direct test asserting it rejects a malformed config (missing/non-UUID `inboxDatabaseId`) the same way production does. A new test also covers queue-affinity routing on the `update` and `soft-delete` `onItemEvent` paths, previously asserted only for `create`.\n- **`backend/packages/data/src/inbox/inboxTickAction.ts`**: exported `semprecTickActionConfigSchema` (the only production-code change permitted by the issue) so the test double can validate against the real schema.\n\n## Test plan\n\n- [x] `pnpm test` in `web/` — 75 tests / 8 files passed\n- [x] `pnpm test` in `backend/` — 315 tests / 24 files passed\n\nBranch: `bb/relay-273-review-debt-08-12-close-the-test-cover-thr_sdai2vfbvx` (pushed to origin).\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #303\n\nTokens: 0 · Cost: $0.0000\n\n## Summary\n\nCloses the four test-coverage gaps flagged on merged PRs #97, #101, and #103, as described in issue #273:\n\n- **`web/src/api/__tests__/httpGenericOperations.test.ts`**: `linkItem`'s test now asserts the POST body (`{ targetItemId }`), and `unlinkItem`'s bodyless `DELETE` is asserted to carry no body.\n- **`backend/packages/data/src/__tests__/inboxPipeline.test.ts`**: the seed-idempotency test now asserts `inboxItemTypes` and `processingProposals` counts stay at 1 after a second `seedSystem` call, not just `inbox`.\n- **`backend/packages/data/src/__tests__/inboxTick.test.ts`**: `capturingTickRegistry` now validates `actionConfig` through the production `alldotsTickActionConfigSchema` instead of casting, with a new direct test asserting it rejects a malformed config (missing/non-UUID `inboxDatabaseId`) the same way production does. A new test also covers queue-affinity routing on the `update` and `soft-delete` `onItemEvent` paths, previously asserted only for `create`.\n- **`backend/packages/data/src/inbox/inboxTickAction.ts`**: exported `alldotsTickActionConfigSchema` (the only production-code change permitted by the issue) so the test double can validate against the real schema.\n\n## Test plan\n\n- [x] `pnpm test` in `web/` — 75 tests / 8 files passed\n- [x] `pnpm test` in `backend/` — 315 tests / 24 files passed\n\nBranch: `bb/relay-273-review-debt-08-12-close-the-test-cover-thr_sdai2vfbvx` (pushed to origin).\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5561101329/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5561101329/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5561158668",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/273#issuecomment-5561158668",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/273",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5561158668",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/273#issuecomment-5561158668",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/273",
     "id": 5561158668,
     "node_id": "IC_kwDOUFuQ4c8AAAABS3iMDA",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5561158668/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5561158668/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

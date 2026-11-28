@@ -46,7 +46,7 @@ const workflow = readFileSync(new URL("../workflows/code-review.yml", import.met
 const bypass = workflow.match(/      - name: Report owner-authorized review pause\n[\s\S]*?        run: \|\n([\s\S]*?)\n      # Relay reviews/)[1].replace(/^          /gm, "").trim();
 
 test("Actions gates all provider/delegation/finalizer steps on a valid enabled policy", () => {
-  assert.ok(workflow.indexOf("name: Checkout semprec") < workflow.indexOf("name: Read owner review policy"));
+  assert.ok(workflow.indexOf("name: Checkout alldots") < workflow.indexOf("name: Read owner review policy"));
   for (const step of ["Relay delegation", "Checkout code-review-bot (private)", "Install Claude Code CLI", "Run review", "Finalize interrupted code-review check"]) {
     const block = workflow.split(`      - name: ${step}\n`)[1]?.split("      - name:")[0];
     assert.ok(block, step);
@@ -73,7 +73,7 @@ fi
     const payload = join(dir, "payload.json");
     const result = spawnSync("bash", ["-c", bypass], { encoding: "utf8", env: {
       ...process.env, PATH: `${dir}:${process.env.PATH}`, SCENARIO: scenario, PAYLOAD: payload,
-      GITHUB_REPOSITORY: "dvdtrsnk/semprec", PR_NUMBER: "1292", GITHUB_STEP_SUMMARY: join(dir, "summary"),
+      GITHUB_REPOSITORY: "dvdtrsnk/alldots", PR_NUMBER: "1292", GITHUB_STEP_SUMMARY: join(dir, "summary"),
     } });
     if (scenario === "current") {
       assert.equal(result.status, 0, result.stderr);

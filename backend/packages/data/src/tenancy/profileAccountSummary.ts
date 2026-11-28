@@ -1,12 +1,12 @@
 // Assembles the profile screen's account summary by calling each figure's owning function; it counts
 // nothing itself.
 import type { Pool } from "pg";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import { getAiUsageSummary } from "../aiGateway/aiUsageSummary.js";
 import { listActiveSessionsForUser } from "../auth/sessionsStore.js";
 import { withTransaction } from "../db/pool.js";
-import { getMailSummary } from "../mail/mailSummary.js";
-import { getSempStatusSummary } from "../semp/sempStatusSummary.js";
+import { getMailAccountsSummary } from "../mail/mailSummary.js";
+import { readSempStatusSummary } from "../semp/sempStatusSummary.js";
 import { countArchivedTrashDatabases, countTrashItemRoots } from "../trash/trashRouteHandlers.js";
 
 /** `GET /api/account/summary`. */
@@ -34,8 +34,9 @@ export interface ProfileAccountSummaryInput {
 
 /**
  * Every figure comes from the function its owner's route calls (for trash, the statement the list reads
- * its `totalCount` with). The reads run concurrently on separate connections, so figures may be read at
- * slightly different moments; any failed read fails the call, never a partial summary.
+ * its `totalCount` with). One REPEATABLE READ transaction on one connection reads them all, so every figure,
+ * like the two trash totals each trash list reads together, comes from the same snapshot; any failed read fails
+ * the call, never a partial summary.
  *
  * Throws without a tenant scope, so an unscoped call never looks like an empty tenant.
  */
@@ -46,28 +47,25 @@ export async function getProfileAccountSummary(
   if (currentTenantScope()?.kind !== "tenant") {
     throw new Error("getProfileAccountSummary requires an active tenant scope");
   }
-  const [sessions, mail, trash, semp, aiUsage] = await Promise.all([
-    listActiveSessionsForUser(pool, input.userId),
-    withTransaction(pool, (client) => getMailSummary(client)),
-    // One snapshot for both trash totals, as each trash list reads its own total in a REPEATABLE READ transaction.
-    withTransaction(
-      pool,
-      async (client) => ({
-        items: await countTrashItemRoots(client),
-        databases: await countArchivedTrashDatabases(client),
-      }),
-      { isolation: "repeatable_read" },
-    ),
-    getSempStatusSummary(pool),
-    withTransaction(pool, (client) => getAiUsageSummary(client)),
-  ]);
-  return {
-    activeSessions: sessions.length,
-    mailAccountCount: mail.accounts,
-    mailAccountsNeedingReauth: mail.accountsNeedingReauth,
-    trashItems: trash.items,
-    trashDatabases: trash.databases,
-    problemCount: semp.activeCount,
-    aiCostMonthUsd: aiUsage.spentMonthUsd,
-  };
+  return withTransaction(
+    pool,
+    async (client) => {
+      const sessions = await listActiveSessionsForUser(client, input.userId);
+      const mail = await getMailAccountsSummary(client);
+      const trashItems = await countTrashItemRoots(client);
+      const trashDatabases = await countArchivedTrashDatabases(client);
+      const semp = await readSempStatusSummary(client);
+      const aiUsage = await getAiUsageSummary(client);
+      return {
+        activeSessions: sessions.length,
+        mailAccountCount: mail.accounts,
+        mailAccountsNeedingReauth: mail.accountsNeedingReauth,
+        trashItems,
+        trashDatabases,
+        problemCount: semp.activeCount,
+        aiCostMonthUsd: aiUsage.spentMonthUsd,
+      };
+    },
+    { isolation: "repeatable_read" },
+  );
 }

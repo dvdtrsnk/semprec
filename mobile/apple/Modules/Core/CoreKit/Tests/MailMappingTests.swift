@@ -28,10 +28,8 @@ final class MailMappingTests: XCTestCase {
         )
         let facets = SharedSDK.MailFacetsState(
             phase: .ready,
-            areaTotal: 9,
             projectTotal: 7,
-            areas: [SharedSDK.MailFilterOption(id: "a1", name: "Práce", color: "#5856D6", count: 4, areaId: nil)],
-            projects: [SharedSDK.MailFilterOption(id: "p1", name: "Web", color: nil, count: 3, areaId: "a1")]
+            projects: [SharedSDK.MailFilterOption(id: "p1", name: "Web", color: "#FF9500", count: 3)]
         )
         let state = SharedMailThreadsScreenModel.state(
             threadsState(
@@ -44,7 +42,8 @@ final class MailMappingTests: XCTestCase {
         XCTAssertEqual(state.box, .sempDrafts)
         XCTAssertEqual(state.filter, .flagged)
         XCTAssertEqual(state.mailboxId, "m1")
-        XCTAssertEqual(state.areaName, "Práce")
+        XCTAssertEqual(state.projectId, "p1")
+        XCTAssertEqual(state.projectName, "Web")
         XCTAssertEqual(state.mailboxes, [CoreKit.MailMailboxChip(id: "m1", name: "Gmail")])
         let notice = CoreKit.MailAccountNotice(id: "m2", name: "Outlook", since: "2026-10-19T09:12:00Z")
         XCTAssertEqual(state.reauthorization, [notice])
@@ -63,12 +62,31 @@ final class MailMappingTests: XCTestCase {
             state.facets,
             CoreKit.MailFacetsState(
                 phase: .ready,
-                areaTotal: 9,
                 projectTotal: 7,
-                areas: [CoreKit.MailFilterOption(id: "a1", name: "Práce", color: "#5856D6", count: 4)],
-                projects: [CoreKit.MailFilterOption(id: "p1", name: "Web", color: nil, count: 3, areaId: "a1")]
+                projects: [CoreKit.MailFilterOption(id: "p1", name: "Web", color: "#FF9500", count: 3)]
             )
         )
+    }
+
+    @MainActor
+    func testThreadsMapWhatTheProviderSearchAddedAndNoSummaryOutsideASearch() {
+        let summary = SharedSDK.MailRemoteSearchSummary(
+            unindexed: 12,
+            failedAccounts: [
+                SharedSDK.MailMailboxChip(id: "m1", name: "Gmail"), SharedSDK.MailMailboxChip(id: "m9", name: "")
+            ]
+        )
+        let searched = SharedMailThreadsScreenModel.state(threadsState(.content, remoteSearch: summary))
+        XCTAssertEqual(
+            searched.remoteSearch,
+            CoreKit.MailRemoteSearchSummary(
+                unindexed: 12,
+                failedAccounts: [
+                    CoreKit.MailMailboxChip(id: "m1", name: "Gmail"), CoreKit.MailMailboxChip(id: "m9", name: "")
+                ]
+            )
+        )
+        XCTAssertNil(SharedMailThreadsScreenModel.state(threadsState(.content)).remoteSearch)
     }
 
     @MainActor
@@ -91,9 +109,7 @@ final class MailMappingTests: XCTestCase {
             (.idle, .idle), (.loading, .loading), (.ready, .ready), (.error, .error)
         ]
         for (kotlin, swift) in phases {
-            let facets = SharedSDK.MailFacetsState(
-                phase: kotlin, areaTotal: 0, projectTotal: 0, areas: [], projects: []
-            )
+            let facets = SharedSDK.MailFacetsState(phase: kotlin, projectTotal: 0, projects: [])
             let state = SharedMailThreadsScreenModel.state(threadsState(.content, facets: facets))
             XCTAssertEqual(state.facets.phase, swift)
         }
@@ -123,10 +139,10 @@ final class MailMappingTests: XCTestCase {
             SharedMailThreadsScreenModel.action(.selectMailbox("m1")) as? SharedSDK.MailThreadsActionSelectMailbox
         )
         XCTAssertEqual(mailbox.mailboxId, "m1")
-        let area = try XCTUnwrap(
-            SharedMailThreadsScreenModel.action(.setArea("a1")) as? SharedSDK.MailThreadsActionSetArea
+        let project = try XCTUnwrap(
+            SharedMailThreadsScreenModel.action(.setProject("p1")) as? SharedSDK.MailThreadsActionSetProject
         )
-        XCTAssertEqual(area.areaId, "a1")
+        XCTAssertEqual(project.projectId, "p1")
         let none = try XCTUnwrap(
             SharedMailThreadsScreenModel.action(.setProject(nil)) as? SharedSDK.MailThreadsActionSetProject
         )

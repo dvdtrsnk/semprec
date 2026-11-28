@@ -53,13 +53,66 @@ describe("Gmail sync provider privacy", () => {
       async () => "token",
       async () => new Response(null, { status: 404 }),
     );
-    await expect(client.fetchMessage("missing")).resolves.toBeNull();
+    await expect(client.fetchMessage("missing", "full")).resolves.toBeNull();
     await expect(client.listHistorySince("old")).resolves.toEqual({
       invalidated: true,
       newHistoryId: "old",
-      changedMessageIds: [],
-      removedMessageIds: [],
+      records: [],
     });
+  });
+});
+
+describe("Gmail listing and history pages", () => {
+  const answering = (body: unknown) =>
+    new GmailRestClient(
+      async () => "token",
+      async () => new Response(JSON.stringify(body), { status: 200 }),
+    );
+
+  it("lists the ids of a page, passing over a malformed entry, with its next page token", async () => {
+    const page = await answering({
+      messages: [{ id: "a" }, { id: 7 }, null, { id: "b" }],
+      nextPageToken: "next",
+    }).listMessageIds("after:1", null);
+    expect(page).toEqual({ ids: ["a", "b"], nextPageToken: "next" });
+  });
+
+  it.each([
+    ["a number", 7],
+    ["an empty string", ""],
+    ["an object", { token: "next" }],
+  ])("refuses a listing page whose next page token is %s instead of ending the listing", async (_name, token) => {
+    await expect(
+      answering({ messages: [{ id: "a" }], nextPageToken: token }).listMessageIds("after:1", null),
+    ).rejects.toThrow("Gmail sync provider response could not be read");
+  });
+
+  it("answers the history as its records in order, each message once per record", async () => {
+    const history = await answering({
+      history: [
+        { id: "11", messagesAdded: [{ message: { id: "a" } }], labelsAdded: [{ message: { id: "a" } }] },
+        { id: "12", messagesDeleted: [{ message: { id: "b" } }], labelsRemoved: [{ message: { id: "c" } }] },
+      ],
+      historyId: "13",
+    }).listHistorySince("10");
+    expect(history).toEqual({
+      invalidated: false,
+      newHistoryId: "13",
+      records: [
+        { id: "11", changedMessageIds: ["a"], removedMessageIds: [] },
+        { id: "12", changedMessageIds: ["c"], removedMessageIds: ["b"] },
+      ],
+    });
+  });
+
+  it.each([
+    ["a record without an id", { history: [{ messagesAdded: [{ message: { id: "a" } }] }] }],
+    ["a message without an id", { history: [{ id: "11", messagesAdded: [{ message: {} }] }] }],
+    ["a next page token of another type", { history: [], nextPageToken: 3 }],
+  ])("refuses a history page with %s", async (_name, body) => {
+    await expect(answering(body).listHistorySince("10")).rejects.toThrow(
+      "Gmail sync provider response could not be read",
+    );
   });
 });
 
@@ -94,7 +147,12 @@ describe("Gmail label inventory validation", () => {
     await expect(client.listLabels()).rejects.toThrow();
   });
 });
-import { MailReauthorizationRequiredError, MailRecipientRejectedError } from "../mail/providerTypes.js";
+import {
+  AttachmentCapExceededError,
+  MAX_ATTACHMENT_BYTES,
+  MailReauthorizationRequiredError,
+  MailRecipientRejectedError,
+} from "../mail/providerTypes.js";
 
 function encodeBase64Url(value: string): string {
   return Buffer.from(value).toString("base64url");
@@ -124,7 +182,7 @@ it("sanitizes a lazy Gmail attachment request failure", async () => {
     )
     .mockRejectedValueOnce(original);
   const client = new GmailRestClient(async () => "GMAIL-PRIVATE-SENTINEL", fetchImpl);
-  const message = await client.fetchMessage("message");
+  const message = await client.fetchMessage("message", "full");
   const attachment = message?.message.attachments[0];
   if (!attachment) throw new Error("Missing Gmail attachment");
   const error = await Promise.resolve(attachment.openStream()).then(
@@ -141,7 +199,7 @@ async function fetchFixture(payload: object) {
   const fetchMock = vi.fn(async () => gmailMessage(payload));
   vi.stubGlobal("fetch", fetchMock);
   const client = new GmailRestClient(async () => "test-token");
-  const fetched = await client.fetchMessage("gmail-message-1");
+  const fetched = await client.fetchMessage("gmail-message-1", "full");
   expect(fetchMock).toHaveBeenCalledTimes(1);
   return fetched;
 }
@@ -173,7 +231,7 @@ describe("Gmail bulk-mail headers (issue #1502)", () => {
           ),
       ),
     );
-    const fetched = await new GmailRestClient(async () => "t").fetchMessage("gmail-message-1");
+    const fetched = await new GmailRestClient(async () => "t").fetchMessage("gmail-message-1", "full");
     expect(fetched?.message.bulkHeaders).toEqual({
       listUnsubscribe: "<mailto:u@example.test>",
       listId: null,
@@ -382,7 +440,7 @@ describe("Gmail Reply-To envelope", () => {
         ),
     );
     vi.stubGlobal("fetch", fetchMock);
-    return new GmailRestClient(async () => "test-token").fetchMessage("gmail-message-1");
+    return new GmailRestClient(async () => "test-token").fetchMessage("gmail-message-1", "full");
   }
 
   it("stores the Reply-To header addresses", async () => {
@@ -620,5 +678,172 @@ describe("Gmail sendMessage (issue #1637)", () => {
     const { client } = stubSend(sendResponse(200, { id: "sent-id-only" }));
 
     await expect(client.sendMessage(RAW_MESSAGE)).rejects.toThrow(/missing the message id or the thread id/);
+  });
+});
+
+describe("Gmail listing pages and metadata fetches", () => {
+  const hrefOf = (input: string | URL | Request): string =>
+    typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+  it("lists one page of 50 ids for a search, resuming at a page token", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({ messages: [{ id: "newest" }, { id: "older" }], nextPageToken: "page-3" }),
+    );
+    const client = new GmailRestClient(async () => "token", fetchImpl);
+
+    await expect(client.listMessageIds("after:1700000000", "page-2")).resolves.toEqual({
+      ids: ["newest", "older"],
+      nextPageToken: "page-3",
+    });
+    const url = new URL(hrefOf(fetchImpl.mock.calls[0]?.[0] ?? ""));
+    expect(url.pathname).toBe("/gmail/v1/users/me/messages");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      maxResults: "50",
+      q: "after:1700000000",
+      pageToken: "page-2",
+    });
+
+    fetchImpl.mockResolvedValueOnce(Response.json({ resultSizeEstimate: 0 }));
+    await expect(client.listMessageIds("before:1700000001", null)).resolves.toEqual({ ids: [], nextPageToken: null });
+    expect(new URL(hrefOf(fetchImpl.mock.calls[1]?.[0] ?? "")).searchParams.has("pageToken")).toBe(false);
+  });
+
+  it("fetches an index message as metadata: the headers ingest reads, labels and the snippet, no parts", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        id: "gmail-message-1",
+        threadId: "gmail-thread-1",
+        labelIds: ["INBOX", "UNREAD"],
+        snippet: "Tom &amp; Jerry&#39;s &quot;plan&quot; &#x263A;",
+        payload: {
+          headers: [
+            { name: "Message-ID", value: "<indexed@example.test>" },
+            { name: "From", value: "Ada <ada@example.test>" },
+            { name: "Subject", value: "Old news" },
+            { name: "Date", value: "Mon, 05 Oct 2020 10:00:00 +0000" },
+            { name: "List-Id", value: "<list.example.test>" },
+          ],
+        },
+      }),
+    );
+
+    const fetched = await new GmailRestClient(async () => "token", fetchImpl).fetchMessage(
+      "gmail-message-1",
+      "metadata",
+    );
+
+    const url = new URL(hrefOf(fetchImpl.mock.calls[0]?.[0] ?? ""));
+    expect(url.searchParams.get("format")).toBe("metadata");
+    expect(url.searchParams.getAll("metadataHeaders")).toEqual(
+      expect.arrayContaining([
+        "From",
+        "To",
+        "Cc",
+        "Bcc",
+        "Reply-To",
+        "Subject",
+        "Date",
+        "Message-ID",
+        "In-Reply-To",
+        "References",
+        "Delivered-To",
+        "X-Original-To",
+        "Envelope-To",
+        "List-Unsubscribe",
+        "List-Id",
+        "Precedence",
+        "Auto-Submitted",
+        "Content-Type",
+      ]),
+    );
+    expect(fetched).toMatchObject({
+      id: "gmail-message-1",
+      threadId: "gmail-thread-1",
+      labelIds: ["INBOX", "UNREAD"],
+      snippet: 'Tom & Jerry\'s "plan" ☺',
+      message: {
+        messageId: "<indexed@example.test>",
+        subject: "Old news",
+        envelope: { from: { name: "Ada", address: "ada@example.test" } },
+        date: new Date("2020-10-05T10:00:00Z"),
+        bulkHeaders: { listId: "<list.example.test>" },
+        attachments: [],
+        flags: [],
+      },
+    });
+    expect(fetched?.message.bodyText).toBeUndefined();
+    expect(fetched?.message.bodyHtml).toBeUndefined();
+  });
+});
+
+describe("Gmail attachment parts", () => {
+  const hrefOf = (input: string | URL | Request): string =>
+    typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+
+  /** A `format=full` message with one attachment at part `1`, its bytes named by `attachmentId`. */
+  function fullMessage(filename: string, attachmentId: string, size = 5): Response {
+    return Response.json({
+      id: "gmail-message-1",
+      threadId: "gmail-thread-1",
+      payload: {
+        partId: "",
+        mimeType: "multipart/mixed",
+        headers: [{ name: "Message-ID", value: "<gmail-message-1@example.test>" }],
+        parts: [
+          { partId: "0", mimeType: "text/plain", body: { size: 4, data: encodeBase64Url("Body") } },
+          { partId: "1", mimeType: "application/pdf", filename, body: { size, attachmentId } },
+        ],
+      },
+    });
+  }
+
+  it("records the payload part id of a full message's attachment as its provider part", async () => {
+    const client = new GmailRestClient(
+      async () => "token",
+      async () => fullMessage("a.pdf", "attachment-id-1"),
+    );
+    const fetched = await client.fetchMessage("gmail-message-1", "full");
+    expect(fetched?.message.attachments.map((attachment) => attachment.providerPart)).toEqual(["1"]);
+  });
+
+  it("reads the message again and fetches the part's bytes by the attachment id of that read", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(fullMessage("a.pdf", "attachment-id-of-this-read"))
+      .mockResolvedValueOnce(Response.json({ size: 5, data: encodeBase64Url("bytes") }));
+    const stream = await new GmailRestClient(async () => "token", fetchImpl).openAttachmentContent(
+      "gmail-message-1",
+      "1",
+      "a.pdf",
+    );
+    if (!stream) throw new Error("Missing Gmail attachment stream");
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk as Uint8Array));
+    expect(Buffer.concat(chunks).toString()).toBe("bytes");
+    expect(new URL(hrefOf(fetchImpl.mock.calls[0]?.[0] ?? "")).searchParams.get("format")).toBe("full");
+    expect(new URL(hrefOf(fetchImpl.mock.calls[1]?.[0] ?? "")).pathname).toBe(
+      "/gmail/v1/users/me/messages/gmail-message-1/attachments/attachment-id-of-this-read",
+    );
+  });
+
+  it.each([
+    ["the part has another name", () => fullMessage("other.pdf", "attachment-id-1")],
+    ["the message is gone", () => new Response(null, { status: 404 })],
+  ])("answers null without a byte request when %s", async (_name, response) => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => response());
+    const client = new GmailRestClient(async () => "token", fetchImpl);
+    await expect(client.openAttachmentContent("gmail-message-1", "1", "a.pdf")).resolves.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an attachment over the cap before decoding it", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(fullMessage("a.pdf", "attachment-id-1"))
+      .mockResolvedValueOnce(Response.json({ size: MAX_ATTACHMENT_BYTES + 1, data: "" }));
+    const client = new GmailRestClient(async () => "token", fetchImpl);
+    await expect(client.openAttachmentContent("gmail-message-1", "1", "a.pdf")).rejects.toBeInstanceOf(
+      AttachmentCapExceededError,
+    );
   });
 });

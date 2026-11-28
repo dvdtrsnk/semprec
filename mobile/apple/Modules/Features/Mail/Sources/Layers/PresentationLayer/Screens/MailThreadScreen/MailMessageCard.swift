@@ -3,27 +3,29 @@ import DesignSystem
 import SwiftUI
 
 /// One message of a thread. Closed it shows the sender, the time and the first line; open it shows the recipients, the
-/// whole text and the files that came with it.
+/// whole text and the files that came with it. A message whose body is only at the mail provider shows its preview
+/// while the body is fetched, and why it could not be fetched with a way to try again.
 struct MailMessageCard: View {
 
     // MARK: - Dependencies
     let message: MailMessageItem
-    let toggle: () -> Void
+    let send: (MailThreadAction) -> Void
 
     // MARK: - Body
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Spacing.small) {
-            Button(action: toggle) { header }
+            Button { send(.toggleMessage(emailId: message.emailId)) } label: { header }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(message.expanded ? .isSelected : [])
             if message.expanded {
-                Text(verbatim: message.bodyText)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 50)
+                content.padding(.leading, 50)
                 ForEach(message.attachments) { file in
-                    MailAttachmentRow(file: file).padding(.leading, 50)
+                    MailAttachmentRow(
+                        file: file,
+                        save: { send(.saveAttachment(emailId: message.emailId, attachmentId: file.attachmentId)) },
+                        open: { send(.open(.file(fileItemId: $0))) }
+                    )
+                    .padding(.leading, 50)
                 }
             }
         }
@@ -58,46 +60,64 @@ private extension MailMessageCard {
         .contentShape(Rectangle())
     }
 
+    @ViewBuilder var content: some View {
+        switch message.bodyPhase {
+        case .ready:
+            Text(verbatim: message.bodyText)
+                .font(.body)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .remote, .loading:
+            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+                preview
+                HStack(spacing: Theme.Spacing.small) {
+                    ProgressView().controlSize(.small)
+                    Text("mail.message.loading", bundle: .module)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.Colors.secondaryText)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier(MailIdentifiers.messageLoadingPrefix + message.emailId)
+            }
+        case .failed:
+            VStack(alignment: .leading, spacing: Theme.Spacing.small) {
+                preview
+                Label {
+                    Text(verbatim: MailContentUnavailable.message(
+                        for: message.bodyFailure,
+                        unavailable: message.bodyUnavailable
+                    ))
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                }
+                .font(.footnote)
+                Button { send(.loadBody(emailId: message.emailId)) } label: {
+                    Text("mail.message.retry", bundle: .module)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier(MailIdentifiers.messageRetryPrefix + message.emailId)
+            }
+        }
+    }
+
+    @ViewBuilder var preview: some View {
+        if let preview = message.preview, !preview.isEmpty {
+            Text(verbatim: preview)
+                .font(.body)
+                .foregroundStyle(Theme.Colors.secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     var recipients: String {
         let format = String(localized: "mail.message.to", bundle: .module)
         return String(format: format, locale: .current, message.toNames.joined(separator: ", "))
     }
 
+    /// The first line of the body once it is shown, else the preview the server keeps.
     var firstLine: String {
-        message.bodyText.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-    }
-}
-
-/// A file of a message: the type, the name, the size and the project it is stored under.
-struct MailAttachmentRow: View {
-
-    // MARK: - Dependencies
-    let file: MailAttachmentItem
-
-    // MARK: - Body
-    var body: some View {
-        HStack(spacing: Theme.Spacing.small + 4) {
-            Text(verbatim: MailFormatting.fileExtension(file.filename))
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background(Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 8))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: file.filename).font(.subheadline.weight(.medium)).lineLimit(1)
-                HStack(spacing: 6) {
-                    Text(verbatim: MailFormatting.fileSize(file.byteSize)).font(.caption)
-                        .foregroundStyle(Theme.Colors.secondaryText)
-                    MailLinkChip(text: projectText, link: file.project.link)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(Theme.Spacing.small)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
-        .accessibilityElement(children: .combine)
-    }
-
-    private var projectText: String {
-        file.project.text ?? String(localized: "mail.thread.noProject", bundle: .module)
+        guard message.bodyPhase == .ready else { return message.preview ?? "" }
+        return message.bodyText.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
     }
 }

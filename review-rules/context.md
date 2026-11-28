@@ -1,4 +1,4 @@
-This is the repository-root platform of the Semprec monorepo: cross-cutting
+This is the repository-root platform of the Alldots monorepo: cross-cutting
 documentation and AI-agent workflow files that don't belong to `backend/`,
 `web/`, or the three mobile platforms (`mobile/`, `mobile/android/`,
 `mobile/apple/`) specifically — those have their own review-rules and are

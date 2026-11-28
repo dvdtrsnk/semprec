@@ -3,7 +3,7 @@ import XCTest
 
 @testable import CoreKit
 
-/// Checks every branch of the compose, mailboxes, accounts and account bridges' mappings between Kotlin and Swift
+/// Checks every branch of the compose and mailboxes bridges' mappings between Kotlin and Swift
 /// values with Kotlin values built here.
 final class MailComposeAccountMappingTests: XCTestCase {
 
@@ -123,13 +123,11 @@ final class MailComposeAccountMappingTests: XCTestCase {
                 as? SharedSDK.MailFoldersActionOpenFolder
         )
         XCTAssertEqual([folder.mailboxId, folder.folderId], ["m1", "f1"])
-        let start = SharedSDK.MailListStart(
-            areaId: "a", projectId: "p", box: .sempDrafts, mailboxId: "m", folderId: "f"
-        )
+        let start = SharedSDK.MailListStart(projectId: "p", box: .sempDrafts, mailboxId: "m", folderId: "f")
         XCTAssertEqual(
             SharedMailFoldersScreenModel.effect(SharedSDK.MailFoldersEffectOpenList(start: start, title: "Klienti")),
             .openList(
-                CoreKit.MailListStart(areaId: "a", projectId: "p", box: .sempDrafts, mailboxId: "m", folderId: "f"),
+                CoreKit.MailListStart(projectId: "p", box: .sempDrafts, mailboxId: "m", folderId: "f"),
                 title: "Klienti"
             )
         )
@@ -137,103 +135,5 @@ final class MailComposeAccountMappingTests: XCTestCase {
         let accounts = SharedSDK.MailFoldersEffectOpenAccounts.shared
         XCTAssertEqual(SharedMailFoldersScreenModel.effect(accounts), .openAccounts)
         XCTAssertEqual(CoreKit.MailListStart(start).shared.folderId, "f")
-    }
-
-    // MARK: - Accounts
-    @MainActor
-    func testAccountsMapPhasesRowsAndConnectFailures() {
-        XCTAssertEqual(SharedMailAccountsScreenModel.state(accountsState(.loading)).phase, .loading)
-        XCTAssertEqual(SharedMailAccountsScreenModel.state(accountsState(.error)).phase, .failure(nil))
-        let state = SharedMailAccountsScreenModel.state(accountsState(.content, failure: nil, connectFailure: .refused))
-        let item = CoreKit.MailAccountItem(id: "m1", name: "Gmail", address: nil, provider: "gmail", status: .ok)
-        XCTAssertEqual(state.accounts, [item])
-        XCTAssertTrue(state.connecting)
-        XCTAssertEqual(state.connectFailure, .refused)
-        let failures: [(SharedSDK.MailConnectFailure, CoreKit.MailConnectFailure)] = [
-            (.invalidInput, .invalidInput), (.refused, .refused),
-            (.unavailable, .unavailable), (.unexpected, .unexpected)
-        ]
-        for (kotlin, swift) in failures {
-            let state = SharedMailAccountsScreenModel.state(accountsState(.content, connectFailure: kotlin))
-            XCTAssertEqual(state.connectFailure, swift)
-        }
-        XCTAssertNil(SharedMailAccountsScreenModel.state(accountsState(.content)).connectFailure)
-    }
-
-    @MainActor
-    func testAccountsMapEachActionAndEffect() throws {
-        XCTAssertTrue(SharedMailAccountsScreenModel.action(.retry) is SharedSDK.MailAccountsActionRetry)
-        XCTAssertTrue(SharedMailAccountsScreenModel.action(.refresh) is SharedSDK.MailAccountsActionRefresh)
-        let dismiss = SharedMailAccountsScreenModel.action(.dismissConnectFailure)
-        XCTAssertTrue(dismiss is SharedSDK.MailAccountsActionDismissConnectFailure)
-        let open = try XCTUnwrap(
-            SharedMailAccountsScreenModel.action(.open(mailboxId: "m1")) as? SharedSDK.MailAccountsActionOpen
-        )
-        XCTAssertEqual(open.mailboxId, "m1")
-        let kinds: [(CoreKit.MailConnectKind, SharedSDK.MailConnectKind)] = [(.icloud, .icloud), (.generic, .generic)]
-        for (kind, kotlin) in kinds {
-            let action = try XCTUnwrap(
-                SharedMailAccountsScreenModel.action(
-                    .connect(kind: kind, address: "a@x.cz", password: "pw", imapHost: "i", smtpHost: "s")
-                ) as? SharedSDK.MailAccountsActionConnect
-            )
-            XCTAssertEqual(action.kind, kotlin)
-            XCTAssertEqual(
-                [action.address, action.password, action.imapHost, action.smtpHost],
-                ["a@x.cz", "pw", "i", "s"]
-            )
-        }
-        XCTAssertEqual(
-            SharedMailAccountsScreenModel.effect(SharedSDK.MailAccountsEffectOpenAccount(mailboxId: "m1")),
-            .openAccount(mailboxId: "m1")
-        )
-        XCTAssertEqual(SharedMailAccountsScreenModel.effect(SharedSDK.MailAccountsEffectConnected.shared), .connected)
-    }
-
-    // MARK: - Account
-    @MainActor
-    func testAccountMapsPhasesDetailAndRemoval() {
-        XCTAssertEqual(SharedMailAccountScreenModel.state(accountState(.loading)).phase, .loading)
-        let missing = SharedMailAccountScreenModel.state(accountState(.error, failure: .notFound))
-        XCTAssertEqual(missing.phase, .failure(.notFound))
-        let state = SharedMailAccountScreenModel.state(accountState(.content))
-        XCTAssertEqual(
-            state.account,
-            CoreKit.MailAccountDetail(
-                id: "m1", name: "Gmail", address: "me@gmail.com", provider: "gmail", syncMode: "imap",
-                status: .needsReauthorization, lastSuccessfulSyncAt: "2026-10-19T08:12:00Z",
-                failingSince: "2026-10-19T09:12:00Z", connectionLimit: 3, connectionLimitApplies: true,
-                autonomousSendProjectCount: 1
-            )
-        )
-        XCTAssertEqual(state.removal, .confirming)
-        let impact = CoreKit.MailRemovalImpactItem(messages: 120, drafts: 2, threads: 50, attachmentsKept: 7)
-        XCTAssertEqual(state.impact, impact)
-        XCTAssertTrue(state.actionFailed)
-        let phases: [(SharedSDK.MailRemovalPhase, CoreKit.MailRemovalPhase)] = [
-            (.idle, .idle), (.loadingImpact, .loadingImpact), (.confirming, .confirming), (.removing, .removing)
-        ]
-        for (kotlin, swift) in phases {
-            XCTAssertEqual(SharedMailAccountScreenModel.state(accountState(.content, removal: kotlin)).removal, swift)
-        }
-    }
-
-    @MainActor
-    func testAccountMapsEachActionAndEffect() throws {
-        XCTAssertTrue(SharedMailAccountScreenModel.action(.retry) is SharedSDK.MailAccountActionRetry)
-        XCTAssertTrue(SharedMailAccountScreenModel.action(.requestRemoval) is SharedSDK.MailAccountActionRequestRemoval)
-        XCTAssertTrue(SharedMailAccountScreenModel.action(.cancelRemoval) is SharedSDK.MailAccountActionCancelRemoval)
-        XCTAssertTrue(SharedMailAccountScreenModel.action(.confirmRemoval) is SharedSDK.MailAccountActionConfirmRemoval)
-        XCTAssertTrue(SharedMailAccountScreenModel.action(.dismissFailure) is SharedSDK.MailAccountActionDismissFailure)
-        let rename = try XCTUnwrap(
-            SharedMailAccountScreenModel.action(.rename("Osobní")) as? SharedSDK.MailAccountActionRename
-        )
-        XCTAssertEqual(rename.name, "Osobní")
-        let step = try XCTUnwrap(
-            SharedMailAccountScreenModel.action(.stepConnectionLimit(delta: -1))
-                as? SharedSDK.MailAccountActionStepConnectionLimit
-        )
-        XCTAssertEqual(step.delta, -1)
-        XCTAssertEqual(SharedMailAccountScreenModel.effect(SharedSDK.MailAccountEffectRemoved.shared), .removed)
     }
 }

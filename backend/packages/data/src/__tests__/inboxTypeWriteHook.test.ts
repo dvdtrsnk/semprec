@@ -1,7 +1,7 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   bindToTenantZero,
   createRuntimeRolePool,
@@ -170,19 +170,10 @@ const INVALID_CREATES: ReadonlyArray<
 ];
 
 /**
- * The eight hardcoded system databases a 'database' type may target: the ten without journal and
+ * The seven hardcoded system databases a 'database' type may target: the core databases without journal and
  * transcripts. mcpServers has its own cases below.
  */
-const ACCEPTED_TARGETS = [
-  "areas",
-  "projects",
-  "tasks",
-  "people",
-  "files",
-  "events",
-  "healthRecords",
-  "companies",
-] as const;
+const ACCEPTED_TARGETS = ["projects", "tasks", "people", "files", "events", "healthRecords", "companies"] as const;
 
 describe("Inbox item type write hook: processingMethod and targetDatabase are checked on every write (issue #1436)", () => {
   beforeEach(async () => {
@@ -449,7 +440,7 @@ describe("Inbox item type write hook: processingMethod and targetDatabase are ch
   });
 
   it("looks the MCP servers database up in the writing tenant only, through the runtime role (issue #1973)", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const withMcp = getTenantZeroId();
       const withoutMcp = await createTestTenant(pool);

@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
-import { ensureQueueSchema } from "@semprec/queue";
+import { runInTenant } from "@alldots/shared";
+import { ensureQueueSchema } from "@alldots/queue";
 import { runMigrations } from "../db/migrate.js";
 import { createPool, withTransaction } from "../db/pool.js";
 import { reindexItemSearch, searchItems } from "../mail/search.js";
@@ -185,7 +185,7 @@ describe("Czech Hunspell full-text search (issue #207)", () => {
           await installAssets(pool);
           try {
             expect(await activateCzechHunspellSearch(pool)).toBe(true);
-            await handleItemSearchBackfillTask(pool, { onlyMissing: false });
+            await handleItemSearchBackfillTask(pool, {});
             expect(await search("faktury")).toContain(invoice.id);
             expect(await search("fak")).toContain(invoice.id);
             expect(await search("faktury")).not.toContain(unrelated.id);
@@ -237,7 +237,7 @@ describe("Czech Hunspell full-text search (issue #207)", () => {
           await installAssets(pool);
           try {
             expect(await activateCzechHunspellSearch(pool)).toBe(true);
-            await handleItemSearchBackfillTask(pool, { onlyMissing: false });
+            await handleItemSearchBackfillTask(pool, {});
             expect(await viaQ("fakturu")).toEqual([invoice.id]);
             expect(await viaGlobalSearch("fakturu")).toEqual([invoice.id]);
             expect(await viaQ("faktury 2026")).toEqual(await viaGlobalSearch("faktury 2026"));

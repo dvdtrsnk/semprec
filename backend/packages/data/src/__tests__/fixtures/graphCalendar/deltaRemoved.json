@@ -1,0 +1,11 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(event)",
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendars/AAMkCal-work/calendarView/delta?$deltatoken=token-3",
+  "value": [
+    {
+      "@odata.type": "#microsoft.graph.event",
+      "id": "AAMkSeries-standup-occ-1130",
+      "@removed": { "reason": "deleted" }
+    }
+  ]
+}

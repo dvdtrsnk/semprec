@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -173,7 +173,7 @@ describe("finishAgentRunWithErrorNotification in a tenant (issue #1018)", () => 
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "alldots_data"));
   });
 
   beforeEach(async () => {

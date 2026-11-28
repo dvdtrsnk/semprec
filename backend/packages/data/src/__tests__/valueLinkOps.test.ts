@@ -2,9 +2,9 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { ModuleRegistry } from "@semprec/module-registry";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { ModuleRegistry } from "@alldots/module-registry";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
 import {
   createRuntimeRolePool,
   createTestProjectItem,
@@ -39,7 +39,7 @@ describe("explicit value link operations", () => {
     const loader = vi.spyOn(registryLoader, "loadFullModuleRegistry").mockResolvedValue(registry);
     restoreLoader = () => loader.mockRestore();
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("check link test role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -340,24 +340,24 @@ describe("explicit value link operations", () => {
     const foreignTenant = await createTestTenant(admin);
     const foreign = await runInTenant(foreignTenant, async () => {
       await seedSystem(data);
-      const areas = (await cp.listDatabases()).find((db) => db.ownerModuleId === "areas");
-      if (!areas) throw new Error("Foreign Areas missing");
-      const item = await cp.createItem({ databaseId: areas.id, properties: { name: "Foreign" } });
-      const before = await cp.getItem(areas.id, item.id);
+      const healthRecords = (await cp.listDatabases()).find((db) => db.ownerModuleId === "healthRecords");
+      if (!healthRecords) throw new Error("Foreign Health records missing");
+      const item = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Foreign" } });
+      const before = await cp.getItem(healthRecords.id, item.id);
       expect(before).not.toBeNull();
-      return { areas, item, before };
+      return { healthRecords, item, before };
     });
     const fixture = await runInTenant(tenant, async () => {
       await seedSystem(data);
       const databases = await cp.listDatabases();
-      const areas = databases.find((db) => db.ownerModuleId === "areas");
+      const healthRecords = databases.find((db) => db.ownerModuleId === "healthRecords");
       const projects = databases.find((db) => db.ownerModuleId === "projects");
-      if (!areas || !projects) throw new Error("System databases missing");
-      const source = await cp.createItem({ databaseId: areas.id, properties: { name: "Source" } });
-      const target = await cp.createItem({ databaseId: areas.id, properties: { name: "Old" } });
+      if (!healthRecords || !projects) throw new Error("System databases missing");
+      const source = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Source" } });
+      const target = await cp.createItem({ databaseId: healthRecords.id, properties: { name: "Old" } });
       const project = await cp.createItem({ databaseId: projects.id, properties: {} });
-      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "area");
-      if (!via) throw new Error("Project area relation missing");
+      const via = (await cp.listProperties(projects.id)).find((property) => property.key === "healthRecords");
+      if (!via) throw new Error("Project health records relation missing");
       await cp.createRelation({ relationPropertyId: via.id, callerItemId: project.id, targetItemId: target.id });
       expect((await cp.getItem(projects.id, project.id))?.properties.name).toBe("Old");
       await withTransaction(data, (client) =>
@@ -371,7 +371,7 @@ describe("explicit value link operations", () => {
           sources: [{ kind: "item", sourceItemId: source.id, sourcePropertyKey: "name" }],
         }),
       );
-      const key = `valueLinksPropagate:${tenant}:fixtureValid.areaNameToProjectName:${target.id}:1`;
+      const key = `valueLinksPropagate:${tenant}:fixtureValid.healthRecordNameToProjectName:${target.id}:1`;
       const jobs = () => admin.query<{ key: string }>("SELECT key FROM graphile_worker.jobs WHERE key = $1", [key]);
       expect((await jobs()).rows).toEqual([]);
       expect(await cp.findItem(foreign.item.id)).toBeNull();
@@ -388,7 +388,7 @@ describe("explicit value link operations", () => {
     expect(
       (await runInTenant(tenant, () => cp.getItem(fixture.projects.id, fixture.project.id)))?.properties.name,
     ).toBe("Source");
-    expect(await runInTenant(foreignTenant, () => cp.getItem(foreign.areas.id, foreign.item.id))).toEqual(
+    expect(await runInTenant(foreignTenant, () => cp.getItem(foreign.healthRecords.id, foreign.item.id))).toEqual(
       foreign.before,
     );
   });

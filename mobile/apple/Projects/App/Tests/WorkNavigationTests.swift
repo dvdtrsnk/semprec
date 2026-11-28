@@ -3,7 +3,7 @@ import NavigatorUI
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The routes of the Tasks screen and of the Podrobnosti sheet: which stack they reach, and how.
 final class WorkNavigationTests: XCTestCase {
@@ -34,7 +34,7 @@ final class WorkNavigationTests: XCTestCase {
         let journal = Navigator(configuration: .init())
         context.register(overview, for: .overview)
         context.register(journal, for: .journal)
-        let start = TasksStart(tab: .all, hideDone: true, areaId: "work")
+        let start = TasksStart(tab: .all, hideDone: true)
 
         context.showTasks(start, in: .overview)
         context.showTasks(start, in: .overview)

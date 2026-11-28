@@ -1,0 +1,8 @@
+# Decision: approving the calendar chooser, single-line titles and the accessible delete confirmation
+
+- Question: May the proposal (sp-a40b7c5c-60f3-4d4b-85cb-7e3dea1ceb66) be approved, and how are three open points settled: a menu or a chooser for the new item calendar, where a title loses its line breaks, and whether the delete confirmation needs a different control or only a different presenter?
+- Options considered: for the calendar, a `Menu` with sections and the qualifier in each duplicate row (iOS still draws its images as templates and may flatten inline sections) or a chooser list grouped by source, as the system Calendar offers, pushed inside the sheet's stack (the sheet sits in a NavigatorUI stack it does not own) or presented as its own sheet; for titles, a single-line field (long titles would no longer wrap), stripping only in Swift, or a Swift binding that turns Return into the end of editing plus a shared rule that every saved title passes; for the dialog, a `confirmationDialog` instead of the alert, or closing the item menu first so the screen itself presents the alert.
+- Decision: a chooser sheet with a section per group, real colour views, a checkmark and per-row identifiers, its sections computed in a value type the feature tests read; a DesignSystem binding for Return and paste plus a domain rule used by every shared title write the defect reaches; `requestDelete` closes the menu and the alert keeps its control and gains button identifiers. An XCUITest of the calendar stays out of scope because `AlldotsUITests` has no signed-in or scripted calendar to walk. The spec is sound against the integration tip; approved.
+- Actor: claude-delegated-by-david
+- Model: claude-opus-5-5
+- Date: 2026-11-21

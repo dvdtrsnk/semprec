@@ -25,7 +25,7 @@ async function countKeys(tenantId?: string): Promise<number> {
 describe("tenant data key store", () => {
   beforeAll(async () => {
     pool = getTestPool();
-    sidePool = await createRuntimeRolePool(pool, "semprec_side");
+    sidePool = await createRuntimeRolePool(pool, "alldots_side");
   });
 
   afterAll(async () => {
@@ -110,7 +110,7 @@ describe("tenant data key store", () => {
     expect(await countKeys()).toBe(0);
   });
 
-  it("lets semprec_side select, insert and delete its own rows but not update", async () => {
+  it("lets alldots_side select, insert and delete its own rows but not update", async () => {
     const tenantId = await createTestTenant(pool);
     await withTenantTransaction(sidePool, tenantId, async (c) => {
       await c.query(

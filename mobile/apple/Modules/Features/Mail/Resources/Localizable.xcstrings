@@ -97,694 +97,6 @@
         }
       }
     },
-    "mail.account.always" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Vždy"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Always"
-          }
-        }
-      }
-    },
-    "mail.account.autoSend" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odesílat bez potvrzení"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Send without confirmation"
-          }
-        }
-      }
-    },
-    "mail.account.autoSend.count" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "v %lld projektech"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "in %lld projects"
-          }
-        }
-      }
-    },
-    "mail.account.autoSend.footer" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Samostatné odesílání se povoluje pro jednotlivé projekty na serveru, z aplikace ho zapnout nejde."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sending on its own is allowed per project on the server; it cannot be turned on from the app."
-          }
-        }
-      }
-    },
-    "mail.account.connections" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Souběžná připojení"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Concurrent connections"
-          }
-        }
-      }
-    },
-    "mail.account.connections.hint" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sniž, když server hlásí příliš mnoho spojení"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Lower it when the server reports too many connections"
-          }
-        }
-      }
-    },
-    "mail.account.draftsRow" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Psát koncepty odpovědí"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Write reply drafts"
-          }
-        }
-      }
-    },
-    "mail.account.failure" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Změnu se nepodařilo provést. Zkus to znovu."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The change could not be made. Try again."
-          }
-        }
-      }
-    },
-    "mail.account.last" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Poslední aktivita"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Last activity"
-          }
-        }
-      }
-    },
-    "mail.account.mode.gmail" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Gmail API (push)"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Gmail API (push)"
-          }
-        }
-      }
-    },
-    "mail.account.mode.graph" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Microsoft Graph"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Microsoft Graph"
-          }
-        }
-      }
-    },
-    "mail.account.mode.imap" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "IMAP"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "IMAP"
-          }
-        }
-      }
-    },
-    "mail.account.name" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Název"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Name"
-          }
-        }
-      }
-    },
-    "mail.account.never" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zatím nikdy"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Never"
-          }
-        }
-      }
-    },
-    "mail.account.reauth.since" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Od %@ se nestahuje nová pošta. Přihlas se znovu na webu, nic se neztratí."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "New mail has not been downloaded since %@. Sign in again on the web; nothing is lost."
-          }
-        }
-      }
-    },
-    "mail.account.reauth.text" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nová pošta se nestahuje. Přihlas se znovu na webu, nic se neztratí."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "New mail is not downloaded. Sign in again on the web; nothing is lost."
-          }
-        }
-      }
-    },
-    "mail.account.reauth.title" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Přihlášení vypršelo"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sign-in expired"
-          }
-        }
-      }
-    },
-    "mail.account.remove" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odebrat účet"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Remove account"
-          }
-        }
-      }
-    },
-    "mail.account.remove.cancel" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ponechat účet"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Keep account"
-          }
-        }
-      }
-    },
-    "mail.account.remove.confirm" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odebrat účet"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Remove account"
-          }
-        }
-      }
-    },
-    "mail.account.remove.impact" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Skryje zprávy: %1$lld, koncepty: %2$lld, vlákna: %3$lld. Přílohy (%4$lld) zůstanou v Souborech."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "This hides messages: %1$lld, drafts: %2$lld, threads: %3$lld. Attachments (%4$lld) stay in Files."
-          }
-        }
-      }
-    },
-    "mail.account.remove.title" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Odebrat tento účet?"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Remove this account?"
-          }
-        }
-      }
-    },
-    "mail.account.semp" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Semp"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Semp"
-          }
-        }
-      }
-    },
-    "mail.account.sync" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Synchronizace"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Sync"
-          }
-        }
-      }
-    },
-    "mail.accounts.add" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Přidat účet"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Add account"
-          }
-        }
-      }
-    },
-    "mail.accounts.add.address" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "E-mail"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "E-mail"
-          }
-        }
-      }
-    },
-    "mail.accounts.add.browserNote" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Gmail a Outlook se připojují přihlášením v prohlížeči, které tahle aplikace zatím nespouští."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Gmail and Outlook accounts are connected by a sign-in in a browser, which this app does not start yet."
-          }
-        }
-      }
-    },
-    "mail.accounts.add.cancel" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zrušit"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cancel"
-          }
-        }
-      }
-    },
-    "mail.accounts.add.error.invalid" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zadej e-mail a heslo a u jiného účtu IMAP i oba servery."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Enter an e-mail address and a password, and both servers for another IMAP account."
-          }
-        }
-      }
-    },
-    "mail.accounts.add.error.refused" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Server přihlášení odmítl, nebo je tenhle účet už připojený."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The server refused the login, or this account is already connected."
-          }
-        }
-      }
-    },
-    "mail.accounts.add.error.unavailable" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Server není dostupný. Zkus to znovu."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The server could not be reached. Try again."
-          }
-        }
-      }
-    },
-    "mail.accounts.add.error.unexpected" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Účet se nepodařilo přidat."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The account could not be added."
-          }
-        }
-      }
-    },
-    "mail.accounts.add.icloud" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "iCloud"
-          }
-        }
-      }
-    },
-    "mail.accounts.add.icloudHint" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Heslo pro aplikace vytvoříš na account.apple.com v sekci Přihlášení a zabezpečení."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Create an app password at account.apple.com under Sign-In and Security."
-          }
-        }
-      }
-    },
-    "mail.accounts.add.imap" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jiný (IMAP)"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Other (IMAP)"
-          }
-        }
-      }
-    },
-    "mail.accounts.add.imapHint" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Server ověříme ještě před uložením. Heslo se uloží šifrovaně na serveru."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The server is checked before anything is saved. The password is stored encrypted on the server."
-          }
-        }
-      }
-    },
-    "mail.accounts.add.imapServer" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "IMAP server"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "IMAP server"
-          }
-        }
-      }
-    },
-    "mail.accounts.add.password" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Heslo"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Password"
-          }
-        }
-      }
-    },
-    "mail.accounts.add.provider" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Druh účtu"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kind of account"
-          }
-        }
-      }
-    },
-    "mail.accounts.add.smtpServer" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "SMTP server"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "SMTP server"
-          }
-        }
-      }
-    },
-    "mail.accounts.add.submit" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ověřit a přidat"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Verify and add"
-          }
-        }
-      }
-    },
-    "mail.accounts.footer" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Pošta se synchronizuje na serveru Semprec, ne v telefonu. Semp z ní čte a píše koncepty; odeslat sám smí jen v projektu, který to má výslovně povolené."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Mail is synced on the Semprec server, not on the phone. Semp reads it and writes drafts; it may send on its own only in a project that explicitly allows it."
-          }
-        }
-      }
-    },
-    "mail.accounts.title" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "E-mailové účty"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "E-mail accounts"
-          }
-        }
-      }
-    },
     "mail.archive" : {
       "localizations" : {
         "cs" : {
@@ -801,18 +113,66 @@
         }
       }
     },
-    "mail.chip.area" : {
+    "mail.attachment.open" : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Oblast: %@"
+            "value" : "Otevřít"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Area: %@"
+            "value" : "Open"
+          }
+        }
+      }
+    },
+    "mail.attachment.save" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uložit do Souborů"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save to Files"
+          }
+        }
+      }
+    },
+    "mail.attachment.saved" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uloženo"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saved"
+          }
+        }
+      }
+    },
+    "mail.attachment.saving" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ukládám…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Saving…"
           }
         }
       }
@@ -1057,6 +417,102 @@
         }
       }
     },
+    "mail.content.attachmentTooLarge" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Příloha je na uložení příliš velká."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachment is too large to save."
+          }
+        }
+      }
+    },
+    "mail.content.mailboxUnavailable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet je odebraný nebo má vypnutou poštu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The account is removed or has Mail switched off."
+          }
+        }
+      }
+    },
+    "mail.content.messageNotFound" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server už tuto zprávu nemá."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server no longer has this message."
+          }
+        }
+      }
+    },
+    "mail.content.providerUnreachable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server teď není dostupný."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server cannot be reached right now."
+          }
+        }
+      }
+    },
+    "mail.content.rateLimited" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Příliš mnoho požadavků na poštovní server. Zkuste to za chvíli znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Too many requests to the mail server. Try again in a moment."
+          }
+        }
+      }
+    },
+    "mail.content.reauthorizationRequired" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pro načtení z poštovního serveru se k účtu znovu přihlaste."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in to this account again to load it from the mail server."
+          }
+        }
+      }
+    },
     "mail.draft.badge" : {
       "localizations" : {
         "cs" : {
@@ -1249,22 +705,6 @@
         }
       }
     },
-    "mail.filter.area" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Oblast"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Area"
-          }
-        }
-      }
-    },
     "mail.filter.clear" : {
       "localizations" : {
         "cs" : {
@@ -1350,13 +790,13 @@
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Pošta patří do projektu, jen když má vlákno vazbu na projekt. Do oblasti se dostane přes projekt."
+            "value" : "Pošta patří do projektu, jen když má vlákno vazbu na projekt."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Mail belongs to a project only when its thread is linked to the project. It reaches an area through the project."
+            "value" : "Mail belongs to a project only when its thread is linked to the project."
           }
         }
       }
@@ -1697,6 +1137,38 @@
         }
       }
     },
+    "mail.message.loading" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Načítám zprávu z poštovního serveru…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Loading the message from the mail server…"
+          }
+        }
+      }
+    },
+    "mail.message.retry" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Načíst znovu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Load again"
+          }
+        }
+      }
+    },
     "mail.message.to" : {
       "localizations" : {
         "cs" : {
@@ -1773,6 +1245,278 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%@ is not syncing"
+          }
+        }
+      }
+    },
+    "mail.refusal.alreadyTrashed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tahle konverzace už je v koši."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This conversation is already in the trash."
+          }
+        }
+      }
+    },
+    "mail.refusal.archiveFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet této konverzace nemá složku Archiv."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "An account of this conversation has no Archive folder."
+          }
+        }
+      }
+    },
+    "mail.refusal.attachmentTooLarge" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přílohy jsou větší, než tento účet dovoluje."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachments are larger than this account allows."
+          }
+        }
+      }
+    },
+    "mail.refusal.draftAlreadySent" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tahle zpráva už byla odeslaná."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This message has already been sent."
+          }
+        }
+      }
+    },
+    "mail.refusal.draftNotEditable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tento koncept nejde v Alldotsu upravit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This draft cannot be changed in Alldots."
+          }
+        }
+      }
+    },
+    "mail.refusal.draftsFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server tohoto účtu zatím nemá složku Koncepty, takže zprávu nejde uložit. Počkej, až se účet synchronizuje, a zkus to znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This account's mail server has no Drafts folder yet, so the message cannot be saved. Wait until the account syncs and try again."
+          }
+        }
+      }
+    },
+    "mail.refusal.inboxFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet této konverzace nemá složku Doručená pošta, kam by šla vrátit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "An account of this conversation has no Inbox folder to move it back to."
+          }
+        }
+      }
+    },
+    "mail.refusal.loginRejected" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server odmítl přihlášení tohoto účtu. Zkontroluj jeho heslo v Internetových účtech."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server refused this account's login. Check its password in Internet accounts."
+          }
+        }
+      }
+    },
+    "mail.refusal.mailDisabled" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošta je pro tento účet vypnutá. Zapni ji v Internetových účtech."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail is switched off for this account. Turn it on in Internet accounts."
+          }
+        }
+      }
+    },
+    "mail.refusal.moveSourceUnverified" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zprávu této konverzace se nepodařilo najít na poštovním serveru. Počkej, až se účet synchronizuje, a zkus to znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A message of this conversation could not be found on its mail server. Wait until the account syncs and try again."
+          }
+        }
+      }
+    },
+    "mail.refusal.noReceivedMessage" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tahle konverzace nemá žádnou přijatou zprávu, kterou by šlo změnit."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This conversation has no received message to change."
+          }
+        }
+      }
+    },
+    "mail.refusal.notArchivedOrTrashed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tahle konverzace není v archivu ani v koši."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This conversation is neither in the archive nor in the trash."
+          }
+        }
+      }
+    },
+    "mail.refusal.reauthorizationRequired" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Před odesláním se k tomuto účtu znovu přihlas, nic se neztratí."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Sign in to this account again before sending; nothing is lost."
+          }
+        }
+      }
+    },
+    "mail.refusal.recipientRejected" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server odmítl některého příjemce. Zkontroluj adresy; příjemci, které přijal, už zprávu možná mají."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server refused a recipient. Check the addresses; recipients it accepted may already have the message."
+          }
+        }
+      }
+    },
+    "mail.refusal.sentFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server tohoto účtu zatím nemá složku Odeslané. Počkej, až se účet synchronizuje, a zkus to znovu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This account's mail server has no Sent folder yet. Wait until the account syncs and try again."
+          }
+        }
+      }
+    },
+    "mail.refusal.serverUnreachable" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní server tohoto účtu není dostupný. Zkus to později."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server of this account could not be reached. Try again later."
+          }
+        }
+      }
+    },
+    "mail.refusal.trashFolderMissing" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Účet této konverzace nemá složku Koš."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "An account of this conversation has no Trash folder."
           }
         }
       }
@@ -1889,6 +1633,22 @@
         }
       }
     },
+    "mail.search.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Na poštovním serveru se nepodařilo hledat pro: %@."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The mail server could not be searched for: %@."
+          }
+        }
+      }
+    },
     "mail.search.prompt" : {
       "localizations" : {
         "cs" : {
@@ -1901,6 +1661,38 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Search (e.g. from:petr is:unread)"
+          }
+        }
+      }
+    },
+    "mail.search.unindexed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Další výsledky na poštovním serveru zatím nejsou zaindexované: %lld."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More results on the mail server are not indexed yet: %lld."
+          }
+        }
+      }
+    },
+    "mail.search.unknownAccount" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "účet"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "an account"
           }
         }
       }
@@ -1949,6 +1741,642 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "The mail server could not be reached. Try again."
+          }
+        }
+      }
+    },
+    "mail.signals.add" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add"
+          }
+        }
+      }
+    },
+    "mail.signals.addresses" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Adresy"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Addresses"
+          }
+        }
+      }
+    },
+    "mail.signals.addresses.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "K projektu patří pošta z těchto adres nebo na ně."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail from or to these addresses belongs to the project."
+          }
+        }
+      }
+    },
+    "mail.signals.addresses.invalid" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zadejte e-mailovou adresu, třeba jana@firma.cz. Projekt může mít nejvýše 100 adres."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter an e-mail address such as jana@firma.cz. A project keeps at most 100 addresses."
+          }
+        }
+      }
+    },
+    "mail.signals.addresses.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat adresu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add an address"
+          }
+        }
+      }
+    },
+    "mail.signals.assign" : {
+      "localizations" : {
+        "cs" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Přiřadit %lld vlákna k projektu"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Přiřadit %lld vlákna k projektu"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Přiřadit %lld vlákno k projektu"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Přiřadit %lld vláken k projektu"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Assign %lld thread to the project"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Assign %lld threads to the project"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "mail.signals.assign.unsaved" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nejdřív signály uložte: vlákna přiřazují jen uložené signály."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save the signals first: only saved signals assign threads."
+          }
+        }
+      }
+    },
+    "mail.signals.assignFailed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Vlákna se nepodařilo přiřadit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The threads were not assigned"
+          }
+        }
+      }
+    },
+    "mail.signals.assigned" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přiřazeno: %1$lld. Přeskočeno: %2$lld."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Assigned: %1$lld. Skipped: %2$lld."
+          }
+        }
+      }
+    },
+    "mail.signals.assigned.dismiss" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Skrýt"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hide"
+          }
+        }
+      }
+    },
+    "mail.signals.domains" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domény"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Domains"
+          }
+        }
+      }
+    },
+    "mail.signals.domains.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "K projektu patří pošta od kohokoli z těchto domén nebo pro něj. Bezplatné služby jako gmail.com se jako doména nepočítají."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail from or to anyone at these domains belongs to the project. Free mail services such as gmail.com never count as a domain."
+          }
+        }
+      }
+    },
+    "mail.signals.domains.invalid" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zadejte název domény, třeba firma.cz. Projekt může mít nejvýše 50 domén."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter a domain name such as firma.cz. A project keeps at most 50 domains."
+          }
+        }
+      }
+    },
+    "mail.signals.domains.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat doménu, třeba firma.cz"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add a domain, such as firma.cz"
+          }
+        }
+      }
+    },
+    "mail.signals.keywords" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klíčová slova"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keywords"
+          }
+        }
+      }
+    },
+    "mail.signals.keywords.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Klíčové slovo najde i jiné tvary slova: „faktura“ najde „faktury“ i „fakturou“. Krátká slova a čísla se musí shodovat přesně."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A keyword also finds its other word forms: “faktura” finds “faktury” and “fakturou”. Short words and numbers match only exactly."
+          }
+        }
+      }
+    },
+    "mail.signals.keywords.invalid" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zadejte slovo nebo frázi o nejvýše 100 znacích. Projekt může mít nejvýše 50 klíčových slov."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enter a word or phrase of at most 100 characters. A project keeps at most 50 keywords."
+          }
+        }
+      }
+    },
+    "mail.signals.keywords.placeholder" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přidat slovo nebo frázi"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Add a word or phrase"
+          }
+        }
+      }
+    },
+    "mail.signals.people" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Lidé projektu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "People of the project"
+          }
+        }
+      }
+    },
+    "mail.signals.people.empty" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Žádný člověk projektu zatím nemá e-mailovou adresu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No person of the project has an e-mail address yet."
+          }
+        }
+      }
+    },
+    "mail.signals.people.footer" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Pošta od lidí projektu a pro ně k projektu patří bez dalšího nastavení. Lidi přidáte nebo odeberete na projektu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail from and to the project's people belongs to the project without anything set here. Add or remove people on the project."
+          }
+        }
+      }
+    },
+    "mail.signals.preview" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odpovídající vlákna"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Matching threads"
+          }
+        }
+      }
+    },
+    "mail.signals.preview.alreadyAssigned" : {
+      "localizations" : {
+        "cs" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Další %lld odpovídající vlákna už projekt mají"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dalších %lld odpovídajícího vlákna už projekt má"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Další %lld odpovídající vlákno už projekt má"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Dalších %lld odpovídajících vláken už projekt má"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld more matching thread already has a project"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld more matching threads already have a project"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "mail.signals.preview.count" : {
+      "localizations" : {
+        "cs" : {
+          "variations" : {
+            "plural" : {
+              "few" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Odpovídají %lld vlákna bez projektu"
+                }
+              },
+              "many" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Odpovídá %lld vlákna bez projektu"
+                }
+              },
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Odpovídá %lld vlákno bez projektu"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "Odpovídá %lld vláken bez projektu"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld thread without a project matches"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld threads without a project match"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "mail.signals.preview.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odpovídající vlákna se nepodařilo načíst."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The matching threads could not be loaded."
+          }
+        }
+      }
+    },
+    "mail.signals.preview.loading" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hledám odpovídající vlákna…"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Looking for matching threads…"
+          }
+        }
+      }
+    },
+    "mail.signals.preview.newest" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zobrazeno je nejnovějších %1$lld z %2$lld."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The newest %1$lld of %2$lld are listed."
+          }
+        }
+      }
+    },
+    "mail.signals.preview.none" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Neodpovídá žádné vlákno bez projektu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No thread without a project matches."
+          }
+        }
+      }
+    },
+    "mail.signals.preview.retry" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zkusit znovu"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Try again"
+          }
+        }
+      }
+    },
+    "mail.signals.remove" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Odebrat %@"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove %@"
+          }
+        }
+      }
+    },
+    "mail.signals.save" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Uložit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Save"
+          }
+        }
+      }
+    },
+    "mail.signals.saveFailed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Signály se nepodařilo uložit"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The signals were not saved"
+          }
+        }
+      }
+    },
+    "mail.signals.title" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Poštovní signály"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mail signals"
           }
         }
       }

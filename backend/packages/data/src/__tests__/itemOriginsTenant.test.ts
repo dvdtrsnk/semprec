@@ -10,7 +10,7 @@ let runtimePool: Pool;
 beforeAll(async () => {
   adminPool = getTestPool();
   await resetDatabase(adminPool);
-  runtimePool = await createRuntimeRolePool(adminPool, "semprec_side");
+  runtimePool = await createRuntimeRolePool(adminPool, "alldots_side");
 });
 
 afterAll(async () => {

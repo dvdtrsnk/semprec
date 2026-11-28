@@ -1,5 +1,5 @@
-import type { CollectionMetadataResolver } from "@semprec/data";
-import type { ItemReadInclude } from "@semprec/shared";
+import type { CollectionMetadataResolver } from "@alldots/data";
+import type { ItemReadInclude } from "@alldots/shared";
 import type { Pool } from "pg";
 import {
   createChokePoint,
@@ -18,7 +18,7 @@ import {
   type DatabaseReader,
   type InitialItemRelation,
   type WriterIdentity,
-} from "@semprec/data";
+} from "@alldots/data";
 import type {
   AuthenticatedActor,
   Database,
@@ -27,7 +27,7 @@ import type {
   ItemPatchOutput,
   OutputByOperation,
   Page,
-} from "@semprec/shared";
+} from "@alldots/shared";
 
 type BreadcrumbEntry = NonNullable<
   Extract<OutputByOperation["page.get"], { kind: "page"; breadcrumbs: unknown }>["breadcrumbs"]
@@ -272,6 +272,10 @@ export function createGenericApplicationService(
         (await chokePoint.findUserLocale(actor.userId)) ?? "en",
         actor.userId,
       );
+    },
+
+    async removePropertyOption(actor, input) {
+      await chokePoint.removePropertyOption(input.propertyId, input.key, actor.userId);
     },
 
     async listViews(_actor, input) {

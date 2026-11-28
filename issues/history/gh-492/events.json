@@ -31,14 +31,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABE_vsug",
         "number": 493,
         "title": "Bump code-review-bot pin to the verdict-reuse base-SHA fix",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/493",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/493",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/493",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/493",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/493.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/493.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/493",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/493",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/493.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/493.patch",
           "merged_at": "2026-09-24T19:48:05Z"
         },
         "bodySha256": "3161de11a1e62dac64486e0cf2f560ad6b082fc35845b29e968d2681d29f2d61"
@@ -48,7 +48,7 @@
   {
     "id": 31785983552,
     "node_id": "REFE_lADOUFuQ4c8AAAABTDXeLc8AAAAHZpeeQA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31785983552",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31785983552",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -72,14 +72,14 @@
     },
     "event": "referenced",
     "commit_id": "08ac4547649ba0d1d08d20d0e8b01e2ac850ad1e",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/08ac4547649ba0d1d08d20d0e8b01e2ac850ad1e",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/08ac4547649ba0d1d08d20d0e8b01e2ac850ad1e",
     "created_at": "2026-09-24T19:48:06Z",
     "performed_via_github_app": null
   },
   {
     "id": 31785983556,
     "node_id": "CE_lADOUFuQ4c8AAAABTDXeLc8AAAAHZpeeRA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/31785983556",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/31785983556",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -141,8 +141,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABTF-tsg",
         "number": 535,
         "title": "Bump code-review-bot pin: verdict reuse for clean-PR (zero-finding) reviews",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/535",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/535",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "e92dc51f563419f602d0a406924e07690c3540f0e0b33fd1f24247da9950e191"
       }

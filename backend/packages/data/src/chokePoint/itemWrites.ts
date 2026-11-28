@@ -1,4 +1,4 @@
-import { BlockInputError, parseMarkdown } from "@semprec/block-model";
+import { BlockInputError, parseMarkdown } from "@alldots/block-model";
 import { ConflictError } from "../errors.js";
 import { projectItemsForRead } from "./itemReadProjection.js";
 import { attachItemPatchChangeMetadata } from "./itemPatchChangeMetadata.js";
@@ -426,8 +426,13 @@ export async function createItemReportingReplay(
   if (writable.replay) return { item: writable.replay, created: false };
   const { database } = writable;
 
-  const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const writer = options.writer ?? SYSTEM_WRITER;
+  if (writer.writerKind !== "system") {
+    // So `assertSelectValuesKnown` checks the caller's option keys against options no removal changes before this
+    // create commits.
+    await propertiesStore.lockChoicePropertiesForShare(client, input.databaseId, Object.keys(input.properties ?? {}));
+  }
+  const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   assertWritableProperties(properties, Object.keys(input.properties ?? {}), options);
   assertCallerMayWriteDatabase(database, properties, writer, options);
   assertColorValues(properties, input.properties ?? {});
@@ -499,7 +504,7 @@ export async function createItemReportingReplay(
     writer,
     initialRelations,
   });
-  // A create hook may write the new item again (Areas assigns its `position`): answer with the row as stored.
+  // A create hook may write the new item again: answer with the row as stored.
   const item =
     itemsStore.itemPropertyWriteCount(client, inserted.databaseId, inserted.id) === 0
       ? inserted
@@ -568,8 +573,14 @@ export async function updateItemWithClient(
 ): Promise<itemsStore.UpdateItemResult> {
   await assertWriterDatabaseAccess(client, options.writer, input.databaseId, "write", input.itemId);
   const database = await assertDatabaseNotArchived(client, input.databaseId);
-  const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const patchKeys = Object.keys(input.propertiesPatch);
+  const writer = options.writer ?? SYSTEM_WRITER;
+  // Before the item row (the option removal's order: property row, then items), so `assertSelectValuesKnown`
+  // checks the caller's option keys against options no removal changes before this write commits.
+  if (writer.writerKind !== "system") {
+    await propertiesStore.lockChoicePropertiesForShare(client, input.databaseId, patchKeys);
+  }
+  const properties = await propertiesStore.listPropertiesByDatabase(client, input.databaseId);
   const command = database.ownerModuleId ? getItemUpdateCommand(database.ownerModuleId) : undefined;
   const commandProperty = command && properties.find((property) => property.key === command.key);
   const hasCommand =
@@ -584,7 +595,6 @@ export async function updateItemWithClient(
     hasCommand && command
       ? { ...options, allowedSystemKeys: [...(options.allowedSystemKeys ?? []), command.key] }
       : options;
-  const writer = options.writer ?? SYSTEM_WRITER;
   assertWritableProperties(properties, patchKeys, writeOptions);
   assertCallerMayWriteDatabase(database, properties, writer, writeOptions);
   assertColorValues(properties, input.propertiesPatch);

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import { createUser } from "../../auth/usersStore.js";
 import { withTransaction } from "../../db/pool.js";
@@ -125,6 +125,8 @@ export function createInvitationMail(runtime: Pool): InvitationMail {
       const result = await runInTenant(world.tenantId, () =>
         withTransaction(runtime, (client) =>
           ingestEmailMessage(client, {
+            arrival: "live",
+            contentState: "full",
             emailsDatabaseId: world.databases.emails!,
             filesDatabaseId: world.databases.files!,
             folderRelationPropertyId: world.properties.emailFolder,

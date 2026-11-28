@@ -6,7 +6,7 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { seedSystem } from "../seed/seedSystem.js";
 
 /**
- * Every table in `public` carries exactly one `semprec:tenancy=tenant|global` comment, written by the migration
+ * Every table in `public` carries exactly one `alldots:tenancy=tenant|global` comment, written by the migration
  * that creates it.
  */
 const GLOBAL_TABLES = [
@@ -34,6 +34,7 @@ const TENANT_TABLES = [
   "rollup_dependencies",
   "task_recurrence",
   "project_kept_dates",
+  "project_mail_signals",
   "item_automation",
   "recording_requests",
   "item_search_index",
@@ -65,10 +66,14 @@ const TENANT_TABLES = [
   "mail_folder_sync_state",
   "mail_threads",
   "mail_thread_aliases",
+  "mail_thread_change_counters",
+  "mail_thread_changes",
   "mail_message_meta",
   "mail_attachments",
+  "mail_message_content_cache",
   "mail_message_flag_sync_state",
   "mail_message_move_sync_state",
+  "mail_sent_copies",
   "person_email_index",
   "external_credentials",
   "credential_access_log",
@@ -91,6 +96,11 @@ const TENANT_TABLES = [
   "library_cover_candidates",
   "idempotent_responses",
   "calendar_feed_state",
+  "calendar_remote_state",
+  "event_remote_state",
+  "calendar_account_sync_state",
+  "calendar_event_push_state",
+  "calendar_push_channels",
 ];
 
 type Queryable = Pick<Pool | PoolClient, "query">;
@@ -103,7 +113,7 @@ async function listUnclassifiedTables(db: Queryable): Promise<string[]> {
       WHERE n.nspname = 'public'
         AND c.relkind IN ('r', 'p')
         AND NOT c.relispartition
-        AND COALESCE(obj_description(c.oid, 'pg_class'), '') NOT IN ('semprec:tenancy=tenant', 'semprec:tenancy=global')
+        AND COALESCE(obj_description(c.oid, 'pg_class'), '') NOT IN ('alldots:tenancy=tenant', 'alldots:tenancy=global')
       ORDER BY c.relname`,
   );
   return rows.map((row) => row.relname);
@@ -296,7 +306,7 @@ async function listUniqueIndexes(db: Queryable): Promise<UniqueIndexRow[]> {
         AND c.relnamespace = 'public'::regnamespace
         AND c.relkind IN ('r', 'p')
         AND NOT c.relispartition
-        AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+        AND obj_description(c.oid, 'pg_class') = 'alldots:tenancy=tenant'
       ORDER BY c.relname, ic.relname`,
   );
   return rows;
@@ -361,11 +371,11 @@ async function listCompositeForeignKeyViolations(db: Queryable): Promise<string[
       WHERE k.contype = 'f'
         AND c.relnamespace = 'public'::regnamespace
         AND NOT c.relispartition
-        AND (obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+        AND (obj_description(c.oid, 'pg_class') = 'alldots:tenancy=tenant'
              OR EXISTS (SELECT 1 FROM pg_attribute ta
                          WHERE ta.attrelid = c.oid AND ta.attname = 'tenant_id' AND NOT ta.attisdropped))
         AND p.relnamespace = 'public'::regnamespace
-        AND (obj_description(p.oid, 'pg_class') = 'semprec:tenancy=tenant' OR p.relname = 'users')
+        AND (obj_description(p.oid, 'pg_class') = 'alldots:tenancy=tenant' OR p.relname = 'users')
       ORDER BY c.relname, k.conname`,
   );
   const mapsTenantId = (row: ForeignKeyRow): boolean =>
@@ -403,7 +413,7 @@ describe("tenancy classification catalog", () => {
     expect(
       offenders,
       `Tables without a tenancy classification: ${offenders.join(", ")}. ` +
-        `Fix: add COMMENT ON TABLE <table> IS 'semprec:tenancy=tenant' (or 'semprec:tenancy=global') in the migration that creates it.`,
+        `Fix: add COMMENT ON TABLE <table> IS 'alldots:tenancy=tenant' (or 'alldots:tenancy=global') in the migration that creates it.`,
     ).toEqual([]);
   });
 
@@ -427,14 +437,14 @@ describe("tenancy classification catalog", () => {
   it("pins the global tables", async () => {
     const comments = await readClassifications(pool, GLOBAL_TABLES);
     for (const table of GLOBAL_TABLES) {
-      expect(comments.get(table), table).toBe("semprec:tenancy=global");
+      expect(comments.get(table), table).toBe("alldots:tenancy=global");
     }
   });
 
   it("pins the tenant tables", async () => {
     const comments = await readClassifications(pool, TENANT_TABLES);
     for (const table of TENANT_TABLES) {
-      expect(comments.get(table), table).toBe("semprec:tenancy=tenant");
+      expect(comments.get(table), table).toBe("alldots:tenancy=tenant");
     }
   });
 
@@ -460,7 +470,7 @@ describe("tenancy classification catalog", () => {
          LEFT JOIN pg_type t ON t.oid = a.atttypid
          LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
         WHERE n.nspname = 'public'
-          AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+          AND obj_description(c.oid, 'pg_class') = 'alldots:tenancy=tenant'
         ORDER BY c.relname`,
     );
     const byTable = new Map(rows.map((row) => [row.relname, row]));
@@ -530,7 +540,7 @@ describe("tenancy classification catalog", () => {
   });
 
   it("keeps the runtime roles non-privileged, table-less owners", async () => {
-    for (const role of ["semprec_data", "semprec_side"]) {
+    for (const role of ["alldots_data", "alldots_side"]) {
       const attrs = await pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = $1`,
         [role],

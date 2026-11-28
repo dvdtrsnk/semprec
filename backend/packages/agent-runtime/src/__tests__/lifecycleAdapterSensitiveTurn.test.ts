@@ -7,7 +7,7 @@ import {
   getTenantZeroId,
   getTestPool,
   resetDatabase,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import {
   createAgentRun,
   createChokePoint,
@@ -20,8 +20,8 @@ import {
   withTransaction,
   type ChokePoint,
   type DatabaseRow,
-} from "@semprec/data";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data";
+import { runInTenant } from "@alldots/shared";
 import type { CompactionAdapter } from "../compaction.js";
 import { persistCompaction, reconstructConversationHistory } from "../conversationReconstruction.js";
 import { runAgentSessionForRun, runAgentTurn, runAgentTurnWithStoredForm } from "../lifecycleAdapter.js";
@@ -149,7 +149,7 @@ describe("redaction of tool call arguments, assistant text and compaction checkp
     await resetDatabase(admin);
     await seedSystem(admin, createViewTypeRegistry());
     await createTenantZeroUser(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(runtime);
     await inTenant(async () => {
       const found = await withTransaction(runtime, (client) => getDatabaseByModuleId(client, "healthRecords"));

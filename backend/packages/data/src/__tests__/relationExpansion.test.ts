@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { expandItemRelations } from "../chokePoint/relationExpansion.js";
@@ -13,7 +13,7 @@ import { createCollectionMetadataResolver, type CollectionMetadataResolver } fro
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createBlob } from "../blobs/blobsStore.js";
 import type { ItemRow } from "../types.js";
-import type { ExpandedRelationTarget, ItemRelationTarget } from "@semprec/shared";
+import type { ExpandedRelationTarget, ItemRelationTarget } from "@alldots/shared";
 let admin: Pool;
 let pool: Pool;
 let cp: ChokePoint;
@@ -46,13 +46,13 @@ async function expand(items: ItemRow[], relations: Record<string, string[]> | tr
 describe("batched relation expansion", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:verify-runtime-role", () =>
       pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(pool);
   });
   beforeEach(async () => {
@@ -67,27 +67,25 @@ describe("batched relation expansion", () => {
     await pool.end();
     await admin.end();
   });
-  it("expands companies and projects, with an area's own appearance at one nested level", async () =>
+  it("expands companies and projects, with a nested project's own color and its database's icon", async () =>
     runInTenant(tenant, async () => {
       const person = await make("people", { name: "Person" });
       const company = await make("companies", { name: "Company" });
-      const project = await make("projects", { name: "Project", color: "#FF9500" });
-      const area = await make("areas", { name: "Work", icon: "briefcase", color: "#5856D6" });
+      const project = await make("projects", { name: "Project", color: "#5856D6" });
       await link(person, "companies", company, { addedAt: "2026-01-01" });
       await link(person, "projects", project);
-      await link(project, "area", area);
-      const [result] = await expand([person], { companies: [], projects: ["area"] });
+      await link(company, "projects", project);
+      const [result] = await expand([person], { companies: ["projects"], projects: [] });
       expect(result?.relations?.companies).toMatchObject([
-        { id: company.id, title: "Company", icon: "building", metadata: { addedAt: "2026-01-01" } },
-      ]);
-      expect(result?.relations?.projects).toMatchObject([
         {
-          id: project.id,
-          color: "#FF9500",
-          icon: "folder",
-          properties: { area: [{ id: area.id, title: "Work", icon: "briefcase", color: "#5856D6" }] },
+          id: company.id,
+          title: "Company",
+          icon: "building",
+          metadata: { addedAt: "2026-01-01" },
+          properties: { projects: [{ id: project.id, title: "Project", icon: "folder", color: "#5856D6" }] },
         },
       ]);
+      expect(result?.relations?.projects).toMatchObject([{ id: project.id, color: "#5856D6", icon: "folder" }]);
       expect(result?.relationsTruncated).toEqual([]);
     }));
   it("returns first 50 live targets ordered by edge and flags truncation, excluding trashed targets first", async () =>
@@ -290,15 +288,15 @@ describe("batched relation expansion", () => {
         company.id,
       ]);
       const project = await make("projects", { name: "Project" });
-      const area = await make("areas", { name: "Area" });
+      const nested = await make("companies", { name: "Nested" });
       await link(person, "projects", project);
-      await link(project, "area", area);
-      expect((await expand([person], { projects: ["area"] }))[0]?.relations?.projects).toHaveLength(1);
+      await link(nested, "projects", project);
+      expect((await expand([person], { projects: ["company"] }))[0]?.relations?.projects).toHaveLength(1);
       await pool.query("UPDATE items SET properties = '[]'::jsonb WHERE database_id = $1 AND id = $2", [
-        area.databaseId,
-        area.id,
+        nested.databaseId,
+        nested.id,
       ]);
-      await expect(expand([person], { projects: ["area"] })).rejects.toThrow();
+      await expect(expand([person], { projects: ["company"] })).rejects.toThrow();
     }));
   it("validates relation keys even for empty database and view pages", async () =>
     runInTenant(tenant, async () => {

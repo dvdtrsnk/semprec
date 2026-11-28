@@ -1,10 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Settings } from "luxon";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getTenantZeroId } from "../testSupport/testDb.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import type { Pool } from "pg";
-import { CORE_TASK_NAMES } from "@semprec/queue";
+import { CORE_TASK_NAMES } from "@alldots/queue";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
@@ -510,13 +510,10 @@ describe("property defaults on real item writes", () => {
   it.each([
     ["books", "status", "toRead"],
     ["movies", "status", "planned"],
-    ["areas", "active", true],
   ] as const)("applies the seeded %s default", async (moduleId, key, value) => {
     await runInTenant(getTenantZeroId(), async () => {
       const item = await chokePoint.createItem({ databaseId: await database(moduleId) });
-      // An Area also gets its `position` from the Areas create hook.
-      const { position: _position, ...defaulted } = item.properties;
-      expect(defaulted).toEqual({ [key]: value });
+      expect(item.properties).toEqual({ [key]: value });
     });
   });
 

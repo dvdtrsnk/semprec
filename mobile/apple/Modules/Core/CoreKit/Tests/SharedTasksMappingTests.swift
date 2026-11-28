@@ -25,7 +25,6 @@ final class SharedTasksMappingTests: XCTestCase {
                 .content,
                 tab: .planned,
                 hideDone: true,
-                areaId: "a1",
                 projectId: "p1",
                 flaggedOnly: true,
                 openCount: 4,
@@ -35,12 +34,10 @@ final class SharedTasksMappingTests: XCTestCase {
         )
         XCTAssertEqual(state.tab, .planned)
         XCTAssertTrue(state.hideDone)
-        XCTAssertEqual(state.areaId, "a1")
         XCTAssertEqual(state.projectId, "p1")
         XCTAssertTrue(state.flaggedOnly)
         XCTAssertTrue(state.filterActive)
         XCTAssertEqual(state.openCount, 4)
-        XCTAssertEqual(state.areaAllCount, 7)
         XCTAssertEqual(state.projectAllCount, 8)
         XCTAssertTrue(state.matchesNothing)
         XCTAssertEqual(state.notice, .rejected)
@@ -108,17 +105,13 @@ final class SharedTasksMappingTests: XCTestCase {
         let state = Tasks.state(
             tasksState(
                 .content,
-                areaOptions: [
-                    SharedSDK.TaskFilterOption(id: "a1", title: "Práce", color: "#5856D6", count: 3, areaId: nil)
-                ],
-                projectOptions: [SharedSDK.TaskFilterOption(id: "p1", title: "iOS", color: nil, count: 2, areaId: "a1")]
+                projectOptions: [SharedSDK.TaskFilterOption(id: "p1", title: "iOS", color: "#007AFF", count: 2)]
             )
         )
         XCTAssertEqual(
-            state.areaOptions,
-            [CoreKit.TaskFilterOption(id: "a1", title: "Práce", color: "#5856D6", count: 3)]
+            state.projectOptions,
+            [CoreKit.TaskFilterOption(id: "p1", title: "iOS", color: "#007AFF", count: 2)]
         )
-        XCTAssertEqual(state.projectOptions, [CoreKit.TaskFilterOption(id: "p1", title: "iOS", count: 2, areaId: "a1")])
     }
 
     // MARK: - Tasks actions and effects
@@ -127,12 +120,10 @@ final class SharedTasksMappingTests: XCTestCase {
         let select = try XCTUnwrap(Tasks.action(.selectTab(.all)) as? SharedSDK.TasksActionSelectTab)
         XCTAssertEqual(select.tab, .all)
         XCTAssertTrue(Tasks.action(.toggleHideDone) is SharedSDK.TasksActionToggleHideDone)
-        let area = try XCTUnwrap(Tasks.action(.setArea("a1")) as? SharedSDK.TasksActionSetArea)
-        XCTAssertEqual(area.areaId, "a1")
-        let noArea = try XCTUnwrap(Tasks.action(.setArea(nil)) as? SharedSDK.TasksActionSetArea)
-        XCTAssertNil(noArea.areaId)
         let project = try XCTUnwrap(Tasks.action(.setProject("p1")) as? SharedSDK.TasksActionSetProject)
         XCTAssertEqual(project.projectId, "p1")
+        let noProject = try XCTUnwrap(Tasks.action(.setProject(nil)) as? SharedSDK.TasksActionSetProject)
+        XCTAssertNil(noProject.projectId)
         let flagged = try XCTUnwrap(
             Tasks.action(.setFlaggedOnly(true)) as? SharedSDK.TasksActionSetFlaggedOnly
         )
@@ -180,12 +171,10 @@ private extension SharedTasksMappingTests {
         failure: SharedSDK.FailureKind? = nil,
         tab: SharedSDK.TasksTab = .today,
         hideDone: Bool = false,
-        areaId: String? = nil,
         projectId: String? = nil,
         flaggedOnly: Bool = false,
         groups: [SharedSDK.TaskGroup] = [],
         openCount: Int32 = 0,
-        areaOptions: [SharedSDK.TaskFilterOption] = [],
         projectOptions: [SharedSDK.TaskFilterOption] = [],
         matchesNothing: Bool = false,
         notice: SharedSDK.FailureKind? = nil
@@ -195,14 +184,11 @@ private extension SharedTasksMappingTests {
             failure: failure,
             tab: tab,
             hideDone: hideDone,
-            areaId: areaId,
             projectId: projectId,
             flaggedOnly: flaggedOnly,
             groups: groups,
             openCount: openCount,
-            areaOptions: areaOptions,
             projectOptions: projectOptions,
-            areaAllCount: 7,
             projectAllCount: 8,
             matchesNothing: matchesNothing,
             notice: notice

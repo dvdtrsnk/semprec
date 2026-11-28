@@ -18,7 +18,6 @@ public enum SempTargetKind: String, CaseIterable, Equatable, Hashable, Sendable 
     case inbox
     case journal
     case project
-    case area
     case person
     case company
     case file

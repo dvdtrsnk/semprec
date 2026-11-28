@@ -13,7 +13,7 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../../chokePoint/
 import { seedSystem } from "../../seed/seedSystem.js";
 import { createPool, withTransaction } from "../../db/pool.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { renameDatabase } from "../../chokePoint/databasesStore.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createBlob } from "../../blobs/blobsStore.js";
@@ -28,7 +28,7 @@ import * as relationsStore from "../../chokePoint/relationsStore.js";
 import { createRelationWithClient, deleteRelationWithClient } from "../../chokePoint/relationOps.js";
 import { getOrCreateJournalItem } from "../../journal/journalStore.js";
 import { createInboxTypeWithClient, type CreateInboxTypeInput } from "../inboxTypesStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn, type ProposalStep } from "../inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn, type ProposalStep } from "../inboxTickAction.js";
 import {
   createCaptureInboxItemRouteHandler,
   createConfirmProposalRouteHandler,
@@ -71,7 +71,7 @@ let proposalsId: string;
 
 /**
  * The inbox custom-route handler factories, exercised directly against the functions they wrap; HTTP auth and mounting
- * are covered by `customRouteMount.test.ts` and `routeMatrix.test.ts` in `semprec-api`.
+ * are covered by `customRouteMount.test.ts` and `routeMatrix.test.ts` in `alldots-api`.
  */
 
 type RouteContext = Parameters<ReturnType<typeof createConfirmProposalRouteHandler>>[0];
@@ -143,7 +143,7 @@ async function propertyIdFor(databaseId: string, key: string): Promise<string> {
 }
 
 function createDataPool(options: { statementTimeoutMs?: number } = {}): Pool {
-  return createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data", ...options });
+  return createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data", ...options });
 }
 
 /** The runtime role neither bypasses row-level security nor is a superuser. */
@@ -151,7 +151,7 @@ async function expectRuntimeRole(runtime: Pool): Promise<void> {
   const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
     "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
   );
-  expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+  expect(role.rows).toEqual([{ name: "alldots_data", bypass: false, superuser: false }]);
 }
 
 /** Runs `fn` inside tenant zero against a fresh runtime-role pool and ends the pool, reporting a failure of either. */
@@ -218,8 +218,8 @@ function createInboxItem(typeId: string, text: string, runtime: Pool = pool): Pr
   );
 }
 
-async function runTick(itemId: string, compute: ComputeSemprecProposalFn, runtime: Pool = pool): Promise<void> {
-  await createSemprecTickAction(runtime, compute)(
+async function runTick(itemId: string, compute: ComputeAlldotsProposalFn, runtime: Pool = pool): Promise<void> {
+  await createAlldotsTickAction(runtime, compute)(
     { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
     { heartbeatId: "hb", projectItemId: "proj", itemId },
   );
@@ -1685,9 +1685,9 @@ describe("inbox custom route handlers", () => {
       );
 
       tenantIt("removes only its own blocks and leaves an edge the day already had", async () => {
-        const areaId = await createIn(await databaseIdFor("areas"), { name: "Health" });
-        const first = await createJournalCard({ areaId, markdown: "Morning." });
-        const second = await createJournalCard({ areaId, markdown: "Evening." });
+        const projectId = await createIn(await databaseIdFor("projects"), { name: "Health" });
+        const first = await createJournalCard({ projectId, markdown: "Morning." });
+        const second = await createJournalCard({ projectId, markdown: "Evening." });
         await confirmCard(first);
         await confirmCard(second);
         const day = (await dayItem())!;
@@ -1697,7 +1697,7 @@ describe("inbox custom route handlers", () => {
 
         expect(item.properties.status).toBe("proposed");
         expect(await dayPage()).toBe("Morning.");
-        expect(await edgeExists(day.id, areaId)).toBe(true);
+        expect(await edgeExists(day.id, projectId)).toBe(true);
       });
 
       tenantIt(
@@ -2033,11 +2033,11 @@ describe("inbox custom route handlers", () => {
 
     describe("multi-step proposals", () => {
       tenantIt("restores the values and the relation an update step changed", async () => {
-        const oldArea = await createIn(await databaseIdFor("areas"), { name: "Old" });
-        const newArea = await createIn(await databaseIdFor("areas"), { name: "New" });
+        const oldPerson = await createIn(await databaseIdFor("people"), { name: "Old" });
+        const newPerson = await createIn(await databaseIdFor("people"), { name: "New" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Before" });
-        await relate(projectsDb, "area", projectId, oldArea);
+        await relate(projectsDb, "people", projectId, oldPerson);
         const cardId = await createCardWith(
           stepsEnvelope(projectsDb, [
             {
@@ -2046,15 +2046,15 @@ describe("inbox custom route handlers", () => {
               itemId: projectId,
               role: "primary",
               properties: { name: "After" },
-              relations: { area: [newArea] },
-              before: { properties: { name: "Before" }, relations: { area: [oldArea] } },
-              after: { properties: { name: "After" }, relations: { area: [newArea] } },
+              relations: { people: [newPerson] },
+              before: { properties: { name: "Before" }, relations: { people: [oldPerson] } },
+              after: { properties: { name: "After" }, relations: { people: [newPerson] } },
             },
           ]),
         );
         await confirmCard(cardId);
         expect((await anyItem(projectId)).properties.name).toBe("After");
-        expect(await edgeExists(projectId, newArea)).toBe(true);
+        expect(await edgeExists(projectId, newPerson)).toBe(true);
 
         const { item } = await reopenCard(cardId);
 
@@ -2062,16 +2062,16 @@ describe("inbox custom route handlers", () => {
         const project = await anyItem(projectId);
         expect(project.properties.name).toBe("Before");
         expect(project.deletedAt).toBeNull();
-        expect(await edgeExists(projectId, oldArea)).toBe(true);
-        expect(await edgeExists(projectId, newArea)).toBe(false);
+        expect(await edgeExists(projectId, oldPerson)).toBe(true);
+        expect(await edgeExists(projectId, newPerson)).toBe(false);
       });
 
       tenantIt("restores the relation of an update step that changed no property", async () => {
-        const oldArea = await createIn(await databaseIdFor("areas"), { name: "Old" });
-        const newArea = await createIn(await databaseIdFor("areas"), { name: "New" });
+        const oldPerson = await createIn(await databaseIdFor("people"), { name: "Old" });
+        const newPerson = await createIn(await databaseIdFor("people"), { name: "New" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
-        await relate(projectsDb, "area", projectId, oldArea);
+        await relate(projectsDb, "people", projectId, oldPerson);
         const cardId = await createCardWith(
           stepsEnvelope(projectsDb, [
             {
@@ -2080,18 +2080,18 @@ describe("inbox custom route handlers", () => {
               itemId: projectId,
               role: "primary",
               properties: {},
-              before: { relations: { area: [oldArea] } },
-              after: { relations: { area: [newArea] } },
+              before: { relations: { people: [oldPerson] } },
+              after: { relations: { people: [newPerson] } },
             },
           ]),
         );
         await confirmCard(cardId);
-        expect(await edgeExists(projectId, newArea)).toBe(true);
+        expect(await edgeExists(projectId, newPerson)).toBe(true);
 
         await reopenCard(cardId);
 
-        expect(await edgeExists(projectId, oldArea)).toBe(true);
-        expect(await edgeExists(projectId, newArea)).toBe(false);
+        expect(await edgeExists(projectId, oldPerson)).toBe(true);
+        expect(await edgeExists(projectId, newPerson)).toBe(false);
         expect((await anyItem(projectId)).properties.name).toBe("Project");
       });
 
@@ -2134,36 +2134,36 @@ describe("inbox custom route handlers", () => {
       );
 
       tenantIt("deletes the edge a link step wrote between existing items, and keeps both items", async () => {
-        const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
+        const personId = await createIn(await databaseIdFor("people"), { name: "Anna" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
         const cardId = await createCardWith(
           stepsEnvelope(await databaseIdFor("companies"), [
             { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
-            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { area: [areaId] } },
+            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { people: [personId] } },
           ]),
         );
         await confirmCard(cardId);
-        expect(await edgeExists(projectId, areaId)).toBe(true);
+        expect(await edgeExists(projectId, personId)).toBe(true);
 
         const { item } = await reopenCard(cardId);
 
         expect(item.properties.status).toBe("proposed");
-        expect(await edgeExists(projectId, areaId)).toBe(false);
+        expect(await edgeExists(projectId, personId)).toBe(false);
         expect((await anyItem(projectId)).deletedAt).toBeNull();
-        expect((await anyItem(areaId)).deletedAt).toBeNull();
+        expect((await anyItem(personId)).deletedAt).toBeNull();
       });
 
       tenantIt("keeps an edge a link step proposed that existed before the confirmation", async () => {
-        const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
+        const personId = await createIn(await databaseIdFor("people"), { name: "Anna" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
         // The user linked the pair by hand before the card was confirmed; the confirm writes the same pair again.
-        await relate(projectsDb, "area", projectId, areaId);
+        await relate(projectsDb, "people", projectId, personId);
         const cardId = await createCardWith(
           stepsEnvelope(await databaseIdFor("companies"), [
             { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
-            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { area: [areaId] } },
+            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { people: [personId] } },
           ]),
         );
         await confirmCard(cardId);
@@ -2171,7 +2171,7 @@ describe("inbox custom route handlers", () => {
         const { item } = await reopenCard(cardId);
 
         expect(item.properties.status).toBe("proposed");
-        expect(await edgeExists(projectId, areaId)).toBe(true);
+        expect(await edgeExists(projectId, personId)).toBe(true);
       });
 
       tenantIt("restores the metadata of an edge an update step removed", async () => {
@@ -2237,14 +2237,14 @@ describe("inbox custom route handlers", () => {
       );
 
       tenantIt("applies no step when a later reversal fails, and applies all of them once it can", async () => {
-        const areaId = await createIn(await databaseIdFor("areas"), { name: "Area" });
+        const personId = await createIn(await databaseIdFor("people"), { name: "Anna" });
         const projectsDb = await databaseIdFor("projects");
         const projectId = await createIn(projectsDb, { name: "Project" });
         const otherId = await createIn(projectsDb, { name: "Old restore" });
         const cardId = await createCardWith(
           stepsEnvelope(await databaseIdFor("companies"), [
             { ref: "company", op: "create", databaseKey: "companies", role: "primary", properties: { name: "Acme" } },
-            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { area: [areaId] } },
+            { ref: "link", op: "link", itemId: projectId, role: "secondary", relations: { people: [personId] } },
             {
               ref: "other",
               op: "update",
@@ -2270,7 +2270,7 @@ describe("inbox custom route handlers", () => {
 
           expect(await writtenState()).toEqual(before);
           expect(await storedCard(cardId)).toEqual(card);
-          expect(await edgeExists(projectId, areaId)).toBe(true);
+          expect(await edgeExists(projectId, personId)).toBe(true);
           expect((await anyItem(otherId)).properties.name).toBe("New");
         } finally {
           await pool.query("DROP TRIGGER fail_restore ON items");
@@ -2280,7 +2280,7 @@ describe("inbox custom route handlers", () => {
         const { item } = await reopenCard(cardId);
 
         expect(item.properties.status).toBe("proposed");
-        expect(await edgeExists(projectId, areaId)).toBe(false);
+        expect(await edgeExists(projectId, personId)).toBe(false);
         expect((await anyItem(otherId)).properties.name).toBe("Old restore");
       });
     });
@@ -3922,7 +3922,6 @@ describe("inbox custom route handlers", () => {
         "allDay",
         "status",
         "project",
-        "area",
         "followupTask",
         "followDate",
       ]);
@@ -3939,6 +3938,17 @@ describe("inbox custom route handlers", () => {
         when: { field: "status", notEquals: "longTerm" },
       });
       expect(fieldOf(listed, "status")).toMatchObject({ control: "seg" });
+    });
+
+    it("offers a project card the project's tags as a multi field labelled in the user's language", async () => {
+      const card = await createCard("Kitchen renovation", "projects", { name: "Kitchen renovation" });
+
+      expect(fieldOf(await listedCard(card.cardId), "tags")).toEqual({ key: "tags", control: "multi", label: "Tags" });
+      expect(fieldOf(await listedCard(card.cardId, "cs"), "tags")).toEqual({
+        key: "tags",
+        control: "multi",
+        label: "Štítky",
+      });
     });
 
     it("gives an editorSchema of null to a card whose base kind no module declares", async () => {
@@ -3971,19 +3981,17 @@ describe("inbox custom route handlers", () => {
         task: "tasks",
         event: "events",
         project: "projects",
-        area: "areas",
         company: "companies",
         person: "people",
         file: "files",
         health: "healthRecords",
       };
-      // Fields without a property of their own: the all-day and step switches, the follow-up date, the Tasks
-      // `area` choice, and the page content of the two page cards.
+      // Fields without a property of their own: the all-day and step switches, the follow-up date, and the page
+      // content of the two page cards.
       const pseudoKeys = new Set([
         "allDay",
         "followupTask",
         "followDate",
-        "area",
         "markdown",
         "day",
         "page",

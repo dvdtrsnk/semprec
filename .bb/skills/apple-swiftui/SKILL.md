@@ -1,6 +1,6 @@
 ---
 name: apple-swiftui
-description: "How the Apple app under mobile/apple is written - one SwiftUI codebase building native iOS/iPadOS and macOS apps (not Catalyst) from the same targets, platform conditionals only where they differ, no UIKit or AppKit, CoreKit as the only door to Kotlin, feature ViewModels created once in the @StateObject autoclosure, String Catalogs, accessibility identifiers, the Tuist module recipe, SwiftLint and both destinations verified. Load this BEFORE changing Swift, a Tuist manifest, a String Catalog or SwiftLint config under mobile/apple. Triggers on: mobile/apple/, @StateObject, ObservableObject, @Observable, @State, #Preview, .task, #if os(, UIKit, AppKit, ScreenModel, ScriptedScreenModel, *ScreenFactory, *Routing, *Identifiers, accessibilityIdentifier, StatusView, listRowButton, XCUITest, Localizable.xcstrings, Project.swift, Workspace.swift, SemprecProject, ProjectConfiguration.swift, tuist, xcodebuild, FactoryKit, NavigatorUI, swiftlint. Skip only when nothing in mobile/apple/ changes."
+description: "How the Apple app under mobile/apple is written - one SwiftUI codebase building native iOS/iPadOS and macOS apps (not Catalyst) from the same targets, platform conditionals only where they differ, no UIKit or AppKit, CoreKit as the only door to Kotlin, feature ViewModels created once in the @StateObject autoclosure, String Catalogs, accessibility identifiers, the Tuist module recipe, SwiftLint and both destinations verified. Load this BEFORE changing Swift, a Tuist manifest, a String Catalog or SwiftLint config under mobile/apple. Triggers on: mobile/apple/, @StateObject, ObservableObject, @Observable, @State, #Preview, .task, #if os(, UIKit, AppKit, ScreenModel, ScriptedScreenModel, *ScreenFactory, *Routing, *Identifiers, accessibilityIdentifier, StatusView, listRowButton, XCUITest, Localizable.xcstrings, Project.swift, Workspace.swift, AlldotsProject, ProjectConfiguration.swift, tuist, xcodebuild, FactoryKit, NavigatorUI, swiftlint. Skip only when nothing in mobile/apple/ changes."
 ---
 
 # One SwiftUI codebase, two native apps. Shared unless they truly differ.
@@ -18,14 +18,14 @@ commands.
 
 ## 1. One codebase, both platforms
 
-Every target uses `SemprecProject.destinations` (`[.iPhone, .iPad, .mac]`) and
-`SemprecProject.deploymentTargets` (iOS 26.0 and macOS 26.0 from
+Every target uses `AlldotsProject.destinations` (`[.iPhone, .iPad, .mac]`) and
+`AlldotsProject.deploymentTargets` (iOS 27.0 and macOS 26.0 from
 `Tuist/ProjectDescriptionHelpers/ProjectConfiguration.swift`), builds arm64
 only (`ProjectConfiguration.architectures`, the `ARCHS` of every project and of
 the Swift packages), and compiles in Swift 6 with complete strict concurrency.
 The macOS app is a native macOS build of the same targets, not Mac Catalyst,
 because Kotlin/Native has no Catalyst target. The one target that builds for
-iPhone and iPad only is the XCUITest bundle `SemprecUITests`
+iPhone and iPad only is the XCUITest bundle `AlldotsUITests`
 (`destinations: [.iPhone, .iPad]`, `.iOS(ProjectConfiguration.iosMinimum)`),
 because macOS XCUITest needs the Accessibility permission, which a build
 machine does not grant; give no other target its own destinations.
@@ -71,14 +71,14 @@ machine does not grant; give no other target its own destinations.
 | `DesignSystem` (`Modules/Core/DesignSystem`) | `Theme` tokens (`Theme.Opacity.pressed` among them), `StatusView`, `StatusIdentifiers`, `inlineNavigationTitle()`, `listRowButton()`, the `state.*` strings | nothing |
 | `Dependencies` (`Modules/Core/Dependencies`) | `SceneContainer`, the Factory container of one scene | CoreKit, `FactoryKit` |
 | `HomeFeature`, `SettingsFeature` (`Modules/Features/<Name>`) | screens, feature ViewModels, routing protocol, identifiers, strings | CoreKit, DesignSystem |
-| `Semprec` (`Projects/App`) | `SemprecApp`, `AppScene`, `AppComposition`, navigation, routers | CoreKit, Dependencies, both features, `NavigatorUI` |
+| `Alldots` (`Projects/App`) | `AlldotsApp`, `AppScene`, `AppComposition`, navigation, routers | CoreKit, Dependencies, both features, `NavigatorUI` |
 
 Test targets (`CoreKitTests`, `HomeFeatureTests`, `SettingsFeatureTests`,
-`SemprecTests`) depend on the target they test, the feature tests on CoreKit
-too, and `SemprecTests` on `NavigatorUI`, because `NavigationTests` and
+`AlldotsTests`) depend on the target they test, the feature tests on CoreKit
+too, and `AlldotsTests` on `NavigatorUI`, because `NavigationTests` and
 `AppSceneNavigationTests` drive the app's real stacks. `CoreKitTests` is the
 only test target that imports `SharedSDK`: `SharedMappingTests` builds Kotlin
-values for the bridges' mappings. `SemprecUITests` depends on the app it
+values for the bridges' mappings. `AlldotsUITests` depends on the app it
 launches (`appUnderTest` in the policy) but imports nothing of it: it finds
 elements by identifier, and compiles `Sources/AppIdentifiers.swift`,
 `HomeIdentifiers.swift` and `SettingsIdentifiers.swift` one file each through
@@ -193,27 +193,27 @@ keys and Return do not move through a macOS list; that would need
 
 A new module copies `Modules/Features/Home/Project.swift`:
 
-- `Project(name: "<Name>Feature", options: .options(automaticSchemesOptions: .disabled), settings: SemprecProject.moduleSettings(loadsKotlinFramework: true), targets: […], resourceSynthesizers: [])`.
+- `Project(name: "<Name>Feature", options: .options(automaticSchemesOptions: .disabled), settings: AlldotsProject.moduleSettings(loadsKotlinFramework: true), targets: […], resourceSynthesizers: [])`.
   `loadsKotlinFramework` is `true` for every module that imports CoreKit,
   directly or through another module, because it then loads the framework's
   Swift module and needs its search path. `resourceSynthesizers: []` keeps
   Tuist from generating string accessors; copy is read by key
   (`docs/adr/2026-10-24-mobile-copy-localized-natively-from-typed-state.md`).
-- `SemprecProject.framework("<Name>Feature", dependencies: [.project(target: "CoreKit", path: "../../Core/CoreKit"), .project(target: "DesignSystem", path: "../../Core/DesignSystem")], resources: ["Resources/**"])`.
-- `SemprecProject.tests("<Name>FeatureTests", for: "<Name>Feature", dependencies: [.project(target: "CoreKit", path: "../../Core/CoreKit")])`.
-  Every unit test bundle runs inside `Semprec.app`, which embeds the Kotlin
-  framework; `SemprecProject.tests` sets `TEST_HOST` per SDK and
-  `BUNDLE_LOADER` only for `SemprecTests`. The XCUITest bundle
-  `SemprecUITests` is not hosted: it launches the app.
+- `AlldotsProject.framework("<Name>Feature", dependencies: [.project(target: "CoreKit", path: "../../Core/CoreKit"), .project(target: "DesignSystem", path: "../../Core/DesignSystem")], resources: ["Resources/**"])`.
+- `AlldotsProject.tests("<Name>FeatureTests", for: "<Name>Feature", dependencies: [.project(target: "CoreKit", path: "../../Core/CoreKit")])`.
+  Every unit test bundle runs inside `Alldots.app`, which embeds the Kotlin
+  framework; `AlldotsProject.tests` sets `TEST_HOST` per SDK and
+  `BUNDLE_LOADER` only for `AlldotsTests`. The XCUITest bundle
+  `AlldotsUITests` is not hosted: it launches the app.
 - Add the project path to `projects` in `mobile/apple/Workspace.swift` and the
-  test target to the `Semprec` scheme's test action there, then add the
+  test target to the `Alldots` scheme's test action there, then add the
   framework to the app's dependencies in `Projects/App/Project.swift`.
   `.swiftlint.yml` already includes `Modules/*/*/Sources`,
   `Modules/*/*/Tests` and `Projects/*/UITests`.
 - When the UI tests drive the new feature, add its
   `../../Modules/Features/<Name>/Sources/<Name>Identifiers.swift` to the
-  `sources` of `SemprecUITests` in `Projects/App/Project.swift`, one file, not
-  a glob, and the flow to `Projects/App/UITests/`. The `SemprecUITests`
+  `sources` of `AlldotsUITests` in `Projects/App/Project.swift`, one file, not
+  a glob, and the flow to `Projects/App/UITests/`. The `AlldotsUITests`
   scheme in `Workspace.swift` runs that one bundle.
 - Only CoreKit and the app have a `kotlinFrameworkScript` phase, and only they
   set `kotlinFrameworkScriptSettings` (`ENABLE_USER_SCRIPT_SANDBOXING = NO`).
@@ -222,7 +222,7 @@ A new module copies `Modules/Features/Home/Project.swift`:
 Identity and minimum versions live in `ProjectConfiguration.swift` and must
 equal `mobile/gradle/project.properties` (`APPLE-IDENTITY`). The architectures
 live there too (`ProjectConfiguration.architectures`, `arm64`), used by
-`SemprecProject.projectSettings` and `Tuist/Package.swift`; they must match the
+`AlldotsProject.projectSettings` and `Tuist/Package.swift`; they must match the
 Kotlin Apple targets and the check in `mobile/scripts/kmp-framework`, which
 `APPLE-IDENTITY` does not compare. Never write an `ARCHS` or deployment-target
 value outside `Tuist/ProjectDescriptionHelpers/`. External packages
@@ -236,13 +236,13 @@ keeps in the repository, records the resolved revisions.
 `mobile/apple/.tuist-version` and the SwiftLint version against
 `swiftlint_version` in `mobile/apple/.swiftlint.yml` (0.65.1), runs
 `swiftlint lint --strict`, `tuist install`
-and `tuist generate --no-open`, builds the `Semprec` scheme in Debug and
+and `tuist generate --no-open`, builds the `Alldots` scheme in Debug and
 Release for `generic/platform=iOS Simulator`, `generic/platform=iOS` (the
 iPhone build, with the `iosArm64` Kotlin framework; no device and no signing)
-and `generic/platform=macOS`, builds the `SemprecUITests` target for the iOS
-Simulator (`build-for-testing`, no device), and runs the `Semprec` scheme's
+and `generic/platform=macOS`, builds the `AlldotsUITests` target for the iOS
+Simulator (`build-for-testing`, no device), and runs the `Alldots` scheme's
 tests on `platform=macOS,arch=arm64`; with `--ios-simulator <UDID>` it also
-runs them on a simulator you reserved, then the `SemprecUITests` scheme there.
+runs them on a simulator you reserved, then the `AlldotsUITests` scheme there.
 Without that flag the UI tests, which run on iOS only, compile but do not run.
 
 - A full Xcode is required. On this Mac it is `/Applications/Xcode.app` while

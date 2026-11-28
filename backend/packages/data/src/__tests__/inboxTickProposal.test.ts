@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { writeBlock } from "@semprec/block-model";
+import { writeBlock } from "@alldots/block-model";
 import { mutateDoc } from "../docs/docPersistence.js";
 import { createDocStore } from "../docs/docStore.js";
 import { getOrCreateJournalItem } from "../journal/journalStore.js";
@@ -14,7 +14,7 @@ import "../domainWriteHooks.js";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool, type PoolClient } from "pg";
-import { AiGatewayFailedError, type AiGatewayFailureReason, runInTenant } from "@semprec/shared";
+import { AiGatewayFailedError, type AiGatewayFailureReason, runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import {
   createRuntimeRolePool,
@@ -57,10 +57,10 @@ import { referencedItemIdsOf } from "../inbox/proposalReferences.js";
 import {
   aiProposalPatch,
   assertValidProposalEnvelope,
-  createSemprecTickAction,
+  createAlldotsTickAction,
   parseStoredProposalEnvelope,
   readAiProposal,
-  type ComputeSemprecProposalFn,
+  type ComputeAlldotsProposalFn,
   type ProposalComputationInput,
   type ProposalEnvelope,
   type ProposalStep,
@@ -362,9 +362,9 @@ async function runTick(
   tickPool: Pool,
   ids: TickDatabaseIds,
   itemId: string,
-  computeProposal: ComputeSemprecProposalFn,
+  computeProposal: ComputeAlldotsProposalFn,
 ): Promise<void> {
-  const handler = createSemprecTickAction(tickPool, async (input) => {
+  const handler = createAlldotsTickAction(tickPool, async (input) => {
     const targets = input.recognition
       ? await withTransaction(tickPool, async (client) => {
           const rows = await Promise.all(
@@ -451,17 +451,17 @@ async function requireCard(itemId: string) {
 }
 const historyOf = (card: { properties: Record<string, unknown> }) =>
   z.array(z.record(z.string(), z.unknown())).parse(card.properties.history);
-const tick = (itemId: string, compute: ComputeSemprecProposalFn, tickPool: Pool = pool) =>
+const tick = (itemId: string, compute: ComputeAlldotsProposalFn, tickPool: Pool = pool) =>
   runTick(tickPool, databaseIds, itemId, compute);
 const propose =
-  (properties: Record<string, unknown>, extra: Partial<ProposalComputationResult> = {}): ComputeSemprecProposalFn =>
+  (properties: Record<string, unknown>, extra: Partial<ProposalComputationResult> = {}): ComputeAlldotsProposalFn =>
   async () => ({ properties, ...extra });
 const noCompute =
-  (why = "computeProposal must not be called"): ComputeSemprecProposalFn =>
+  (why = "computeProposal must not be called"): ComputeAlldotsProposalFn =>
   async () => {
     throw new Error(why);
   };
-const unrecognized: ComputeSemprecProposalFn = async () => ({ properties: {}, candidates: [] });
+const unrecognized: ComputeAlldotsProposalFn = async () => ({ properties: {}, candidates: [] });
 /** A computation that counts its calls and answers `result` each time. */
 function counted(result: ProposalComputationResult | ((input: ProposalComputationInput) => ProposalComputationResult)) {
   const counter = {
@@ -469,7 +469,7 @@ function counted(result: ProposalComputationResult | ((input: ProposalComputatio
     compute: (async (input) => {
       counter.calls++;
       return typeof result === "function" ? result(input) : result;
-    }) as ComputeSemprecProposalFn,
+    }) as ComputeAlldotsProposalFn,
   };
   return counter;
 }
@@ -523,7 +523,7 @@ async function archiveTypesExcept(keep: Array<string | undefined>) {
   for (const row of types.items) if (!keep.includes(row.id)) await editItem(typesId, row.id, { status: "archived" });
 }
 
-describe("semprec.tick fingerprinting and proposal create/revise/skip", () => {
+describe("alldots.tick fingerprinting and proposal create/revise/skip", () => {
   beforeEach(resetTickDatabases);
 
   it("creates exactly one proposed row with the generic envelope and correct fingerprint for a 'database' type", async () => {
@@ -568,7 +568,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip", () => {
       async (kind) => {
         const { type, item } = await fixture();
         const counter = counted({ properties: { name: "Buy milk" }, candidates: [candidate(kind, type.id, 0.9)] });
-        const compute: ComputeSemprecProposalFn = async (input) => {
+        const compute: ComputeAlldotsProposalFn = async (input) => {
           expect(input.recognition).toBe(true);
           return counter.compute(input);
         };
@@ -598,7 +598,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip", () => {
         [randomUUID(), owner, "testNote", "Test note", inboxId],
       );
       expect(inserted.rowCount).toBe(1);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       const editNote = (testNote: string) =>
         runInTenant(owner, () =>
           withTransaction(runtime, (client) =>
@@ -967,7 +967,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip", () => {
     it("ignores foreign and random type candidates under the tenant runtime role", async () => {
       const { type, item } = await fixture();
       const foreign = await createTestTenant(pool);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const foreignType = await runInTenant(foreign, async () => {
           await seedSystem(runtime, createViewTypeRegistry());
@@ -1019,7 +1019,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip", () => {
       "reserves the selected type without waiting in %s order",
       async (order) => {
         const { type, item } = await fixture();
-        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        const runtime = await createRuntimeRolePool(pool, "alldots_data");
         const held = barrier();
         let holderPid = 0;
         let contenderPid = 0;
@@ -1595,7 +1595,7 @@ describe("semprec.tick fingerprinting and proposal create/revise/skip", () => {
   });
 });
 
-describe("semprec.tick needsClarification, invalid, history, and envelope validation", () => {
+describe("alldots.tick needsClarification, invalid, history, and envelope validation", () => {
   beforeEach(resetTickDatabases);
   const sourceDeletedReason = (itemId: string, label = "Buy milk") => ({
     code: "sourceDeleted",
@@ -1610,7 +1610,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
     const { type } = await typedSource("Type validation fixture");
     const relationPropertyId = await withTransaction(pool, inboxTypePropertyId);
     const statements: string[] = [];
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       await withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
         const observed = interceptQuery(client, (args, original) => {
@@ -1955,7 +1955,7 @@ describe("semprec.tick needsClarification, invalid, history, and envelope valida
   });
 });
 
-describe("semprec.tick re-checks the proposal under lock before writing it", () => {
+describe("alldots.tick re-checks the proposal under lock before writing it", () => {
   beforeEach(resetTickDatabases);
 
   /** A typed Inbox item with one `proposed` card, then a text edit so the next tick recomputes it. */
@@ -2176,8 +2176,8 @@ const ownedCard = (owned: Overlap, runtime: Pool, itemId: string) =>
   );
 
 /** The tick handler called directly, as the heartbeat calls it. */
-const directTick = (tickPool: Pool, itemId: string, compute: ComputeSemprecProposalFn, heartbeatId = "hb") =>
-  createSemprecTickAction(tickPool, compute)(databaseIds, { heartbeatId, projectItemId: "proj", itemId });
+const directTick = (tickPool: Pool, itemId: string, compute: ComputeAlldotsProposalFn, heartbeatId = "hb") =>
+  createAlldotsTickAction(tickPool, compute)(databaseIds, { heartbeatId, projectItemId: "proj", itemId });
 
 function expectRuntimeSettled(runtime: Pool) {
   expect(runtime.ended).toBe(true);
@@ -2250,7 +2250,7 @@ describe("the owned-overlap test harness", () => {
     "retains a late participant failure and consumes only the asserted participant %#",
     async (late) => {
       const { item } = await typedSource("Tracked overlap");
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       const held = barrier();
       const competing = barrier();
       const owned = ownOverlap(runtime, held.release);
@@ -2328,7 +2328,7 @@ describe("the owned-overlap test harness", () => {
   );
 
   it("settles ownership when the first participant has the wrong rejection", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const wrong = { marker: "wrong" };
     const cleanupError = new Error("controlled cleanup failure");
     const owned = ownOverlap(runtime, () => {
@@ -2368,7 +2368,7 @@ describe("the owned-overlap test harness", () => {
   }, 20000);
 
   it("preserves an early checkout failure together with cleanup failure", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const actorError = new Error("pre-verify checkout failure");
     const cleanupError = new Error("cleanup failure");
     const signal = barrier();
@@ -2409,7 +2409,7 @@ describe("the owned-overlap test harness", () => {
   }, 20000);
 
   it("refuses overlap success while a runtime client remains checked out", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const owned = ownOverlap(runtime, () => {});
     let bodyFailure: { error: unknown } | undefined;
     let cleanupFailure: unknown;
@@ -2431,7 +2431,7 @@ describe("the owned-overlap test harness", () => {
   }, 20000);
 
   it("settles late overlap checkout and preserves a simultaneous cleanup failure", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const verifying = barrier();
     let deliver = () => {};
     const bodyError = new Error("body failure");
@@ -2500,7 +2500,7 @@ describe("the owned-overlap test harness", () => {
   }, 20000);
 });
 
-describe("semprec.tick brackets computeProposal outside any transaction", () => {
+describe("alldots.tick brackets computeProposal outside any transaction", () => {
   beforeEach(resetTickDatabases);
 
   it("holds no transaction and no pooled connection during the computeProposal call", async () => {
@@ -2561,7 +2561,7 @@ describe("semprec.tick brackets computeProposal outside any transaction", () => 
 
   it("holds the source through the proposal commit before a competing edit", async () => {
     const { item } = await typedSource("Before the race");
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     let postModel = false;
     const atFingerprint = barrier();
     const writerStarted = barrier();
@@ -2635,7 +2635,7 @@ describe("semprec.tick brackets computeProposal outside any transaction", () => 
     "rechecks fresh source data after a competing edit, rollback: %s",
     async (rollback) => {
       const { item } = await typedSource("Before the edit");
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       const writerGate = barrier();
       const tickWaiting = barrier();
       let writerPid: number | undefined;
@@ -2720,7 +2720,7 @@ describe("semprec.tick brackets computeProposal outside any transaction", () => 
         }
         const alternate = await createType({ name: `Alternate ${randomUUID()}`, emoji: "🔵" });
         const relationPropertyId = await withTransaction(pool, inboxTypePropertyId);
-        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        const runtime = await createRuntimeRolePool(pool, "alldots_data");
         // A type edge write and adding or removing an attachment queue the day's recompute under the key the
         // tick's read phase enqueues too, so a tick that starts after any of these writers waits for it there,
         // before it calls the model.
@@ -2874,7 +2874,7 @@ describe("semprec.tick brackets computeProposal outside any transaction", () => 
     await directTick(pool, item.id, propose({ name: "Original" }));
     const original = await requireCard(item.id);
     await editItem(inboxId, item.id, { text: "Changed" });
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const held = barrier();
     await withOverlap(runtime, held.release, async (owned) => {
       const holder = owned.run(() =>
@@ -2901,7 +2901,7 @@ describe("semprec.tick brackets computeProposal outside any transaction", () => 
     async (operation) => {
       const { item, type } = await typedSource(`Type ${operation}`);
       if (operation === "restore") await createChokePoint(pool).softDeleteItem(typesId, type.id);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       const atCommit = barrier();
       const observed = interceptConnect(runtime, (client) =>
         interceptQuery(client, async (args, original) => {
@@ -2933,7 +2933,7 @@ describe("semprec.tick brackets computeProposal outside any transaction", () => 
   it("allows distinct sources sharing a type to form proposals concurrently", async () => {
     const { item, type } = await typedSource("First source");
     const other = await createSource({ text: "Second source", type: type.id });
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const held = barrier();
     let postModel = false;
     const observed = interceptConnect(runtime, (client) =>
@@ -2999,19 +2999,19 @@ describe("semprec.tick brackets computeProposal outside any transaction", () => 
   });
 });
 
-describe("semprec.tick records a failed proposal computation on the card", () => {
+describe("alldots.tick records a failed proposal computation on the card", () => {
   beforeEach(resetTickDatabases);
 
   /** One attempt of the tick with a stubbed computation; `isFinalAttempt` is what the heartbeat fire task passes. */
-  const attempt = (itemId: string, computeProposal: ComputeSemprecProposalFn, isFinalAttempt: boolean) =>
-    createSemprecTickAction(pool, computeProposal)(databaseIds, {
+  const attempt = (itemId: string, computeProposal: ComputeAlldotsProposalFn, isFinalAttempt: boolean) =>
+    createAlldotsTickAction(pool, computeProposal)(databaseIds, {
       heartbeatId: "hb",
       projectItemId: "proj",
       itemId,
       isFinalAttempt,
     });
   const failingWith =
-    (reason: AiGatewayFailureReason, before?: () => Promise<unknown>): ComputeSemprecProposalFn =>
+    (reason: AiGatewayFailureReason, before?: () => Promise<unknown>): ComputeAlldotsProposalFn =>
     async () => {
       await before?.();
       throw new AiGatewayFailedError(reason);
@@ -3246,14 +3246,6 @@ describe("assertValidProposalEnvelope resolves the target database and validates
         { project: "projects", company: "companies" },
         "company",
       ],
-      ["an Event that sets an area and a project", "events", { project: "projects", area: "areas" }, "area"],
-      ["a File that sets an area and a project", "files", { projects: "projects", area: "areas" }, "area"],
-      [
-        "a health record that sets an area and a project",
-        "healthRecords",
-        { projects: "projects", area: "areas" },
-        "area",
-      ],
     ] as const)("refuses %s, on %s", async (_, moduleId, relationModules, field) => {
       const relations = Object.fromEntries(
         await Promise.all(Object.entries(relationModules).map(async ([key, module]) => [key, [await itemIn(module)]])),
@@ -3266,14 +3258,13 @@ describe("assertValidProposalEnvelope resolves the target database and validates
     it("accepts one side alone, an empty project, and databases or relations that derive nothing", async () => {
       const project = await itemIn("projects");
       const company = await itemIn("companies");
-      const area = await itemIn("areas");
       const person = await itemIn("people");
       for (const [moduleId, relations] of [
         ["events", { company: [company] }],
-        ["events", { area: [area] }],
         ["events", { project: [], company: [company] }],
         ["events", { project: [project], company: [] }],
-        ["files", { area: [area] }],
+        ["files", { companies: [company] }],
+        ["files", { projects: [project], companies: [company] }],
         ["files", { projects: [project] }],
         ["tasks", { project: [project] }],
         ["events", { project: [project], people: [person] }],
@@ -3603,8 +3594,8 @@ describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
         "a missing step referenced only by an update's after relations",
         "projects",
         { name: "Home" },
-        { after: { relations: { area: [{ ref: "missing" }] } } },
-        { field: "area" },
+        { after: { relations: { company: [{ ref: "missing" }] } } },
+        { field: "company" },
         true,
       ],
       ["a blank title", "projects", { name: "Home" }, change({ name: "" }, { name: "Home" }), { field: "name" }, true],
@@ -3628,8 +3619,8 @@ describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
         "an after-only relation with no before coverage",
         "projects",
         { name: "Home" },
-        { after: { relations: { area: [] } } },
-        { field: "area" },
+        { after: { relations: { company: [] } } },
+        { field: "company" },
         true,
       ],
       [
@@ -3652,16 +3643,16 @@ describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
         "an invalid after-only relation target",
         "projects",
         { name: "Home" },
-        { before: { relations: { area: [] } }, after: { relations: { area: [MISSING] } } },
-        { field: "area" },
+        { before: { relations: { company: [] } }, after: { relations: { company: [MISSING] } } },
+        { field: "company" },
         false,
       ],
       [
         "a forged update before target as an existing edge",
         "projects",
         { name: "Home" },
-        { before: { relations: { area: [MISSING] } }, after: { relations: { area: [MISSING] } } },
-        { field: "area" },
+        { before: { relations: { company: [MISSING] } }, after: { relations: { company: [MISSING] } } },
+        { field: "company" },
         false,
       ],
       [
@@ -3698,43 +3689,43 @@ describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
 
     it("rejects a cycle through an update's after relations", async () => {
       const project = await createItem("projects", { name: "Home" });
-      const envelope = await updateEnvelope({ after: { relations: { area: [{ ref: "area" }] } } }, project);
+      const envelope = await updateEnvelope({ after: { relations: { company: [{ ref: "company" }] } } }, project);
       envelope.operations.push({
-        ref: "area",
+        ref: "company",
         op: "create",
-        databaseKey: "areas",
+        databaseKey: "companies",
         role: "secondary",
         properties: { name: "Work" },
         relations: { projects: [{ ref: "move" }] },
       });
-      expect((await failure(envelope)).details).toMatchObject({ ref: "area", field: "projects" });
+      expect((await failure(envelope)).details).toMatchObject({ ref: "company", field: "projects" });
     });
 
-    it("accepts an update step changing a project's status or moving it to another area", async () => {
+    it("accepts an update step changing a project's status or moving it to another company", async () => {
       const project = await createItem("projects", { name: "Home", status: "inProgress" });
       await expect(
         validate(await updateEnvelope(change({ status: "done" }, { status: "inProgress" }), project)),
       ).resolves.not.toBeNull();
-      const oldArea = await createItem("areas", { name: "Old" });
-      const newArea = await createItem("areas", { name: "New" });
+      const oldCompany = await createItem("companies", { name: "Old" });
+      const newCompany = await createItem("companies", { name: "New" });
       const step = {
-        relations: { area: [newArea] },
-        before: { relations: { area: [oldArea] } },
-        after: { relations: { area: [newArea] } },
+        relations: { company: [newCompany] },
+        before: { relations: { company: [oldCompany] } },
+        after: { relations: { company: [newCompany] } },
       };
       await expect(validate(await updateEnvelope(step, project))).resolves.not.toBeNull();
     });
 
     it("rejects conflicting relation representations", async () => {
       const project = await createItem("projects", { name: "Home" });
-      const first = await createItem("areas", { name: "First" });
-      const second = await createItem("areas", { name: "Second" });
+      const first = await createItem("companies", { name: "First" });
+      const second = await createItem("companies", { name: "Second" });
       const step = {
-        relations: { area: [first] },
-        before: { relations: { area: [] } },
-        after: { relations: { area: [second] } },
+        relations: { company: [first] },
+        before: { relations: { company: [] } },
+        after: { relations: { company: [second] } },
       };
-      expect((await failure(await updateEnvelope(step, project))).details).toEqual({ ref: "move", field: "area" });
+      expect((await failure(await updateEnvelope(step, project))).details).toEqual({ ref: "move", field: "company" });
     });
 
     /** Links `callerItemId` to `targetItemId` through `moduleId.key` in a tenant scope, as a request does. */
@@ -3790,7 +3781,7 @@ describe("assertValidProposalEnvelope validates multi-step envelopes", () => {
 
     it("rejects a foreign-tenant target under the runtime role even if before claims it", async () => {
       const foreignTenant = await createTestTenant(pool);
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       try {
         await runInTenant(foreignTenant, () => seedSystem(runtime, createViewTypeRegistry()));
         const foreignProject = await runInTenant(foreignTenant, () =>
@@ -3956,7 +3947,7 @@ describe("aiProposal, aiVersion and referencedItemIds on the tick's writes", () 
   });
 });
 
-describe("semprec.tick keeps user-edited keys when it recomputes a proposal", () => {
+describe("alldots.tick keeps user-edited keys when it recomputes a proposal", () => {
   let tasksId: string;
   beforeEach(async () => {
     await resetTickDatabases();
@@ -4196,7 +4187,7 @@ describe("semprec.tick keeps user-edited keys when it recomputes a proposal", ()
   });
 });
 
-describe("semprec.tick computes a card that was sent back as computing, whatever its fingerprint says", () => {
+describe("alldots.tick computes a card that was sent back as computing, whatever its fingerprint says", () => {
   beforeEach(resetTickDatabases);
 
   it("skips a proposed card whose fingerprint is current, but computes the same card once it is computing", async () => {
@@ -4268,7 +4259,7 @@ describe("Markdown page proposal validation", () => {
   async function withRuntime(body: (runtime: Pool) => Promise<void>) {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     let failure: { error: unknown } | undefined;
     try {
       const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
@@ -4328,8 +4319,8 @@ describe("Markdown page proposal validation", () => {
           type: type.id,
         }),
       );
-    const tickPage = (itemId: string, compute: ComputeSemprecProposalFn) =>
-      createSemprecTickAction(runtime, compute)(
+    const tickPage = (itemId: string, compute: ComputeAlldotsProposalFn) =>
+      createAlldotsTickAction(runtime, compute)(
         {
           inboxDatabaseId: dbs.inbox.id,
           inboxItemTypesDatabaseId: dbs.inboxItemTypes.id,
@@ -4406,7 +4397,7 @@ describe("Markdown page proposal validation", () => {
       await runInTenant(foreign, () => seedSystem(runtime));
       const setup = (tenant: string) =>
         runInTenant(tenant, async () => {
-          const dbs = await systemDatabases(runtime, ["projects", "areas", "tasks", "journal"] as const);
+          const dbs = await systemDatabases(runtime, ["projects", "tasks", "journal"] as const);
           const cp = createChokePoint(runtime);
           const journalItem = (period: "day" | "week") =>
             withTransaction(runtime, (client) =>
@@ -4414,7 +4405,7 @@ describe("Markdown page proposal validation", () => {
             );
           return {
             project: await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Project" } }),
-            area: await cp.createItem({ databaseId: dbs.areas.id, properties: { name: "Area" } }),
+            otherProject: await cp.createItem({ databaseId: dbs.projects.id, properties: { name: "Other project" } }),
             task: await cp.createItem({ databaseId: dbs.tasks.id, properties: { name: "Task" } }),
             day: await journalItem("day"),
             week: await journalItem("week"),
@@ -4437,7 +4428,7 @@ describe("Markdown page proposal validation", () => {
       });
 
       const before = await docCount();
-      for (const target of [own.project.id, own.area.id, own.day.id])
+      for (const target of [own.project.id, own.otherProject.id, own.day.id])
         await expect(validate(target, hello("end"))).resolves.toBeNull();
       expect((await docCount()).rows).toEqual(before.rows);
       for (const target of [own.task.id, own.week.id, other.project.id, randomUUID()])
@@ -4447,7 +4438,7 @@ describe("Markdown page proposal validation", () => {
         });
       for (const properties of [
         { markdown: " ", placement: "end" },
-        { markdown: "[Page](semprec://page/abc)", placement: "end" },
+        { markdown: "[Page](alldots://page/abc)", placement: "end" },
         hello("sideways"),
         hello("end", { heading: "a\nb" }),
         hello({ afterHeading: "missing" }),
@@ -4468,9 +4459,9 @@ describe("Markdown page proposal validation", () => {
       expect(
         (await resolvePlacement(own.project.id, hello({ afterHeadingText: "missing" }))).properties.placement,
       ).toBe("end");
-      expect((await resolvePlacement(own.area.id, hello({ afterHeadingText: "heading" }))).properties.placement).toBe(
-        "end",
-      );
+      expect(
+        (await resolvePlacement(own.otherProject.id, hello({ afterHeadingText: "heading" }))).properties.placement,
+      ).toBe("end");
       expect((await resolvePlacement(own.project.id, { flavour: "paragraph" })).properties).toEqual({
         flavour: "paragraph",
       });
@@ -4514,7 +4505,7 @@ describe("Markdown page proposal validation", () => {
           const target = mode === "non-host" ? task.id : project.id;
           const properties = {
             blank: { markdown: " ", placement: "end" },
-            "page block": { markdown: "[Page](semprec://page/abc)", placement: "end" },
+            "page block": { markdown: "[Page](alldots://page/abc)", placement: "end" },
             "non-heading": { markdown: "Hello", placement: { afterHeading: blockId } },
             "foreign heading": { markdown: "Hello", placement: { afterHeading: foreignFixture.id } },
             "non-host": { markdown: "Hello", placement: "end" },
@@ -4551,16 +4542,14 @@ describe("Markdown page proposal validation", () => {
   );
 });
 
-describe("semprec.tick proposes a journal entry for the journal method", () => {
-  const PAGE_LINK = "[Sub page](semprec://page/00000000-0000-4000-8000-000000000001)";
+describe("alldots.tick proposes a journal entry for the journal method", () => {
+  const PAGE_LINK = "[Sub page](alldots://page/00000000-0000-4000-8000-000000000001)";
   let journalId: string;
-  let areasId: string;
   let projectsId: string;
 
   beforeEach(async () => {
     await resetTickDatabases();
     journalId = await databaseIdFor("journal");
-    areasId = await databaseIdFor("areas");
     projectsId = await databaseIdFor("projects");
   });
 
@@ -4619,21 +4608,11 @@ describe("semprec.tick proposes a journal entry for the journal method", () => {
     expect(card?.properties.proposal).toEqual(journalEnvelope({ date: "2026-10-12" }));
   });
 
-  it("keeps only the project when the computation returns an area and a project", async () => {
-    const areaId = await liveItem(areasId, "Health");
-    const projectId = await liveItem(projectsId, "Website");
-    const { card } = await tickJournal(await typedItem("journal"), { markdown: "Went for a run.", areaId, projectId });
+  it("keeps a project as the computation returned it", async () => {
+    const projectId = await liveItem(projectsId, "Related");
+    const { card } = await tickJournal(await typedItem("journal"), { markdown: "Went for a run.", projectId });
     expect(card?.properties.status).toBe("proposed");
     expect(card?.properties.proposal).toEqual(journalEnvelope({ projectId }));
-  });
-
-  it.each([
-    ["an area alone", "areaId"],
-    ["a project alone", "projectId"],
-  ] as const)("keeps %s as the computation returned it", async (_label, key) => {
-    const id = await liveItem(key === "areaId" ? areasId : projectsId, "Related");
-    const { card } = await tickJournal(await typedItem("journal"), { markdown: "Went for a run.", [key]: id });
-    expect(card?.properties.proposal).toEqual(journalEnvelope({ [key]: id }));
   });
 
   // One Inbox item per target: a second tick of the same item stops at the stored card's current fingerprint and never
@@ -4661,7 +4640,7 @@ describe("semprec.tick proposes a journal entry for the journal method", () => {
     ["no markdown", () => ({ date: "2026-10-16" }), "markdown"],
     ["a blank markdown", () => ({ markdown: "  " }), "markdown"],
     ["a page block in the markdown", () => ({ markdown: `A line\n\n${PAGE_LINK}` }), "markdown"],
-    ["an area that names no item", () => ({ markdown: "Run.", areaId: randomUUID() }), "areaId"],
+    ["an areaId, a field a journal entry does not have", () => ({ markdown: "Run.", areaId: randomUUID() }), "areaId"],
     ["a project that names no item", () => ({ markdown: "Run.", projectId: randomUUID() }), "projectId"],
     ["a date that is no calendar day", () => ({ markdown: "Run.", date: "2026-02-30" }), "date"],
   ] as const)("records %s as needsClarification and stores no envelope", async (_label, build, field) => {
@@ -4756,23 +4735,23 @@ describe("semprec.tick proposes a journal entry for the journal method", () => {
     });
   });
 
-  it("does not accept an area of another tenant: the card is needsClarification, as for an id that names no item", async () => {
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  it("does not accept a project of another tenant: the card is needsClarification, as for an id that names no item", async () => {
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       // The own item is created while the tenant is the only one: the superuser pool resolves its tenant by that.
       const itemId = await typedItem("journal");
       const foreign = await createTestTenant(pool);
       await createUser(pool, { tenantId: foreign, email: `${randomUUID()}@example.test`, passwordHash: "unused" });
       await runInTenant(foreign, () => seedSystem(runtime));
-      const foreignAreaId = await runInTenant(foreign, () =>
+      const foreignProjectId = await runInTenant(foreign, () =>
         withTransaction(runtime, async (client) => {
-          const areas = await databasesStore.getDatabaseByModuleId(client, "areas");
-          if (!areas) throw new Error("Foreign tenant has no Areas database");
-          return (await createItemWithClient(client, { databaseId: areas.id, properties: { name: "Foreign" } })).id;
+          const projects = await databasesStore.getDatabaseByModuleId(client, "projects");
+          if (!projects) throw new Error("Foreign tenant has no Projects database");
+          return (await createItemWithClient(client, { databaseId: projects.id, properties: { name: "Foreign" } })).id;
         }),
       );
       const cards = await runInTenant(getTenantZeroId(), async () => {
-        await directTick(runtime, itemId, propose({ markdown: "Went for a run.", areaId: foreignAreaId }));
+        await directTick(runtime, itemId, propose({ markdown: "Went for a run.", projectId: foreignProjectId }));
         return withTransaction(runtime, async (client) => {
           const { rows } = await client.query<{ properties: Record<string, unknown> }>(
             "SELECT properties FROM items WHERE database_id = $1",
@@ -4784,7 +4763,7 @@ describe("semprec.tick proposes a journal entry for the journal method", () => {
       expect(cards).toHaveLength(1);
       expect(cards[0]?.properties).toMatchObject({ status: "needsClarification", proposal: null });
       // The answer is the one an id that names no item gets, and nothing of the foreign item is on the card.
-      expect(JSON.stringify(cards[0]?.properties.history)).toContain("is not a live item of areas");
+      expect(JSON.stringify(cards[0]?.properties.history)).toContain("is not a live item of projects");
       expect(JSON.stringify(cards[0]?.properties)).not.toContain("Foreign");
     } finally {
       await runtime.end();

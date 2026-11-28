@@ -4,9 +4,11 @@ import Foundation
 // MARK: - Message
 extension FailureKind {
 
-    /// The localized message for a failed load: `failure` is the expected failure, or `nil` for an unexpected one.
-    static func message(for failure: FailureKind?) -> String {
-        switch failure {
+    /// The localized message for a failed load: `failure` is the expected failure, or `nil` for an unexpected one; a
+    /// `refusal` the server named is said instead.
+    static func message(for failure: FailureKind?, refusal: MailRefusal? = nil) -> String {
+        if let refusal { return refusal.message }
+        return switch failure {
         case .unavailable: String(localized: "failure.unavailable", bundle: .module)
         case .invalidData: String(localized: "failure.invalidData", bundle: .module)
         case .unauthorized: String(localized: "failure.unauthorized", bundle: .module)
@@ -16,9 +18,11 @@ extension FailureKind {
         }
     }
 
-    /// The localized message for a message that was not sent: the server refused it, or could not be reached.
-    static func sendMessage(for failure: FailureKind?) -> String {
-        switch failure {
+    /// The localized message for a message that was not sent: the server refused it, or could not be reached; a
+    /// `refusal` the server named is said instead.
+    static func sendMessage(for failure: FailureKind?, refusal: MailRefusal? = nil) -> String {
+        if let refusal { return refusal.message }
+        return switch failure {
         case .rejected: String(localized: "mail.send.rejected", bundle: .module)
         case .unavailable: String(localized: "mail.send.unavailable", bundle: .module)
         default: String(localized: "mail.send.failed", bundle: .module)

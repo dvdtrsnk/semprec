@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { WebSocket, type RawData } from "ws";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createAgentRun,
   createItemWithClient,
@@ -21,7 +21,7 @@ import {
   setAgentRunDeltaHook,
   withTransaction,
   type ResolvedModuleAgentTool,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -29,7 +29,7 @@ import {
   getTestPool,
   resetDatabase,
   writeMailboxAddresses,
-} from "@semprec/data/testSupport";
+} from "@alldots/data/testSupport";
 import type { MailDraftBodyDelta } from "../protocolV1.js";
 import { logger } from "../logger.js";
 import { createSyncServer, type SyncIdentity, type SyncServer } from "../syncServer.js";
@@ -213,7 +213,7 @@ describe("mail draft body deltas of a run that rewrites a draft (issue gh-1948)"
     await resetDatabase(admin);
     registry ??= await loadFullModuleRegistry();
     // RLS applies only to a runtime role: the tools, publisher and server all use one.
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     wireRealtimeHooks(runtime);
     tenant = await seededTenant();
     foreign = await seededTenant();
@@ -354,7 +354,7 @@ describe("mail draft body deltas of a run that rewrites a draft (issue gh-1948)"
   });
 
   it("logs a delta it could not publish with the run id only, and resolves so the update it announces goes on", async () => {
-    const unreachable = await createRuntimeRolePool(admin, "semprec_data");
+    const unreachable = await createRuntimeRolePool(admin, "alldots_data");
     await unreachable.end();
     wireRealtimeHooks(unreachable);
     const logged = vi.spyOn(logger, "error").mockImplementation(() => {});

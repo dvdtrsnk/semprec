@@ -2,7 +2,7 @@ import { z } from "zod";
 import { OperationError } from "./genericOperations.js";
 
 /**
- * The client's binding for the session lifecycle `semprec-api` serves under `/api/auth/*`:
+ * The client's binding for the session lifecycle `alldots-api` serves under `/api/auth/*`:
  * log in, read the current session, log out, and the password-reset request and consume calls.
  * The session token is never read or stored here —
  * for `platform: "web"` the server sets it as an `HttpOnly` cookie and never puts it in the body,

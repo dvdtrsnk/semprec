@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { resolveCatalogLabel } from "@semprec/module-registry";
+import { resolveCatalogLabel } from "@alldots/module-registry";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -10,7 +10,7 @@ import { UUID_RE } from "../docs/pageOwnerDatabase.js";
 import { NotFoundError } from "../errors.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { PAGES_MODULE_ID } from "../seed/pagesModuleKey.js";
-import { AREAS_MODULE_ID, COMPANIES_MODULE_ID, PEOPLE_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { COMPANIES_MODULE_ID, PEOPLE_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import { buildEditorValues } from "./editorSchema.js";
 import { getInboxCatalogs } from "./inboxCatalogs.js";
@@ -21,7 +21,7 @@ import { effectiveStepRelations, selectActiveSteps } from "./proposalStepGraph.j
 
 // The choices a card's picker offers for one field (`GET /api/proposals/:id/options`). Read-only.
 
-export const PROPOSAL_OPTION_FIELDS = ["project", "area", "people", "company", "page", "mcpProjects"] as const;
+export const PROPOSAL_OPTION_FIELDS = ["project", "people", "company", "page", "mcpProjects"] as const;
 export type ProposalOptionField = (typeof PROPOSAL_OPTION_FIELDS)[number];
 
 export function isProposalOptionField(value: string): value is ProposalOptionField {
@@ -44,19 +44,18 @@ export interface ProposalOption {
 
 interface FieldSpec {
   sourceModuleIds: readonly string[];
-  /** Where the none choice sits, `null` when the field has none. */
-  none: "first" | "last" | null;
+  /** Whether the field offers the none choice, listed last. */
+  none: boolean;
   /** Whether usage is the card relation's edge count; other fields have no such relation. */
   countsEdges: boolean;
 }
 
 const FIELD_SPECS: Readonly<Record<ProposalOptionField, FieldSpec>> = {
-  project: { sourceModuleIds: [PROJECTS_MODULE_ID], none: "last", countsEdges: true },
-  area: { sourceModuleIds: [AREAS_MODULE_ID], none: "first", countsEdges: true },
-  people: { sourceModuleIds: [PEOPLE_MODULE_ID], none: null, countsEdges: true },
-  company: { sourceModuleIds: [COMPANIES_MODULE_ID], none: "last", countsEdges: true },
-  page: { sourceModuleIds: [PROJECTS_MODULE_ID, AREAS_MODULE_ID, PAGES_MODULE_ID], none: null, countsEdges: false },
-  mcpProjects: { sourceModuleIds: [PROJECTS_MODULE_ID], none: null, countsEdges: false },
+  project: { sourceModuleIds: [PROJECTS_MODULE_ID], none: true, countsEdges: true },
+  people: { sourceModuleIds: [PEOPLE_MODULE_ID], none: false, countsEdges: true },
+  company: { sourceModuleIds: [COMPANIES_MODULE_ID], none: true, countsEdges: true },
+  page: { sourceModuleIds: [PROJECTS_MODULE_ID, PAGES_MODULE_ID], none: false, countsEdges: false },
+  mcpProjects: { sourceModuleIds: [PROJECTS_MODULE_ID], none: false, countsEdges: false },
 };
 
 const relationConfigSchema = z.object({ targetDatabaseId: z.string() });
@@ -156,9 +155,10 @@ interface RankedOption {
 
 /**
  * The picker choices of `field` for the card, in display order: current value, then the assistant's suggestion
- * (`aiProposal`), then by edge usage, then by name. The none choice is last for `project`/`company`, first for
- * `area`, absent otherwise. A trashed or archived target is listed only as the current value, `disabled`; a `done`
- * project only as the current value or with `includeDone`. Steps that would create an item in the field's database
+ * (`aiProposal`), then by edge usage, then by name. The none choice is last for `project`/`company`, absent
+ * otherwise. A trashed or archived target is listed only as the current value, `disabled`; a `done`
+ * project only as the current value or with `includeDone`. A system module's project (Email, Calendar), which the
+ * Projects collection hides, is listed only as the current value, except for `mcpProjects`. Steps that would create an item in the field's database
  * are listed by `ref`. Read-only, unlocked; unknown, trashed and other-tenant cards (RLS) are all `NotFoundError`.
  */
 export async function listProposalOptions(
@@ -204,7 +204,13 @@ export async function listProposalOptions(
     const ownerModuleId = moduleOfDatabase.get(item.databaseId) ?? null;
     const block = relationTargetBlock(item, ownerModuleId);
     const isDoneProject = ownerModuleId === PROJECTS_MODULE_ID && item.properties.status === "done";
-    if (!isCurrent && (block !== null || (isDoneProject && !includeDone))) return [];
+    // A system module's project carries `systemActive` (true, or false once deactivated); a user's project has none.
+    const isHiddenSystemProject =
+      field !== "mcpProjects" &&
+      ownerModuleId === PROJECTS_MODULE_ID &&
+      item.properties.systemActive !== undefined &&
+      item.properties.systemActive !== null;
+    if (!isCurrent && (block !== null || (isDoneProject && !includeDone) || isHiddenSystemProject)) return [];
     return [{ item, isCurrent, block, ownerModuleId }];
   });
 
@@ -219,8 +225,7 @@ export async function listProposalOptions(
 
   const ranked: RankedOption[] = candidates.map(({ item, isCurrent, block, ownerModuleId }) => {
     const label = stringProperty(item, titleKeys.get(item.databaseId) ?? null);
-    const color =
-      ownerModuleId === PROJECTS_MODULE_ID || ownerModuleId === AREAS_MODULE_ID ? item.properties.color : null;
+    const color = ownerModuleId === PROJECTS_MODULE_ID ? item.properties.color : null;
     const isSuggested = suggested.itemIds.has(item.id);
     return {
       option: {
@@ -268,7 +273,7 @@ export async function listProposalOptions(
       (a.option.id ?? a.option.ref ?? "").localeCompare(b.option.id ?? b.option.ref ?? ""),
   );
   const options = ranked.map(({ option }) => option);
-  if (spec.none === null) return options;
+  if (!spec.none) return options;
   const none: ProposalOption = {
     id: null,
     label: text(`options.none.${field}`),
@@ -276,5 +281,5 @@ export async function listProposalOptions(
     suggested: false,
     none: true,
   };
-  return spec.none === "first" ? [none, ...options] : [...options, none];
+  return [...options, none];
 }

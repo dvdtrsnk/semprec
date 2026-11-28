@@ -1,5 +1,4 @@
-/** `databases.owner_module_id` values of the ten hardcoded databases. */
-export const AREAS_MODULE_ID = "areas";
+/** `databases.owner_module_id` values of the hardcoded core databases. */
 export const PROJECTS_MODULE_ID = "projects";
 export const TASKS_MODULE_ID = "tasks";
 export const PEOPLE_MODULE_ID = "people";
@@ -10,8 +9,7 @@ export const COMPANIES_MODULE_ID = "companies";
 export const TRANSCRIPTS_MODULE_ID = "transcripts";
 export const JOURNAL_MODULE_ID = "journal";
 
-export const TEN_DATABASE_MODULE_IDS = [
-  AREAS_MODULE_ID,
+export const CORE_DATABASE_MODULE_IDS = [
   PROJECTS_MODULE_ID,
   TASKS_MODULE_ID,
   PEOPLE_MODULE_ID,
@@ -22,4 +20,4 @@ export const TEN_DATABASE_MODULE_IDS = [
   TRANSCRIPTS_MODULE_ID,
   JOURNAL_MODULE_ID,
 ] as const;
-export type TenDatabaseModuleId = (typeof TEN_DATABASE_MODULE_IDS)[number];
+export type CoreDatabaseModuleId = (typeof CORE_DATABASE_MODULE_IDS)[number];

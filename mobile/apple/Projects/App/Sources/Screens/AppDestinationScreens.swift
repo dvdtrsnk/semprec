@@ -1,5 +1,5 @@
-import AreasFeature
 import CalendarFeature
+import CollectionsFeature
 import InboxFeature
 import JournalFeature
 import NotesFeature
@@ -50,49 +50,24 @@ struct NewItemSheet: View {
     }
 }
 
-/// A subpage of the diary; `title` is the caption of the link that opened it.
-struct JournalSubpageScreen: View {
-
-    let itemId: String
-    let title: String
-    let composition: AppComposition
-
-    var body: some View {
-        JournalScreenFactory.subpage(
-            title: title,
-            makeModel: { composition.models.makeJournalSubpage(itemId: itemId) },
-            router: composition.journalRouter
-        )
-    }
-}
-
-/// One area, on the stack of `tab`.
-struct AreaDestination: View {
-
-    let areaId: String
-    let tab: AppTab
-    let composition: AppComposition
-
-    var body: some View {
-        AreasScreenFactory.area(
-            areaId: areaId,
-            makeModel: { composition.models.makeArea(areaId: areaId) },
-            router: composition.areasRouter(in: tab)
-        )
-    }
-}
-
 /// The page of notes of an item, on the stack of `tab`.
 struct NotesDestination: View {
 
     let itemId: String
     let tab: AppTab
+    /// The titles of the pages above a subpage, outermost first; empty for a page of its own.
+    let trail: [String]
+    let focusTitle: Bool
     let composition: AppComposition
 
     var body: some View {
-        NotesScreenFactory.notes(
-            itemId: itemId,
-            makeModel: { composition.models.makeNotes(itemId: itemId) },
+        // A subpage's title is its block in the parent page, which renaming changes.
+        NotesScreenFactory.page(
+            trail: trail,
+            focusTitle: focusTitle,
+            makeModel: {
+                composition.models.makeNoteEditor(source: .page(itemId: itemId, titleEditable: !trail.isEmpty))
+            },
             router: composition.notesRouter(in: tab)
         )
     }
@@ -107,12 +82,13 @@ struct InboxDestination: View {
     var body: some View {
         InboxScreenFactory.inbox(
             makeModel: { composition.models.makeInbox() },
+            makeNote: { composition.models.makeNoteEditor(source: $0) },
             router: composition.inboxRouter(in: tab)
         )
     }
 }
 
-/// The sleep sheet: the plan, or one night (`sleepPlan` and `sleepNight` destinations).
+/// The sleep sheets: the plan, one night, and the wake settings (`sleepPlan`, `sleepNight` and `sleepWakeSettings`).
 struct SleepDestination: View {
 
     let destination: AppDestination
@@ -121,9 +97,17 @@ struct SleepDestination: View {
     var body: some View {
         switch destination {
         case .sleepPlan(let night):
-            SleepScreenFactory.plan { composition.models.makeSleep(night: night, startOnNight: false) }
+            SleepScreenFactory.plan(
+                makeModel: { composition.models.makeSleep(night: night, startOnNight: false) },
+                router: composition.sleepRouter
+            )
         case .sleepNight(let night):
-            SleepScreenFactory.night { composition.models.makeSleep(night: night, startOnNight: true) }
+            SleepScreenFactory.night(
+                makeModel: { composition.models.makeSleep(night: night, startOnNight: true) },
+                router: composition.sleepRouter
+            )
+        case .sleepWakeSettings:
+            SleepScreenFactory.wakeSettings { composition.models.makeWakeSettings() }
         default:
             EmptyView()
         }
@@ -140,8 +124,13 @@ struct ShellDestination: View {
         switch destination {
         case .pending(let title):
             PendingScreen(title: title)
-        case .profile:
-            ProfileSheet(models: composition.models, navigation: composition.navigation)
+        case .profile(let opening):
+            ProfileSheet(
+                opening: opening,
+                models: composition.models,
+                navigation: composition.navigation,
+                notifications: composition.notifications
+            )
         case .sempProjectAgent(let projectId):
             SempScreenFactory.projectAgent(
                 makeModel: { composition.models.makeSempProjectAgent(projectId: projectId) },

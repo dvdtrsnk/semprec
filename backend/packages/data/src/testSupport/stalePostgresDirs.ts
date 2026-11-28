@@ -1,7 +1,7 @@
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
-export const STALE_POSTGRES_DIR_PREFIX = "semprec-pg-";
+export const STALE_POSTGRES_DIR_PREFIX = "alldots-pg-";
 const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function defaultIsPidAlive(pid: number): boolean {
@@ -33,7 +33,7 @@ async function hasLiveOwner(dir: string, isPidAlive: (pid: number) => boolean): 
 }
 
 /**
- * Removes `semprec-pg-*` directories from runs that never reached globalSetup teardown, once old enough and with no
+ * Removes `alldots-pg-*` directories from runs that never reached globalSetup teardown, once old enough and with no
  * live postmaster claiming them.
  */
 export async function sweepStalePostgresDirs(options: SweepStalePostgresDirsOptions): Promise<string[]> {

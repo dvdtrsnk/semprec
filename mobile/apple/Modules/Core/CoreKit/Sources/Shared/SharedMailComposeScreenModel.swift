@@ -48,6 +48,7 @@ extension SharedMailComposeScreenModel {
     static func state(_ state: SharedSDK.MailComposeState) -> MailComposeState {
         MailComposeState(
             phase: phase(state),
+            refusal: state.refusal.map(\.refusal),
             senders: state.senders.map { MailSender(mailboxId: $0.mailboxId, name: $0.name, address: $0.address) },
             senderId: state.senderId,
             toRecipients: state.to.map { MailRecipient(name: $0.name, address: $0.address) },
@@ -60,6 +61,7 @@ extension SharedMailComposeScreenModel {
             invalidAddress: state.invalidAddress,
             sendPhase: MailSendPhase(state.sendPhase),
             sendFailure: state.sendFailure.map(FailureKind.init),
+            sendRefusal: state.sendRefusal.map(\.refusal),
             sentFrom: state.sentFrom,
             discardFailed: state.discardFailed
         )

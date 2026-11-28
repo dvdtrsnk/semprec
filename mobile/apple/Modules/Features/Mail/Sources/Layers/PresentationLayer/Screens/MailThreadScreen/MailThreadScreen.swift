@@ -2,9 +2,9 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// One thread: who it is with and which company and project it belongs to, the messages (the last one open), the tasks
-/// made from it, the reply Semp prepared and the buttons to answer it. Flagging, archiving and deleting sit in the
-/// toolbar.
+/// One thread: who it is with and which company and project it belongs to, the messages (the last one open, a body the
+/// server holds only at the mail provider fetched when its message opens), the tasks made from it, the reply Semp
+/// prepared and the buttons to answer it. Flagging, archiving and deleting sit in the toolbar.
 struct MailThreadScreen: View {
 
     // MARK: - Dependencies
@@ -29,7 +29,7 @@ struct MailThreadScreen: View {
                 Text("mail.failure.title", bundle: .module),
                 isPresented: actionFailed,
                 actions: { dismissButton },
-                message: { Text("mail.failure.message", bundle: .module) }
+                message: { Text(MailRefusal.actionMessage(for: viewModel.state.actionRefusal)) }
             )
             .onChange(of: viewModel.closeRequests) { dismiss() }
             .accessibilityElement(children: .contain)
@@ -58,7 +58,8 @@ private extension MailThreadScreen {
                 MailThreadHeader(state: viewModel.state)
                 VStack(spacing: 0) {
                     ForEach(viewModel.state.messages) { message in
-                        MailMessageCard(message: message) { viewModel.send(.toggleMessage(emailId: message.emailId)) }
+                        MailMessageCard(message: message) { viewModel.send($0) }
+                            .accessibilityElement(children: .contain)
                             .accessibilityIdentifier(MailIdentifiers.messagePrefix + message.emailId)
                         if message.id != viewModel.state.messages.last?.id { Divider().padding(.leading, 62) }
                     }
@@ -104,7 +105,7 @@ private extension MailThreadScreen {
     }
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
+        PlainToolbarItemGroup(placement: .primaryAction) {
             Button { viewModel.send(.toggleFlag) } label: {
                 Label {
                     Text(viewModel.state.flagged ? "mail.unflag" : "mail.flag", bundle: .module)
@@ -146,6 +147,17 @@ private extension MailThreadScreen {
         MailThreadScreen(
             viewModel: MailThreadViewModel(
                 model: ScriptedMailThreadScreenModel(state: PreviewMail.thread),
+                router: PreviewMailRouter()
+            )
+        )
+    }
+}
+
+#Preview("Bodies at the mail provider") {
+    NavigationStack {
+        MailThreadScreen(
+            viewModel: MailThreadViewModel(
+                model: ScriptedMailThreadScreenModel(state: PreviewMail.remoteThread),
                 router: PreviewMailRouter()
             )
         )

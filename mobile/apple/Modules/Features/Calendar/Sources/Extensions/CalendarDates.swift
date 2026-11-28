@@ -14,6 +14,9 @@ enum CalendarDates {
         return calendar
     }()
     private static var formatters: [String: DateFormatter] = [:]
+    private static var clocks: [Int: String] = [:]
+    private static var dates: [String: Date] = [:]
+    private static let minutesPerDay = 24 * 60
 
     // MARK: - Parsing
     /// The device's current day. The server answers with its own today, which the calendar adopts once loaded.
@@ -22,10 +25,16 @@ enum CalendarDates {
         return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
     }
 
+    /// Read once per day and kept: the week strip and the pages ask for the same few days on every frame.
     static func date(_ key: String) -> Date? {
+        if let cached = dates[key] { return cached }
         let parts = key.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+        guard parts.count == 3,
+            let made = calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2])) else {
+            return nil
+        }
+        dates[key] = made
+        return made
     }
 
     static func key(_ date: Date) -> String {
@@ -41,6 +50,17 @@ enum CalendarDates {
         return Self.key(moved)
     }
 
+    /// The Monday of the week `key` is in.
+    static func monday(of key: String) -> String {
+        shifted(key, by: 1 - isoWeekday(key))
+    }
+
+    /// How many days `end` is after `start`; negative when it is before.
+    static func days(from start: String, to end: String) -> Int {
+        guard let start = date(start), let end = date(end) else { return 0 }
+        return calendar.dateComponents([.day], from: start, to: end).day ?? 0
+    }
+
     // MARK: - Parts
     /// The day of the month, `16`.
     static func dayNumber(_ key: String) -> Int {
@@ -51,6 +71,13 @@ enum CalendarDates {
     static func isoWeekday(_ key: String) -> Int {
         guard let date = date(key) else { return 1 }
         return (calendar.component(.weekday, from: date) + 5) % 7 + 1
+    }
+
+    /// The ISO 8601 week number: weeks start on Monday and week 1 holds the year's first Thursday.
+    static func isoWeek(_ key: String) -> Int {
+        var iso = Calendar(identifier: .iso8601)
+        iso.timeZone = calendar.timeZone
+        return date(key).map { iso.component(.weekOfYear, from: $0) } ?? 0
     }
 
     static func year(_ key: String) -> Int {
@@ -67,6 +94,35 @@ enum CalendarDates {
             let first = calendar.date(from: calendar.dateComponents([.year, .month], from: date))
         else { return key }
         return Self.key(first)
+    }
+
+    /// The first day of the month `months` away from the month of `key`.
+    static func shiftedMonth(_ key: String, by months: Int) -> String {
+        guard let first = date(firstOfMonth(key)), let moved = calendar.date(byAdding: .month, value: months, to: first)
+        else { return key }
+        return Self.key(moved)
+    }
+
+    /// The day of the month of `month` with the day number of `key`, or the month's last day when it is shorter.
+    static func sameDay(as key: String, inMonthOf month: String) -> String {
+        let first = firstOfMonth(month)
+        return shifted(first, by: min(dayNumber(key), monthLength(first)) - 1)
+    }
+
+    /// How many days the month of `key` has.
+    static func monthLength(_ key: String) -> Int {
+        guard let date = date(key), let days = calendar.range(of: .day, in: .month, for: date) else { return 0 }
+        return days.count
+    }
+
+    /// The days of the month of `key` by week, Monday first; a place before the 1st or after the last day is `nil`.
+    static func weeks(ofMonth key: String) -> [[String?]] {
+        let first = firstOfMonth(key)
+        let leading = isoWeekday(first) - 1
+        let days: [String?] = Array(repeating: nil, count: leading)
+            + (0..<monthLength(first)).map { shifted(first, by: $0) }
+        let padded = days + Array(repeating: nil, count: (7 - days.count % 7) % 7)
+        return stride(from: 0, to: padded.count, by: 7).map { Array(padded[$0..<$0 + 7]) }
     }
 
     // MARK: - Titles
@@ -86,9 +142,21 @@ enum CalendarDates {
         return capitalized(symbols[(month - 1 + symbols.count) % symbols.count])
     }
 
+    /// `Říj`, the short name of the month of `key`.
+    static func monthShortName(_ key: String) -> String {
+        let symbols = calendar.shortStandaloneMonthSymbols
+        return capitalized(symbols[(month(key) - 1 + symbols.count) % symbols.count])
+    }
+
     /// `Po`, from the ISO weekday (1 for Monday up to 7 for Sunday).
     static func weekdayShort(_ isoWeekday: Int) -> String {
         let symbols = calendar.shortStandaloneWeekdaySymbols
+        return capitalized(symbols[isoWeekday % symbols.count])
+    }
+
+    /// `P`, from the ISO weekday (1 for Monday up to 7 for Sunday).
+    static func weekdayInitial(_ isoWeekday: Int) -> String {
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
         return capitalized(symbols[isoWeekday % symbols.count])
     }
 
@@ -100,10 +168,33 @@ enum CalendarDates {
         return "\(weekday) \(parts.day ?? 0). \(parts.month ?? 0)."
     }
 
-    /// `9:05` for minutes since midnight; 24:00 closes a day.
+    /// A time of day for minutes since midnight, written as the person's region writes it (`09:05`, or `9:05 AM`);
+    /// 24:00 closes a day and reads as midnight.
     static func clock(minutes: Int) -> String {
-        String(format: "%d:%02d", minutes / 60, minutes % 60)
+        let time = minutes % minutesPerDay
+        if let cached = clocks[time] { return cached }
+        let parts = DateComponents(year: 2001, month: 1, day: 1, hour: time / 60, minute: time % 60)
+        let written = calendar.date(from: parts).map { formatted($0, template: "jmm") }
+            ?? String(format: "%02d:%02d", time / 60, time % 60)
+        clocks[time] = written
+        return written
     }
+
+    /// The label of an hour line in the gutter: `14:00` where the region writes 24 hours, `2 PM` where it writes 12.
+    static func hourLabel(_ hour: Int) -> String {
+        guard uses12Hours else { return clock(minutes: hour * 60) }
+        let key = -1 - hour
+        if let cached = clocks[key] { return cached }
+        let parts = DateComponents(year: 2001, month: 1, day: 1, hour: hour % 24)
+        let written = calendar.date(from: parts).map { formatted($0, template: "j") } ?? clock(minutes: hour * 60)
+        clocks[key] = written
+        return written
+    }
+
+    /// Whether the person's region writes times with AM and PM.
+    /// Read once: the locale's clock does not change while the app runs.
+    private static let uses12Hours: Bool =
+        (DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "").contains("a")
 
     /// `14:00–15:30`.
     static func range(from start: Int, to end: Int) -> String {

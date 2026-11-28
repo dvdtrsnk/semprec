@@ -538,6 +538,7 @@ describe("mail credential verification", () => {
     ).resolves.toEqual({
       imap: { host: "mail.test", port: 143, security: "starttls" },
       smtp: { host: "mail.test", port: 587, security: "starttls" },
+      folders: null,
     });
     expect(imapNames).toEqual(["mail.test"]);
     expect(smtpNames).toEqual(["mail.test"]);
@@ -561,7 +562,8 @@ describe("mail credential verification", () => {
     expect(error).toBeInstanceOf(MailAuthFailedError);
     if (!(error instanceof Error)) throw new Error("Missing authentication error");
     expect(`${error.message} ${error.stack} ${JSON.stringify(error)}`).not.toContain(rejectedPassword);
-    expect(smtp.connections()).toBe(0);
+    // SMTP is verified concurrently; the IMAP refusal is the one reported, after SMTP closed its connections too.
+    await expectServerSocketsClosed(smtp);
     await expectServerSocketsClosed(imap);
     await expectServerSocketsClosed(upgrade);
   });
@@ -570,10 +572,12 @@ describe("mail credential verification", () => {
     useMailHost();
     const stalledTls = await stalledServer();
     const stalledGreeting = await stalledServer();
+    // SMTP, verified concurrently, finds nothing listening.
+    const refused = await closedPort();
     await expect(
       verifyCredentials(credential.password, {
         deadlineMs: 80,
-        ports: { 993: stalledTls.port, 143: stalledGreeting.port },
+        ports: { 993: stalledTls.port, 143: stalledGreeting.port, 465: refused, 587: refused },
       }),
     ).rejects.toBeInstanceOf(MailServerUnreachableError);
     await expectServerSocketsClosed(stalledTls);
@@ -588,9 +592,10 @@ describe("mail credential verification", () => {
         protocol === "smtp" ? await startFakeServer(imapSession(credential.password), mailCertificate) : undefined;
       const stalledTls = await stalledServer();
       const stalledGreeting = await stalledServer();
+      const refused = await closedPort();
       const ports: Record<number, number> = imap
         ? { 993: imap.port, 465: stalledTls.port, 587: stalledGreeting.port }
-        : { 993: stalledTls.port, 143: stalledGreeting.port };
+        : { 993: stalledTls.port, 143: stalledGreeting.port, 465: refused, 587: refused };
       const started = performance.now();
       await expect(
         verifyCredentials(credential.password, { ...(imap ? { ca: mailCertificate.cert } : {}), ports }),
@@ -1328,5 +1333,29 @@ describe("openImapFlow", () => {
     } finally {
       client.close();
     }
+  });
+
+  it("admits the login under the server host's login rate before it connects, and connects nothing when the wait ends", async () => {
+    useMailHost();
+    trustCertificate(mailCertificate);
+    const server = await startFakeServer(imapSession(credential.password), mailCertificate);
+    const admitted: string[] = [];
+    const client = await openImapFlow(settingsFor("mail.test", server.port), credential, {
+      loginAdmission: {
+        admitLogin: async (host) => {
+          admitted.push(host);
+          expect(server.connections()).toBe(0);
+        },
+      },
+    });
+    client.close();
+    expect(admitted).toEqual(["mail.test"]);
+
+    const ended = new Error("the lifecycle stopped");
+    const refused = openImapFlow(settingsFor("mail.test", server.port), credential, {
+      loginAdmission: { admitLogin: () => Promise.reject(ended) },
+    });
+    await expect(refused).rejects.toBe(ended);
+    expect(server.connections()).toBe(1);
   });
 });

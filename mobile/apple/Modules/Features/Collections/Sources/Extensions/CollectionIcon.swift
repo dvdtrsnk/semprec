@@ -39,7 +39,6 @@ enum CollectionIcon {
         case "journal": "book"
         case "threads": "envelope"
         case "transcripts": "waveform"
-        case "areas": "safari"
         case "healthRecords": "cross.case"
         case "books": "books.vertical"
         case "movies": "film"

@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/528",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/528/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/528/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/528/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/528",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/528",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/528/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/528/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/528/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/528",
   "id": 5574077130,
   "node_id": "I_kwDOUFuQ4c8AAAABTD2qyg",
   "number": 528,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/494",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/494",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #507, #508, #509, #510, #511, #512, #513, #514, #515, #516, #522, #523, #524, #525, #526, #527\n\n## Context\n\nEvery domain has moved out of `backend/packages/data/src/chokePoint/chokePoint.ts` (#501–#516) and every caller inside `packages/data` imports from the owning module (#522–#527). `chokePoint.ts` still carries the transitional scaffolding from #499: block marker lines, mid-file imports, and re-exports. `backend/packages/data/src/index.ts` still re-exports the public symbols from `chokePoint.ts`. This issue removes the scaffolding so `chokePoint.ts` is only the composition root, as `docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md` describes.\n\n## Task\n\n1. `chokePoint.ts` ends up containing only: the imports at the top of the file, `createChokePoint` (unchanged since #500), and `export type ChokePoint`. Remove every `// ==== block: … ====` marker, the scaffolding comment, every `export { … } from` re-export, and every import it no longer uses. Move the remaining imports to the top.\n2. In `index.ts`, export every symbol it exports today from `./chokePoint/chokePoint.js` from its owning module instead: `itemWrites.ts`, `relationOps.ts`, `destructiveProjection.ts`, `databaseOps.ts`, `propertyOps.ts`, `viewOps.ts`, `itemTrash.ts`, `authorization.ts` (`Actor`). `createChokePoint` and `ChokePoint` stay exported from `chokePoint.ts`. Export exactly the same set of names.\n3. If anything else in the repository (outside `index.ts`) still imports a moved symbol from `chokePoint.ts`, and that caller is not covered by #522–#527, redirect it here and list it in the pull request description.\n\n## Touches\n\n- backend/packages/data/src/chokePoint/chokePoint.ts\n- backend/packages/data/src/index.ts (the choke-point export statements only)\n\n## Scope\n\n### In scope\n- Removing the scaffolding and re-exports, moving imports to the top, and repointing `index.ts`.\n\n### Out of scope\n- Any change to `createChokePoint`, or to any module other than `chokePoint.ts` and `index.ts`.\n- The lint cap (#529).\n\n## Acceptance criteria\n\n- `pnpm run verify` in `backend/` passes. `src/__tests__/publicSurface.test.ts` passes unmodified, so `@semprec/data` exports exactly the same names.\n- `grep -c \"==== block:\" chokePoint.ts` is 0, and `grep -c \"export {\" chokePoint.ts` is 0 (`export type ChokePoint` remains).\n- `grep -rn \"from \\\"[./]*chokePoint/chokePoint\\|from \\\"\\./chokePoint\\.js\" backend/packages/data/src` lists only imports of `createChokePoint` / `ChokePoint`.\n- `chokePoint.ts` has no `import` statement after its first non-import statement.\n\n",
+  "body": "**Blocked by:** #507, #508, #509, #510, #511, #512, #513, #514, #515, #516, #522, #523, #524, #525, #526, #527\n\n## Context\n\nEvery domain has moved out of `backend/packages/data/src/chokePoint/chokePoint.ts` (#501–#516) and every caller inside `packages/data` imports from the owning module (#522–#527). `chokePoint.ts` still carries the transitional scaffolding from #499: block marker lines, mid-file imports, and re-exports. `backend/packages/data/src/index.ts` still re-exports the public symbols from `chokePoint.ts`. This issue removes the scaffolding so `chokePoint.ts` is only the composition root, as `docs/adr/2026-09-24-choke-point-composed-from-domain-modules.md` describes.\n\n## Task\n\n1. `chokePoint.ts` ends up containing only: the imports at the top of the file, `createChokePoint` (unchanged since #500), and `export type ChokePoint`. Remove every `// ==== block: … ====` marker, the scaffolding comment, every `export { … } from` re-export, and every import it no longer uses. Move the remaining imports to the top.\n2. In `index.ts`, export every symbol it exports today from `./chokePoint/chokePoint.js` from its owning module instead: `itemWrites.ts`, `relationOps.ts`, `destructiveProjection.ts`, `databaseOps.ts`, `propertyOps.ts`, `viewOps.ts`, `itemTrash.ts`, `authorization.ts` (`Actor`). `createChokePoint` and `ChokePoint` stay exported from `chokePoint.ts`. Export exactly the same set of names.\n3. If anything else in the repository (outside `index.ts`) still imports a moved symbol from `chokePoint.ts`, and that caller is not covered by #522–#527, redirect it here and list it in the pull request description.\n\n## Touches\n\n- backend/packages/data/src/chokePoint/chokePoint.ts\n- backend/packages/data/src/index.ts (the choke-point export statements only)\n\n## Scope\n\n### In scope\n- Removing the scaffolding and re-exports, moving imports to the top, and repointing `index.ts`.\n\n### Out of scope\n- Any change to `createChokePoint`, or to any module other than `chokePoint.ts` and `index.ts`.\n- The lint cap (#529).\n\n## Acceptance criteria\n\n- `pnpm run verify` in `backend/` passes. `src/__tests__/publicSurface.test.ts` passes unmodified, so `@alldots/data` exports exactly the same names.\n- `grep -c \"==== block:\" chokePoint.ts` is 0, and `grep -c \"export {\" chokePoint.ts` is 0 (`export type ChokePoint` remains).\n- `grep -rn \"from \\\"[./]*chokePoint/chokePoint\\|from \\\"\\./chokePoint\\.js\" backend/packages/data/src` lists only imports of `createChokePoint` / `ChokePoint`.\n- `chokePoint.ts` has no `import` statement after its first non-import statement.\n\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/528/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/528/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/528/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/528/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

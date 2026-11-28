@@ -1,21 +1,21 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { enqueueAiBudgetReset, recordTokenGatewayCall, setInvalidationHook } from "@semprec/data";
+import { enqueueAiBudgetReset, recordTokenGatewayCall, setInvalidationHook } from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
   getTestPool,
   resetDatabase,
   setTenantAiBudget,
-} from "@semprec/data/testSupport";
-import { runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { BudgetExceededError, complete } from "../gateway.js";
 import { logger } from "../logger.js";
 
 // The reset-job enqueue is the one step whose failure the database cannot be made to produce on a
 // shared test instance, so the data layer's enqueue is wrapped here; by default the wrapper runs the real one.
-vi.mock("@semprec/data", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@semprec/data")>();
+vi.mock("@alldots/data", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alldots/data")>();
   return { ...actual, enqueueAiBudgetReset: vi.fn(actual.enqueueAiBudgetReset) };
 });
 
@@ -59,7 +59,7 @@ async function queuedResets(): Promise<number> {
 
 beforeAll(async () => {
   admin = getTestPool();
-  side = await createRuntimeRolePool(admin, "semprec_side");
+  side = await createRuntimeRolePool(admin, "alldots_side");
 });
 
 beforeEach(async () => {

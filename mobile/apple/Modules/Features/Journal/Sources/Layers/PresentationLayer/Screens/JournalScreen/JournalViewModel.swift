@@ -38,6 +38,21 @@ final class JournalViewModel: ObservableObject {
         model.send(.select(kind: cell.kind, start: cell.start))
     }
 
+    /// Selects the period of `kind` that starts on `start`, as a tap on it on the axis does.
+    func select(kind: JournalPeriodKind, start: String) {
+        model.send(.select(kind: kind, start: start))
+    }
+
+    /// Asks the shared ViewModel for the period `steps` away from the selected one, of the same kind, and names the
+    /// period it selected; `nil` when the selection did not change. The shared ViewModel works out which period that
+    /// is and selects it at once.
+    func turn(by steps: Int) -> JournalSelection? {
+        let before = model.state.selection
+        model.send(.turn(steps: steps))
+        let after = model.state.selection
+        return after == before ? nil : after
+    }
+
     func goToday() {
         model.send(.goToday)
     }
@@ -54,24 +69,12 @@ final class JournalViewModel: ObservableObject {
         model.send(.openInbox)
     }
 
-    func openPage(pageId: String, title: String) {
-        model.send(.openPage(pageId: pageId, title: title))
+    func openAttachment(_ item: JournalInboxItem, _ attachment: InboxAttachment) {
+        model.send(.openAttachment(entryId: item.id, attachmentId: attachment.id))
     }
 
-    func setText(page: JournalPageRef, index: Int, text: String) {
-        model.send(.setText(page: page, index: index, text: text))
-    }
-
-    func toggleDone(page: JournalPageRef, index: Int) {
-        model.send(.toggleDone(page: page, index: index))
-    }
-
-    func addBlock(page: JournalPageRef, kind: JournalBlockKind, text: String) {
-        model.send(.addBlock(page: page, kind: kind, text: text))
-    }
-
-    func dismissProblem() {
-        model.send(.dismissProblem)
+    func closeAttachment() {
+        model.send(.closeAttachment)
     }
 }
 
@@ -82,7 +85,6 @@ private extension JournalViewModel {
         switch effect {
         case .openEvent(let id): router.showEvent(id: id)
         case .openInbox: router.showInbox()
-        case .openPage(let pageId, let title): router.showPage(itemId: pageId, title: title)
         }
     }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ModuleRegistry, ModuleTaskDefinition, ModuleTaskProjection } from "@semprec/module-registry";
-import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type TaskList } from "@semprec/queue";
+import type { ModuleRegistry, ModuleTaskDefinition, ModuleTaskProjection } from "@alldots/module-registry";
+import { AGENT_TASK_NAMES, CORE_TASK_NAMES, type TaskList } from "@alldots/queue";
 import {
   mergeModuleTaskList,
   mergeModuleTaskListForAffinity,

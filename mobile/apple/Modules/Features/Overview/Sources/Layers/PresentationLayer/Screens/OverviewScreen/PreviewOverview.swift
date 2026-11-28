@@ -1,6 +1,6 @@
 import CoreKit
 
-/// Sample values for previews: the canonical task of the design and the areas, projects and collections around it.
+/// Sample values for previews: the canonical task of the design and the projects and collections around it.
 enum PreviewOverview {
 
     // MARK: - Overview
@@ -8,23 +8,18 @@ enum PreviewOverview {
         accountEmail: "david.tresnak@example.cz",
         inboxPending: 9,
         mailUnread: 5,
-        tasksToday: 4,
         problemCount: 2,
-        areas: [
-            OverviewArea(id: "work", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6),
-            OverviewArea(id: "health", name: "Health", color: "#FF2D55", icon: "heart", activeProjectCount: 2)
-        ],
         projects: [
-            OverviewProject(id: "p1", name: "Semprec iOS", color: "#007AFF", areaName: "Work", status: "inProgress")
+            OverviewProject(id: "p1", name: "Alldots iOS", color: "#007AFF", status: "inProgress")
         ],
         collections: [
             OverviewCollection(
                 databaseId: "d1", ownerModuleId: "events", name: "Events",
-                icon: "calendar", color: "#FF3B30", itemCount: 214
+                icon: "calendar", color: "#FF3B30"
             ),
             OverviewCollection(
                 databaseId: "d2", ownerModuleId: "people", name: "People",
-                icon: "person", color: "#30B0C7", itemCount: 48
+                icon: "person", color: "#30B0C7"
             )
         ]
     )

@@ -1,5 +1,5 @@
-import type { AgentRunEventRow, NotificationRow } from "@semprec/data";
-import { isClientUpdateId, type AgentDeltaChunk, type OutboundFrame } from "@semprec/realtime";
+import type { AgentRunEventRow, NotificationRow } from "@alldots/data";
+import { isClientUpdateId, type AgentDeltaChunk, type OutboundFrame } from "@alldots/realtime";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

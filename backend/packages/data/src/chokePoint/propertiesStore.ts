@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { NumberFilterConfigSchema, PropertyOptionLabelSchema } from "@semprec/shared";
+import { NumberFilterConfigSchema, PropertyOptionLabelSchema } from "@alldots/shared";
 import { requireAffectedRows, requireSingleRow } from "../db/pool.js";
 import {
   ConflictError,
@@ -579,6 +579,26 @@ function newOptionKey(label: string, options: readonly StoredOption[]): string {
   return `${base}${suffix}`;
 }
 
+/**
+ * Locks, `FOR SHARE` and in id order, the `select`/`multi_select` properties of `databaseId` among `keys`, so a
+ * caller that validates item values against their options reads them after this statement and holds them until
+ * commit: `removePropertyOption`'s `FOR UPDATE` waits for the caller, or the caller waits and reads the options
+ * without the removed one.
+ */
+export async function lockChoicePropertiesForShare(
+  client: PoolClient,
+  databaseId: string,
+  keys: readonly string[],
+): Promise<void> {
+  if (keys.length === 0) return;
+  await client.query<{ id: string }>(
+    `SELECT id FROM properties
+      WHERE database_id = $1 AND key = ANY($2::text[]) AND type IN ('select', 'multi_select')
+      ORDER BY id FOR SHARE`,
+    [databaseId, keys],
+  );
+}
+
 /** After the same config validation every config write runs. */
 async function writePropertyOptions(
   client: PoolClient,
@@ -657,4 +677,36 @@ export async function updatePropertyOption(
     options.map((option) => (option === current ? next : option)),
   );
   return { property: updated, database, optionKey };
+}
+
+/**
+ * Removes one option, also on a schema-locked database, and a `config.default` naming it. Refuses an unknown key, and a
+ * system-owned property with `validation_failed` (`reason: "system_owned"`). The property row stays locked until
+ * the caller's transaction ends, so the caller clears the key from item values before another option write or an item
+ * write checked against the options (`lockChoicePropertiesForShare`) can proceed.
+ */
+export async function removePropertyOption(
+  client: PoolClient,
+  propertyId: string,
+  optionKey: string,
+): Promise<{ property: PropertyRow; database: DatabaseRow }> {
+  const { property, database, options } = await lockPropertyForOptionWrite(client, propertyId);
+  if (property.owner === "system") {
+    throw new ValidationError(`Property ${propertyId} is owned by 'system'; its options cannot be removed`, {
+      field: "propertyId",
+      reason: "system_owned",
+    });
+  }
+  if (!options.some((option) => option.key === optionKey)) {
+    throw new NotFoundError(`Property ${propertyId} has no option with the given key`, {
+      resource: "propertyOption",
+      propertyId,
+      key: optionKey,
+    });
+  }
+  const remaining = options.filter((option) => option.key !== optionKey);
+  const { default: storedDefault, ...rest } = property.config;
+  const config = storedDefault === optionKey ? rest : property.config;
+  const updated = await writePropertyOptions(client, { ...property, config }, remaining);
+  return { property: updated, database };
 }

@@ -81,14 +81,24 @@ final class MailViewModelTests: XCTestCase {
         viewModel.send(.toggleFlag)
         viewModel.send(.move(.archive))
         viewModel.send(.sendDraft(body: "Text"))
-        XCTAssertEqual(model.actions, [.toggleFlag, .move(.archive), .sendDraft(body: "Text")])
+        viewModel.send(.loadBody(emailId: "e1"))
+        viewModel.send(.saveAttachment(emailId: "e1", attachmentId: "a1"))
+        viewModel.send(.open(.file(fileItemId: "f1")))
+        XCTAssertEqual(
+            model.actions,
+            [
+                .toggleFlag, .move(.archive), .sendDraft(body: "Text"), .loadBody(emailId: "e1"),
+                .saveAttachment(emailId: "e1", attachmentId: "a1"), .open(.file(fileItemId: "f1"))
+            ]
+        )
         let observer = Task { await viewModel.observe() }
         defer { observer.cancel() }
         model.emit(.compose(.reply(sourceEmailId: "e1", mailboxId: "m1", mode: .replyAll)))
         model.emit(.openTask(taskId: "k1"))
+        model.emit(.openFile(fileItemId: "f1"))
         model.emit(.close)
-        try await eventually { router.calls.count == 2 && viewModel.closeRequests == 1 }
-        XCTAssertEqual(router.calls, ["compose reply e1 m1", "task k1"])
+        try await eventually { router.calls.count == 3 && viewModel.closeRequests == 1 }
+        XCTAssertEqual(router.calls, ["compose reply e1 m1", "task k1", "file f1"])
     }
 
     // MARK: - Compose
@@ -120,32 +130,6 @@ final class MailViewModelTests: XCTestCase {
         model.emit(.openAccounts)
         try await eventually { router.calls.count == 3 }
         XCTAssertEqual(router.calls, ["list Klienti m1 f1", "compose new", "accounts"])
-    }
-
-    // MARK: - Accounts
-    @MainActor
-    func testAccountsRouteTheOpenedAccountAndCountConnections() async throws {
-        let router = MailRouterSpy()
-        let model = ScriptedMailAccountsScreenModel(state: MailAccountsState())
-        let viewModel = MailAccountsViewModel(model: model, router: router)
-        let observer = Task { await viewModel.observe() }
-        defer { observer.cancel() }
-        model.emit(.openAccount(mailboxId: "m1"))
-        model.emit(.connected)
-        try await eventually { router.calls.count == 1 && viewModel.connections == 1 }
-        XCTAssertEqual(router.calls, ["account m1"])
-    }
-
-    @MainActor
-    func testAccountRequestsToCloseWhenItWasRemoved() async throws {
-        let model = ScriptedMailAccountScreenModel(state: MailAccountState())
-        let viewModel = MailAccountViewModel(model: model)
-        viewModel.send(.requestRemoval)
-        XCTAssertEqual(model.actions, [.requestRemoval])
-        let observer = Task { await viewModel.observe() }
-        defer { observer.cancel() }
-        model.emit(.removed)
-        try await eventually { viewModel.closeRequests == 1 }
     }
 
     // MARK: - Lifetime
@@ -230,5 +214,9 @@ final class MailRouterSpy: MailRouting {
 
     func showTask(taskId: String) {
         calls.append("task \(taskId)")
+    }
+
+    func showFile(fileItemId: String) {
+        calls.append("file \(fileItemId)")
     }
 }

@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { recordTokenGatewayCall } from "../../aiGateway/aiGatewayCallsStore.js";
 import { getAiUsageSummary } from "../../aiGateway/aiUsageSummary.js";
 import { setTenantAiBudget } from "../../aiGateway/tenantAiBudgetsStore.js";
@@ -19,6 +19,7 @@ import { createAgentRun, createChainedAgentRun, finishAgentRun } from "../../age
 import { ensureMailAccountSyncState, recordSyncError } from "../../mail/mailAccountSyncStateStore.js";
 import { getOrCreateTickThread } from "../sempTickThreadStore.js";
 import { raiseProblem } from "../sempProblemsStore.js";
+import { agentGuidanceDriftFindingsStore } from "../../guidanceDrift/agentGuidanceDriftFindingsStore.js";
 import { getSempStatusReport } from "../sempStatusReport.js";
 import { createSempStatusRouteHandler } from "../sempStatusRouteHandler.js";
 
@@ -35,7 +36,7 @@ let foreignUser: string;
 describe("Semp status report", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = await createRuntimeRolePool(admin, "semprec_data");
+    data = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify status test role", () =>
       data.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -194,6 +195,47 @@ describe("Semp status report", () => {
       expect(czech.shortText).toBe(resolveCatalogLabel(undefined, catalogs.cs, catalogs.en, shortKey));
       expect(czech.shortText).not.toBe(english.shortText);
     }
+  });
+  it("tells a project's guidance findings apart by their claims", async () => {
+    const report = await runInTenant(own, async () => {
+      const cp = createChokePoint(data);
+      const projects = (await cp.listDatabases()).find((entry) => entry.ownerModuleId === "projects");
+      if (!projects) throw new Error("Missing projects database");
+      const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Email" } });
+      await withTransaction(data, async (client) => {
+        for (const claim of ["Semp may send mail on its own", "  Semp may delete tasks  "]) {
+          const { finding } = await agentGuidanceDriftFindingsStore.upsertActive(client, {
+            projectItemId: project.id,
+            fingerprint: randomUUID(),
+            payload: {
+              kind: "permission",
+              subject: null,
+              claim,
+              guidanceExcerpt: claim,
+              manifestFacts: ["Sending needs the owner's confirmation"],
+              severity: "warning",
+            },
+            seenAt: new Date(),
+          });
+          await raiseProblem(client, {
+            userId: ownUser,
+            category: "guidance",
+            kind: "guidanceDrift",
+            severity: "warning",
+            sourceTable: "agent_guidance_drift_findings",
+            sourceId: finding.id,
+            projectItemId: project.id,
+            dedupeKey: `guidance:${project.id}:${finding.fingerprint}`,
+          });
+        }
+      });
+      return getSempStatusReport(data);
+    });
+
+    expect(report.problems.map((problem) => problem.text).sort()).toEqual([
+      "Email: Semp may delete tasks",
+      "Email: Semp may send mail on its own",
+    ]);
   });
   it("keeps the number of report statements constant as problems grow", async () => {
     async function addProblem(index: number) {

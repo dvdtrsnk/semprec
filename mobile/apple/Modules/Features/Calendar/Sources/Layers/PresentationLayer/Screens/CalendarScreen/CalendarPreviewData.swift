@@ -51,7 +51,7 @@ enum CalendarPreviewData {
                 date: date,
                 items: items[date] ?? [],
                 sleepEvening: date == "2026-10-16" ? sleep : nil,
-                sleepMorning: date == "2026-10-17" ? sleep : nil
+                sleepMorning: date == "2026-10-17" ? morningSleep : nil
             )
         }
     }
@@ -76,7 +76,7 @@ enum CalendarPreviewData {
             id: "faktura", kind: .task, title: "Odeslat fakturu", color: "#007AFF", date: "2026-10-16", allDay: false,
             startMinutes: 14 * 60, endMinutes: 15 * 60 + 30, hasEnd: true
         ),
-        event("fokus", "Fokus: Semprec iOS", color: "#FF9500", date: "2026-10-16", minutes: 15 * 60...16 * 60 + 30),
+        event("fokus", "Fokus: Alldots iOS", color: "#FF9500", date: "2026-10-16", minutes: 15 * 60...16 * 60 + 30),
         CalendarItem(
             id: "najem", kind: .task, title: "Zaplatit nájem", color: "#007AFF", date: "2026-10-16", allDay: true
         )
@@ -84,7 +84,12 @@ enum CalendarPreviewData {
 
     static let sleep = CalendarSleep(
         night: "2026-10-16", bedMinutes: 23 * 60, wakeMinutes: 6 * 60 + 45, alarm: true, changed: false,
-        prepMinutes: 22 * 60 + 30
+        prepMinutes: 22 * 60 + 30, fromMinutes: 23 * 60, toMinutes: 24 * 60
+    )
+
+    static let morningSleep = CalendarSleep(
+        night: "2026-10-16", bedMinutes: 23 * 60, wakeMinutes: 6 * 60 + 45, alarm: true, changed: false,
+        prepMinutes: nil, fromMinutes: 0, toMinutes: 6 * 60 + 45
     )
 
     // MARK: - Private

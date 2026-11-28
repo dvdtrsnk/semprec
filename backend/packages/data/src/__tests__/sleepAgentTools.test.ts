@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
 import { resolveModuleAgentToolsForRun, type ResolvedModuleAgentTool } from "../agentTools/moduleAgentTools.js";
@@ -223,7 +223,7 @@ async function clearResyncJobs(): Promise<void> {
 describe("the sleep agent tools (issue gh-1840)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     registry = await loadFullModuleRegistry();
   });
 
@@ -272,11 +272,11 @@ describe("the sleep agent tools (issue gh-1840)", () => {
       const projects = await inTenant(tenant.tenantId, (client) =>
         databasesStore.getDatabaseByModuleId(client, "inbox"),
       );
-      if (!projects?.ownerProjectItemId) throw new Error("Missing Semprec project");
-      const semprecProjectId = projects.ownerProjectItemId;
-      const run = await runOf(tenant, semprecProjectId);
+      if (!projects?.ownerProjectItemId) throw new Error("Missing Alldots project");
+      const alldotsProjectId = projects.ownerProjectItemId;
+      const run = await runOf(tenant, alldotsProjectId);
 
-      const names = (await toolsFor(tenant, run.id, semprecProjectId)).map((tool) => tool.name);
+      const names = (await toolsFor(tenant, run.id, alldotsProjectId)).map((tool) => tool.name);
 
       expect(names).not.toContain("sleepNightSet");
       expect(names).not.toContain("sleepNightsGet");

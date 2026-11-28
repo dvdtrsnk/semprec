@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import * as Y from "yjs";
 import { z } from "zod";
-import { currentTenantScope, type HiddenRelationTarget, type SempMessageRef } from "@semprec/shared";
+import { currentTenantScope, type HiddenRelationTarget, type SempMessageRef } from "@alldots/shared";
 import { requireManagedTransaction } from "../db/pool.js";
 import { getItemsByIds, getItemsByIdsIncludingDeleted } from "../chokePoint/itemsStore.js";
 import { projectItemsForRead } from "../chokePoint/itemReadProjection.js";
@@ -13,7 +13,7 @@ import { readRefDocumentStates } from "../docs/docsStore.js";
 import { getAgentRun } from "../agentRuns/agentRunsStore.js";
 import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { itemIdsLinkedToDatabases } from "../agentGrants/inheritedSensitivity.js";
-import { getTaskRecurrenceBySeriesId, publicTaskRecurrenceTemplate } from "../tasks/taskRecurrenceStore.js";
+import { getTaskRecurrenceBySeriesId } from "../tasks/taskRecurrenceStore.js";
 import { getApprovalRequest } from "../mcp/approvalRequestsStore.js";
 import { getBlob } from "../blobs/blobsStore.js";
 import { readMailDraftRefDetails } from "../mail/mailDraftRefExpansion.js";
@@ -191,7 +191,7 @@ async function readTaskOccurrenceContext(
   // Soft deletion keeps the recurrence row until purge, so a series whose owner item is gone is unavailable.
   const [instance] = await getItemsByIds(client, [series.itemId]);
   if (!instance) return null;
-  const template = publicTaskRecurrenceTemplate(series.template);
+  const template = series.template;
   return {
     label: Array.from(template.name ?? "")
       .slice(0, 500)
@@ -273,17 +273,20 @@ export async function readSempRefContext(
     };
   }
   if (ref.kind === "mailAttachment") {
-    const { rows } = await client.query<{ filename: string; content_type: string; byte_size: string; blob_id: string }>(
-      "SELECT filename, content_type, byte_size, blob_id FROM mail_attachments WHERE id = $1",
-      [ref.attachmentId],
-    );
+    const { rows } = await client.query<{
+      filename: string;
+      content_type: string;
+      byte_size: string;
+      blob_id: string | null;
+    }>("SELECT filename, content_type, byte_size, blob_id FROM mail_attachments WHERE id = $1", [ref.attachmentId]);
     const row = rows[0];
     if (!row) return null;
     return {
       label: row.filename,
       state: "active",
       details: { filename: row.filename, contentType: row.content_type, byteSize: row.byte_size },
-      blob: blobProjection(await getBlob(client, row.blob_id)),
+      // An index message's attachment has no stored bytes.
+      blob: row.blob_id === null ? null : blobProjection(await getBlob(client, row.blob_id)),
     };
   }
   if (ref.kind === "mailThread") {

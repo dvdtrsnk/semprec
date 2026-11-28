@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import { SLEEP_SETTINGS_MODULE_ID } from "../../seed/sleepModuleKeys.js";
 

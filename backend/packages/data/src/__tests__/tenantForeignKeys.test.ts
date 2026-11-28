@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createAgentRun } from "../agentRuns/agentRunsStore.js";
@@ -302,7 +302,7 @@ const REFERENCES: Reference[] = [
     parentId: (p) => p.threadId,
     insert: (client, id, own) =>
       client.query(
-        "INSERT INTO mail_message_meta (item_id, message_id, mailbox_item_id, thread_id) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO mail_message_meta (item_id, message_id, mailbox_item_id, thread_id, arrival, content_state) VALUES ($1, $2, $3, $4, 'live', 'full')",
         [own.itemId, `<${randomUUID()}@example.com>`, randomUUID(), id],
       ),
   },
@@ -383,7 +383,7 @@ async function countReferencing(table: string, column: string, parentId: string,
 describe("tenant-consistent composite foreign keys (issue #1066)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await runAsSystem("test:foreign-key-role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

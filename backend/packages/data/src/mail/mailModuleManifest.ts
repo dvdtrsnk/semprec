@@ -1,8 +1,12 @@
 export { createMailboxListRouteHandler, createMailboxDetailRouteHandler } from "./mailboxRouteHandlers.js";
-export { createMailboxPasswordConnectRouteHandler } from "./mailboxPasswordRouteHandlers.js";
+export {
+  createMailboxPasswordConnectRouteHandler,
+  createMailboxPasswordReplaceRouteHandler,
+} from "./mailboxPasswordRouteHandlers.js";
 export { createMailContactsRouteHandler } from "./mailContactsRoute.js";
 export {
   createMailThreadArchiveRouteHandler,
+  createMailThreadChangesRouteHandler,
   createMailThreadDetailRouteHandler,
   createMailThreadFacetsRouteHandler,
   createMailThreadFlagRouteHandler,
@@ -13,6 +17,13 @@ export {
 } from "./mailThreadRoutes.js";
 export { createMailThreadTaskCreateRouteHandler } from "./mailThreadTaskRouteHandlers.js";
 export { threadCompanyLinkResolver, threadProjectLinkResolver } from "./threadLinkRules.js";
+export { threadProjectSignalsLinkResolver } from "./projectMailSignals.js";
+export {
+  createProjectMailSignalsApplyRouteHandler,
+  createProjectMailSignalsPreviewRouteHandler,
+  createProjectMailSignalsReadRouteHandler,
+  createProjectMailSignalsReplaceRouteHandler,
+} from "./projectMailSignalsRoutes.js";
 export {
   createMailDraftCreateTool,
   createMailDraftCreateUserTool,
@@ -20,12 +31,15 @@ export {
   createMailDraftSendUserTool,
   createMailDraftUpdateTool,
   createMailDraftUpdateUserTool,
+  createMailSearchTool,
+  createMailSearchUserTool,
   createMailThreadGetTool,
   createMailThreadGetUserTool,
   createMailThreadProposeTaskTool,
   mailDraftCreateArgsSchema,
   mailDraftSendArgsSchema,
   mailDraftUpdateArgsSchema,
+  mailSearchArgsSchema,
   mailThreadGetArgsSchema,
   mailThreadProposeTaskArgsSchema,
 } from "./mailAgentTools.js";
@@ -52,7 +66,15 @@ export {
 } from "./mailOauthRouteHandlers.js";
 export { createMailSummaryRouteHandler } from "./mailSummary.js";
 export { createMailFolderListRouteHandler } from "./mailFolderList.js";
-import type { ModuleManifest } from "@semprec/module-registry";
+export { createMailMessageContentRouteHandler } from "./mailMessageContent.js";
+export { createMailAttachmentSaveRouteHandler } from "./mailAttachmentSave.js";
+export { createMailSearchRouteHandler } from "./mailRemoteSearch.js";
+export {
+  createMailHistoryClaimRouteHandler,
+  createMailHistoryReleaseRouteHandler,
+  createMailHistoryUploadRouteHandler,
+} from "./mailHistoryUpload.js";
+import type { ModuleManifest } from "@alldots/module-registry";
 import { MAILBOX_CLIENT_VIEW_TYPE } from "../views/mailboxClientViewType.js";
 import {
   EMAILS_MODULE_ID,
@@ -64,7 +86,9 @@ import { FILES_MODULE_ID, TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { THREAD_ATTACHMENT_PROJECT_RULE_KEY } from "./threadAttachmentLinks.js";
 import { MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID, MAIL_REINDEX_PERSON_EMAILS_ACTION_ID } from "./personLinkingActions.js";
 import { THREAD_COMPANY_LINK_RULE_KEY, THREAD_PROJECT_LINK_RULE_KEY } from "./threadLinkRules.js";
+import { THREAD_SIGNALS_PROJECT_LINK_RULE_KEY } from "./projectMailSignals.js";
 import { MAIL_SYNC_THREAD_TASK_PEOPLE_TASK } from "./threadTaskPeople.js";
+import { MAIL_HISTORY_MAX_BODY_BYTES } from "./mailHistoryUpload.js";
 
 export { createNoopMailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
 export { createMailboxRemovalImpactRouteHandler } from "./mailboxRemovalImpact.js";
@@ -75,7 +99,7 @@ export { createMailboxRemovalRouteHandler } from "./mailboxRemoval.js";
  * reindex jobs and the `newEmail` heartbeat are core-registered, so `taskNames` lists only the module's own tasks;
  * `mail.reindexPersonEmails` and `mail.linkPeopleByEmail` are the module's own heartbeat actions.
  *
- * Agent tools: drafting tools declare no approval because a draft stays in Semprec. `mail.draft.send` declares no
+ * Agent tools: drafting tools declare no approval because a draft stays in Alldots. `mail.draft.send` declares no
  * `requiresApproval` and no risk class: its handler files the send's own approval request and sends nothing, so the
  * generic deferral would add a second approval. Over `/mcp` a human session runs the `mcp` handler as its user and a
  * run credential runs the regular handler as its run. `mail.thread.proposeTask` only writes an Inbox card; the user's
@@ -115,7 +139,17 @@ export const manifest: ModuleManifest = {
       riskClass: "read",
       mcp: { humanHandlerExport: "createMailThreadGetUserTool" },
     },
-    // A draft stays in Semprec and nothing sends it, so creating and updating one needs no approval.
+    // Read-only like `mail.thread.get`, with its capability and exposure; it may ask the mail providers to search.
+    {
+      name: "mail.search",
+      handlerExport: "createMailSearchTool",
+      argumentSchemaExport: "mailSearchArgsSchema",
+      capability: "mail.read",
+      approval: "none",
+      riskClass: "read",
+      mcp: { humanHandlerExport: "createMailSearchUserTool" },
+    },
+    // A draft stays in Alldots and nothing sends it, so creating and updating one needs no approval.
     {
       name: "mail.draft.create",
       handlerExport: "createMailDraftCreateTool",
@@ -157,7 +191,7 @@ export const manifest: ModuleManifest = {
   ],
   viewTypes: [MAILBOX_CLIENT_VIEW_TYPE],
   heartbeatActions: [MAIL_REINDEX_PERSON_EMAILS_ACTION_ID, MAIL_LINK_EMAIL_TO_PEOPLE_ACTION_ID],
-  workers: [{ name: "semprec-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
+  workers: [{ name: "alldots-mailsync", handlerExport: "createNoopMailLiveSyncLifecycleFactory" }],
   linkRules: [
     // A task made from a thread takes over the thread's project. Ownership handoff: `Tasks.project` stays
     // `owner: user`; `valueLinks` writes it only while the task's value link is `on`. Runs in the transaction that
@@ -180,6 +214,14 @@ export const manifest: ModuleManifest = {
       key: THREAD_PROJECT_LINK_RULE_KEY,
       target: { databaseKey: THREADS_MODULE_ID, propertyKey: "project" },
       resolverExport: "threadProjectLinkResolver",
+    },
+    // A live thread that still has no project takes the one active project whose mail signals match it
+    // (`projectMailSignals.ts`). It declares no inputs: thread project triage evaluates it once per new live thread.
+    // Ownership handoff as for the two rules above.
+    {
+      key: THREAD_SIGNALS_PROJECT_LINK_RULE_KEY,
+      target: { databaseKey: THREADS_MODULE_ID, propertyKey: "project" },
+      resolverExport: "threadProjectSignalsLinkResolver",
     },
     // A file a thread's message brought takes over the thread's project. Ownership handoff: `Files.projects` stays
     // `owner: user`; `valueLinks` writes it only while the file's link is `on`. Runs with the `Threads.attachments`
@@ -232,6 +274,15 @@ export const manifest: ModuleManifest = {
       justification: "transactional-semantics",
     },
     {
+      name: "mailboxPasswordReplace",
+      method: "PUT",
+      path: "/api/mail/mailboxes/:id/password",
+      handlerExport: "createMailboxPasswordReplaceRouteHandler",
+      // Replaces the sealed password and server settings, clears the mail and calendar reauthorization state and
+      // queues both syncs in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
       name: "mailThreadList",
       method: "GET",
       path: "/api/mail/threads",
@@ -239,10 +290,27 @@ export const manifest: ModuleManifest = {
       justification: "single-consumer-read",
     },
     {
+      name: "mailSearch",
+      method: "GET",
+      path: "/api/mail/search",
+      handlerExport: "createMailSearchRouteHandler",
+      // The thread list's local search together with a search at each account's provider, read outside any
+      // transaction; nothing is written.
+      justification: "single-consumer-read",
+    },
+    {
       name: "mailThreadFacets",
       method: "GET",
       path: "/api/mail/threads/facets",
       handlerExport: "createMailThreadFacetsRouteHandler",
+      // Declared before `mailThreadDetail`, whose `:threadId` also matches this path: the first declared match answers.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailThreadChanges",
+      method: "GET",
+      path: "/api/mail/threads/changes",
+      handlerExport: "createMailThreadChangesRouteHandler",
       // Declared before `mailThreadDetail`, whose `:threadId` also matches this path: the first declared match answers.
       justification: "single-consumer-read",
     },
@@ -408,6 +476,80 @@ export const manifest: ModuleManifest = {
       path: "/api/mail/mailboxes/:id/folders",
       handlerExport: "createMailFolderListRouteHandler",
       justification: "single-consumer-read",
+    },
+    {
+      name: "mailMessageContent",
+      method: "GET",
+      path: "/api/mail/messages/:emailId/content",
+      handlerExport: "createMailMessageContentRouteHandler",
+      // Reads one message's body; for an older message it is fetched from the provider and kept in the module's own
+      // cache table, no item is written.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "mailAttachmentSave",
+      method: "POST",
+      path: "/api/mail/messages/:emailId/attachments/:attachmentId/save",
+      handlerExport: "createMailAttachmentSaveRouteHandler",
+      // Records the fetched bytes on the attachment row and creates the Files item with its Email and Thread edges in
+      // one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "projectMailSignalsRead",
+      method: "GET",
+      path: "/api/mail/projects/:projectId/signals",
+      handlerExport: "createProjectMailSignalsReadRouteHandler",
+      justification: "single-consumer-read",
+    },
+    {
+      name: "projectMailSignalsReplace",
+      method: "PUT",
+      path: "/api/mail/projects/:projectId/signals",
+      handlerExport: "createProjectMailSignalsReplaceRouteHandler",
+      // Writes a row of the module's own table and no item.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "projectMailSignalsPreview",
+      method: "POST",
+      path: "/api/mail/projects/:projectId/signals/preview",
+      handlerExport: "createProjectMailSignalsPreviewRouteHandler",
+      // A POST because it carries the draft signals to match; it reads one snapshot and writes nothing.
+      justification: "single-consumer-read",
+    },
+    {
+      name: "projectMailSignalsApply",
+      method: "POST",
+      path: "/api/mail/projects/:projectId/signals/apply",
+      handlerExport: "createProjectMailSignalsApplyRouteHandler",
+      // Rechecks each listed thread against the signals under the mail thread guard and writes its `Threads.project`
+      // edge as the user, all in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailHistoryClaim",
+      method: "POST",
+      path: "/api/mail/mailboxes/:id/history-index/claim",
+      handlerExport: "createMailHistoryClaimRouteHandler",
+      // Leases the index-only backfill of the mailbox's folders to a native client in one transaction.
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailHistoryRelease",
+      method: "POST",
+      path: "/api/mail/mailboxes/:id/history-index/release",
+      handlerExport: "createMailHistoryReleaseRouteHandler",
+      justification: "transactional-semantics",
+    },
+    {
+      name: "mailHistoryUpload",
+      method: "POST",
+      path: "/api/mail/mailboxes/:id/history-index",
+      handlerExport: "createMailHistoryUploadRouteHandler",
+      // Ingests a slice of a folder's history and moves its backfill cursor in guarded transactions, as the sync does.
+      justification: "transactional-semantics",
+      maxBodyBytes: MAIL_HISTORY_MAX_BODY_BYTES,
     },
     {
       name: "mailboxRemoval",

@@ -18,7 +18,7 @@ struct MailFoldersScreen: View {
         content
             .navigationTitle(Text("mail.folders.title", bundle: .module))
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                PlainToolbarItem(placement: .primaryAction) {
                     Button { viewModel.send(.compose) } label: {
                         Label { Text("mail.compose", bundle: .module) } icon: { Image(systemName: "square.and.pencil") }
                     }

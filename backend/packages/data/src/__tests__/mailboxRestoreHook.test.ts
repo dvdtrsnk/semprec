@@ -3,7 +3,7 @@ import type { Readable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -22,6 +22,7 @@ import {
   ensureMailAccountSyncState,
   listAccountsDueForSync,
   recordGmailActivity,
+  recordGmailSyncCursor,
   recordProviderAccountAddress,
   recordSyncError,
 } from "../mail/mailAccountSyncStateStore.js";
@@ -36,7 +37,6 @@ import { listMailThreads } from "../mail/mailThreadListQuery.js";
 import { removeMailbox } from "../mail/mailboxRemoval.js";
 import { handleMailboxRemovalTask } from "../mail/mailboxRemovalJob.js";
 import { GOOGLE_TOKEN_URL } from "../mail/oauthTokenExchange.js";
-import { MailReauthorizationRequiredError } from "../mail/providerTypes.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
@@ -50,6 +50,7 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
+import { gmailHistory, recentGmailListing } from "../testSupport/gmailListing.js";
 
 interface MailIds {
   mailboxes: string;
@@ -164,10 +165,11 @@ async function connect(client: PoolClient, mailboxId: string): Promise<void> {
   });
   await ensureMailAccountSyncState(client, { itemId: mailboxId, syncMode: "gmail_api" });
   await recordProviderAccountAddress(client, mailboxId, GOOGLE_ACCOUNT);
+  await recordGmailSyncCursor(client, mailboxId, { historyId: "4711", listingPhase: null, listingPageToken: null });
   await recordGmailActivity(client, {
     itemId: mailboxId,
-    historyId: "4711",
     nextExpectedActivityAt: new Date("2031-01-01T00:00:00Z"),
+    completesInitialSync: true,
   });
 }
 
@@ -178,6 +180,8 @@ function ingest(
   input: { mailboxId: string; folder: string; messageId: string },
 ): Promise<string> {
   return ingestEmailMessage(client, {
+    arrival: "live",
+    contentState: "full",
     emailsDatabaseId: ids.emails,
     filesDatabaseId: ids.files,
     folderRelationPropertyId: ids.emailFolderProperty,
@@ -254,8 +258,8 @@ function syncStateRows(mailboxItemId: string, tenantId = tenant): Promise<Array<
 }
 
 /**
- * A default row as `ensureMailAccountSyncState` inserts it: mailbox, tenant and sync mode set, every
- * other column null.
+ * A default row as `ensureMailAccountSyncState` inserts it: mailbox, tenant and sync mode set,
+ * `pass_rerun_requested` false, every other column null.
  */
 async function expectDefaultSyncState(mailboxItemId: string, syncMode: string, tenantId = tenant): Promise<void> {
   const rows = await syncStateRows(mailboxItemId, tenantId);
@@ -266,8 +270,10 @@ async function expectDefaultSyncState(mailboxItemId: string, syncMode: string, t
     tenant_id: tenantId,
     sync_mode: syncMode,
   });
+  // No pass has run: no lease, and the rerun flag at its default.
+  expect(row.pass_rerun_requested).toBe(false);
   const set = Object.entries(row)
-    .filter(([, value]) => value !== null)
+    .filter(([column, value]) => value !== null && column !== "pass_rerun_requested")
     .map(([column]) => column);
   expect(set.sort()).toEqual(["item_id", "sync_mode", "tenant_id"]);
 }
@@ -334,11 +340,11 @@ function gmailAccount(messageIds: string[]): { client: GmailMailClient; calls: s
     getCurrentHistoryId: async () => "9000",
     listHistorySince: async () => {
       calls.push("listHistorySince");
-      return { invalidated: false, newHistoryId: "9000", changedMessageIds: [], removedMessageIds: [] };
+      return gmailHistory("9000");
     },
-    listAllMessageIds: async () => {
-      calls.push("listAllMessageIds");
-      return messageIds;
+    listMessageIds: async (query) => {
+      calls.push(`listMessageIds ${query.split(":")[0]}`);
+      return recentGmailListing(messageIds)(query, null);
     },
     listLabels: async () => [{ id: "INBOX", name: "Inbox", type: "system" }],
     fetchMessage: async (id) =>
@@ -487,7 +493,11 @@ async function reauthorize(
 ): Promise<{ answer: { status: number; body: unknown }; restarted: string[] }> {
   const identity = { user: { id: userId } };
   const started = await runInTenant(tenant, () =>
-    createMailboxReauthorizeRouteHandler(runtime, { oauth: OAUTH })({ identity, params: { id: mailboxItemId } }),
+    createMailboxReauthorizeRouteHandler(runtime, { oauth: OAUTH })({
+      identity,
+      params: { id: mailboxItemId },
+      body: {},
+    }),
   );
   const { authorizeUrl } = z.object({ authorizeUrl: z.string() }).parse(started.body);
   const state = new URL(authorizeUrl).searchParams.get("state");
@@ -509,7 +519,7 @@ async function reauthorize(
 describe("mailbox restore hook (gh-2032)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(runtime);
     // A registry has no unregister: both hooks stay for the file and refuse only the item a test names.
     registerItemDeleteHook(async (context) => {
@@ -678,10 +688,15 @@ describe("mailbox restore hook (gh-2032)", () => {
     await inTenant(async (client) => {
       await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" });
       await recordProviderAccountAddress(client, mailbox.id, GOOGLE_ACCOUNT);
+      await recordGmailSyncCursor(client, mailbox.id, {
+        historyId: "4711",
+        listingPhase: null,
+        listingPageToken: null,
+      });
       await recordGmailActivity(client, {
         itemId: mailbox.id,
-        historyId: "4711",
         nextExpectedActivityAt: new Date("2031-01-01T00:00:00Z"),
+        completesInitialSync: true,
       });
     });
     const before = await syncStateRows(mailbox.id);
@@ -1153,13 +1168,10 @@ describe("mailbox restore hook (gh-2032)", () => {
       mailboxId,
     ]);
 
-    // Two passes, as two sweeps queue them. Neither finds a credential, and neither reaches the provider.
+    // Two passes, as two sweeps queue them. The first finds no credential and records it without a retry; the
+    // second ends at the recorded failure kind. Neither reaches the provider.
     const gmail = gmailAccount([]);
-    for (let pass = 0; pass < 2; pass += 1) {
-      const failed = syncPass(mailboxId, gmail.client);
-      await expect(failed).rejects.toBeInstanceOf(MailReauthorizationRequiredError);
-      await expect(failed).rejects.toThrow("has no stored credential");
-    }
+    for (let pass = 0; pass < 2; pass += 1) await syncPass(mailboxId, gmail.client);
     expect(gmail.calls).toEqual([]);
 
     // The mailbox is still waiting for the sign-in: that is what the status, the failure kind, the
@@ -1170,7 +1182,7 @@ describe("mailbox restore hook (gh-2032)", () => {
     expect(waiting[0]).toMatchObject({ sync_mode: "gmail_api", last_failure_kind: "reauthorization" });
     expect(waiting[0]?.failing_since).not.toBeNull();
     expect(await notificationKindsOf(mailboxId)).toEqual([]);
-    expect(await mailProblemsOf(mailboxId)).toEqual([{ severity: "critical", occurrences: 2, resolved: false }]);
+    expect(await mailProblemsOf(mailboxId)).toEqual([{ severity: "critical", occurrences: 1, resolved: false }]);
     const summary = await runInTenant(tenant, () => createMailSummaryRouteHandler(runtime)());
     expect(summary.body.accountsNeedingReauth).toEqual([{ id: mailboxId, name: "Work" }]);
 
@@ -1185,7 +1197,7 @@ describe("mailbox restore hook (gh-2032)", () => {
       failing_since: null,
     });
     expect(await notificationKindsOf(mailboxId)).toEqual([]);
-    expect(await mailProblemsOf(mailboxId)).toEqual([{ severity: "critical", occurrences: 2, resolved: true }]);
+    expect(await mailProblemsOf(mailboxId)).toEqual([{ severity: "critical", occurrences: 1, resolved: true }]);
   });
 
   it("lets the user sign in again after the restore: sync resumes with the new token and duplicates neither the restored messages nor their folders", async () => {
@@ -1249,8 +1261,9 @@ describe("mailbox restore hook (gh-2032)", () => {
     const gmail = gmailAccount(["g1", "g2", "g3"]);
     expect(await syncPass(mailboxId, gmail.client)).toEqual([NEW_REFRESH_TOKEN]);
 
-    // The default row has no cursor, so the pass listed the whole account, and matched what it already had.
-    expect(gmail.calls).toEqual(["listAllMessageIds"]);
+    // The default row has no cursor, so the pass listed the whole account, both phases, and matched what it
+    // already had.
+    expect(gmail.calls).toEqual(["listMessageIds after", "listMessageIds before"]);
     const resumed = await messagesOf(mailboxId);
     expect(resumed.map((message) => message.providerMessageId)).toEqual(["g1", "g2", "g3"]);
     expect(resumed.slice(0, 2)).toEqual(synced);

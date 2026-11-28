@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { SearchMailResult } from "@semprec/shared";
+import type { SearchMailResult } from "@alldots/shared";
 import { listUnreadableDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { EMAILS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { buildItemSearchQuery } from "../search/itemSearchQuery.js";
@@ -197,10 +197,11 @@ async function searchMailThreads(
   const paging = matchesSearch(search, 5);
   const { rows } = await client.query<ThreadDbRow>(
     `${matchedThreadsSql(paging.sql)}
-     SELECT m.thread_id, m.item_id, m.subject, to_char(m.activity AT TIME ZONE 'UTC', ${INSTANT_SQL}) AS last_message_at,
+     SELECT m.thread_id, m.item_id, ts.subject, to_char(m.activity AT TIME ZONE 'UTC', ${INSTANT_SQL}) AS last_message_at,
        COALESCE(m.envelope->'from'->>'name', '') AS sender_name, COALESCE(m.envelope->'from'->>'address', '') AS sender_address,
        person.id AS person_id, person.database_id AS person_database_id, m.preview_text
      FROM matched m
+     JOIN thread_subject ts ON ts.thread_id = m.thread_id
      LEFT JOIN person_email_index pei ON pei.tenant_id = app_tenant_default()
        AND pei.email = lower(btrim(m.envelope->'from'->>'address', E' \\t\\n\\r'))
      LEFT JOIN items person ON person.tenant_id = app_tenant_default() AND person.id = pei.item_id AND person.deleted_at IS NULL

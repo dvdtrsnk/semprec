@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
@@ -33,7 +33,12 @@ import { LocalFsBlobStorageWriter } from "../blobStorage.js";
 import { createEmailDraftInMailbox, discardEmailDraft, updateEmailDraft, type EmailDraftView } from "../draft.js";
 import { ensureFolderItem } from "../folderDiscovery.js";
 import { ingestEmailMessage, type IngestEmailMessageInput } from "../ingest.js";
-import { createMailThreadGetTool, createMailDraftCreateTool, createMailDraftUpdateTool } from "../mailAgentTools.js";
+import {
+  createMailDraftCreateTool,
+  createMailDraftUpdateTool,
+  createMailSearchTool,
+  createMailThreadGetTool,
+} from "../mailAgentTools.js";
 import { getMailDraft, markMailDraftSent } from "../mailDraftsStore.js";
 import type { MailEnvelope } from "../mailMessageMetaStore.js";
 import { createMailThread, reassignThread } from "../mailMessageMetaStore.js";
@@ -206,6 +211,8 @@ async function receive(t: MailTenant, options: ReceiveOptions = {}): Promise<str
       return found.id;
     };
     const input: IngestEmailMessageInput = {
+      arrival: "live",
+      contentState: "full",
       emailsDatabaseId: db("emails"),
       filesDatabaseId: db("files"),
       folderRelationPropertyId: property("folder"),
@@ -440,9 +447,9 @@ async function userDraft(t: MailTenant, overrides: { threadId?: string | null } 
 describe("the mail agent tools", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     registry = await loadFullModuleRegistry();
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-agent-tools-"));
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-agent-tools-"));
   });
 
   afterAll(async () => {
@@ -489,7 +496,7 @@ describe("the mail agent tools", () => {
   }
 
   describe("composition", () => {
-    it("lists the five tools for a run of the project that owns the mail databases and classifies the three draft tools without approval", async () => {
+    it("lists the six tools for a run of the project that owns the mail databases and classifies the three draft tools without approval", async () => {
       const { runId } = await runOf(tenant);
 
       const tools = (await toolsFor(tenant, runId)).filter((tool) => tool.name.startsWith("mail."));
@@ -498,11 +505,13 @@ describe("the mail agent tools", () => {
         "mail.draft.create",
         "mail.draft.send",
         "mail.draft.update",
+        "mail.search",
         "mail.thread.get",
         "mail.thread.proposeTask",
       ]);
       expect(Object.fromEntries(tools.map((tool) => [tool.name, [tool.requiresApproval, tool.riskClass]]))).toEqual({
         "mail.thread.get": [false, "read"],
+        "mail.search": [false, "read"],
         "mail.draft.create": [false, "write"],
         "mail.draft.update": [false, "write"],
         "mail.draft.send": [false, "unclassified"],
@@ -514,7 +523,7 @@ describe("the mail agent tools", () => {
       const inbox = await inTenant(tenant, () =>
         withTransaction(runtime, (client) => databasesStore.getDatabaseByModuleId(client, "inbox")),
       );
-      if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing Alldots project");
       const { runId } = await runOf(tenant, { projectItemId: inbox.ownerProjectItemId });
 
       const names = (await toolsFor(tenant, runId, inbox.ownerProjectItemId)).map((tool) => tool.name);
@@ -522,7 +531,7 @@ describe("the mail agent tools", () => {
       expect(names.filter((name) => name.startsWith("mail."))).toEqual([]);
     });
 
-    it("offers the read tool only with mail.read and the two draft tools only with mail.draft", async () => {
+    it("offers the two read tools only with mail.read and the two draft tools only with mail.draft", async () => {
       const { runId } = await runOf(tenant);
       const mailNames = async (granted: string[]) =>
         (await toolsFor(tenant, runId, tenant.mailProjectId, new Set(granted)))
@@ -530,7 +539,7 @@ describe("the mail agent tools", () => {
           .filter((name) => name.startsWith("mail."))
           .sort();
 
-      expect(await mailNames(["mail.read"])).toEqual(["mail.thread.get"]);
+      expect(await mailNames(["mail.read"])).toEqual(["mail.search", "mail.thread.get"]);
       expect(await mailNames(["mail.draft"])).toEqual(["mail.draft.create", "mail.draft.update"]);
       expect(await mailNames([])).toEqual([]);
     });
@@ -568,6 +577,7 @@ describe("the mail agent tools", () => {
 
       for (const [factory, args] of [
         [createMailThreadGetTool, { threadId: "x" }],
+        [createMailSearchTool, { query: "  " }],
         [createMailDraftCreateTool, { mode: "new" }],
         [createMailDraftUpdateTool, { draftId: randomUUID() }],
       ] as const) {
@@ -584,6 +594,7 @@ describe("the mail agent tools", () => {
 
       for (const [factory, args] of [
         [createMailThreadGetTool, { threadId }],
+        [createMailSearchTool, { query: "offer" }],
         [createMailDraftCreateTool, { mode: "new", mailboxId: tenant.mailboxId, body: "x" }],
         [createMailDraftUpdateTool, { draftId: randomUUID(), body: "x" }],
       ] as const) {
@@ -623,7 +634,7 @@ describe("the mail agent tools", () => {
 
       expect(answer.error).toBe(false);
       const thread = threadSchema.parse(JSON.parse(answer.result));
-      expect(thread).toMatchObject({ threadId, subject: "Re: Offer", messageCount: 2, company: null });
+      expect(thread).toMatchObject({ threadId, subject: "Offer", messageCount: 2, company: null });
       expect(thread.project).toMatchObject({ name: "Website" });
       expect(thread.participants.map((participant) => participant.address).sort()).toEqual(
         [PETR.address, OWN_ADDRESS, JANA.address].sort(),

@@ -1,18 +1,18 @@
 import type { Pool, PoolClient } from "pg";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { writeComputed } from "../chokePoint/itemsStore.js";
-import { runAfterCommit, withTransaction } from "../db/pool.js";
+import { runAfterCommit, withTransaction, type Queryable } from "../db/pool.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import {
   INBOX_MODULE_ID,
   INBOX_ITEM_TYPES_MODULE_ID,
   PROCESSING_PROPOSALS_MODULE_ID,
 } from "../seed/inboxPipelineKeys.js";
-import { AREAS_MODULE_ID, JOURNAL_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { JOURNAL_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { indexItem } from "../search/itemSearchIndexer.js";
 import type { DatabaseRow, ItemRow } from "../types.js";
 import { listInboxAttachments, type InboxAttachmentSource } from "./inboxAttachmentsStore.js";
@@ -38,8 +38,6 @@ export interface JournalInboxProposalSummary {
   targetItemName: string | null;
   projectItemId: string | null;
   projectName: string | null;
-  areaItemId: string | null;
-  areaName: string | null;
   followUps: JournalInboxFollowUp[];
 }
 
@@ -56,6 +54,29 @@ export interface JournalInboxAttachmentSummary {
   pageCount: number | null;
   thumbnailBlobId: string | null;
   source: InboxAttachmentSource;
+}
+
+/** One read for all `inboxItemIds`; each item's attachments in position order, an item without any is absent. */
+export async function listInboxAttachmentSummaries(
+  client: Queryable,
+  inboxItemIds: string[],
+): Promise<Map<string, JournalInboxAttachmentSummary[]>> {
+  const byItem = new Map<string, JournalInboxAttachmentSummary[]>();
+  for (const attachment of await listInboxAttachments(client, inboxItemIds)) {
+    const forItem = byItem.get(attachment.inboxItemId) ?? [];
+    forItem.push({
+      attachmentId: attachment.attachmentId,
+      blobId: attachment.blobId,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      byteSize: Number(attachment.byteSize),
+      pageCount: attachment.metadata?.pages ?? null,
+      thumbnailBlobId: attachment.thumbnailBlobId,
+      source: attachment.source,
+    });
+    byItem.set(attachment.inboxItemId, forItem);
+  }
+  return byItem;
 }
 
 /** Canonical keys and enum values only; locale labels are resolved client-side. */
@@ -79,20 +100,18 @@ interface InboxPipelineDatabases {
   processingProposals: DatabaseRow;
   journal: DatabaseRow;
   projects: DatabaseRow;
-  areas: DatabaseRow;
 }
 
 async function resolveInboxPipelineDatabases(client: PoolClient): Promise<InboxPipelineDatabases | null> {
-  const [inbox, inboxItemTypes, processingProposals, journal, projects, areas] = await Promise.all([
+  const [inbox, inboxItemTypes, processingProposals, journal, projects] = await Promise.all([
     databasesStore.getDatabaseByModuleId(client, INBOX_MODULE_ID),
     databasesStore.getDatabaseByModuleId(client, INBOX_ITEM_TYPES_MODULE_ID),
     databasesStore.getDatabaseByModuleId(client, PROCESSING_PROPOSALS_MODULE_ID),
     databasesStore.getDatabaseByModuleId(client, JOURNAL_MODULE_ID),
     databasesStore.getDatabaseByModuleId(client, PROJECTS_MODULE_ID),
-    databasesStore.getDatabaseByModuleId(client, AREAS_MODULE_ID),
   ]);
-  if (!inbox || !inboxItemTypes || !processingProposals || !journal || !projects || !areas) return null;
-  return { inbox, inboxItemTypes, processingProposals, journal, projects, areas };
+  if (!inbox || !inboxItemTypes || !processingProposals || !journal || !projects) return null;
+  return { inbox, inboxItemTypes, processingProposals, journal, projects };
 }
 
 async function resolveJournalDayItemId(
@@ -153,8 +172,6 @@ function emptyProposalSummary(): JournalInboxProposalSummary {
     targetItemName: null,
     projectItemId: null,
     projectName: null,
-    areaItemId: null,
-    areaName: null,
     followUps: [],
   };
 }
@@ -165,8 +182,8 @@ async function databaseKeyOf(client: PoolClient, databaseId: string): Promise<st
 }
 
 /**
- * A multi-step envelope's existing item is its primary step's `itemId` when that step updates or links. Project and
- * area are the primary step's relation targets in the Projects or Areas database, whichever relation key carries them.
+ * A multi-step envelope's existing item is its primary step's `itemId` when that step updates or links. The project
+ * is the primary step's relation target in the Projects database, whichever relation key carries it.
  * Items are read in one batch; a deleted item is unknown.
  */
 async function buildProposalSummary(
@@ -201,7 +218,6 @@ async function buildProposalSummary(
     return item ? [item] : [];
   });
   const project = related.find((item) => item.databaseId === databases.projects.id) ?? null;
-  const area = related.find((item) => item.databaseId === databases.areas.id) ?? null;
 
   const targetItem = targetItemId ? (itemsById.get(targetItemId) ?? null) : null;
   const [targetLabel] = targetItem ? await databasesStore.listDatabaseLabelsByIds(client, [targetItem.databaseId]) : [];
@@ -230,8 +246,6 @@ async function buildProposalSummary(
     targetItemName: targetItem ? (stringOrNull(targetTitle) ?? stringOrNull(targetItem.properties.name)) : null,
     projectItemId: project?.id ?? null,
     projectName: project ? stringOrNull(project.properties.name) : null,
-    areaItemId: area?.id ?? null,
-    areaName: area ? stringOrNull(area.properties.name) : null,
     followUps,
   };
 }
@@ -271,25 +285,10 @@ async function computeJournalInboxItems(
     ? await relationsStore.getRelationDefinitionByPropertyId(client, sourceInboxProperty.id)
     : null;
 
-  // One read for the whole day, ordered by item then position.
-  const attachmentsByItem = new Map<string, JournalInboxAttachmentSummary[]>();
-  for (const attachment of await listInboxAttachments(
+  const attachmentsByItem = await listInboxAttachmentSummaries(
     client,
     items.map((item) => item.id),
-  )) {
-    const forItem = attachmentsByItem.get(attachment.inboxItemId) ?? [];
-    forItem.push({
-      attachmentId: attachment.attachmentId,
-      blobId: attachment.blobId,
-      name: attachment.name,
-      mimeType: attachment.mimeType,
-      byteSize: Number(attachment.byteSize),
-      pageCount: attachment.metadata?.pages ?? null,
-      thumbnailBlobId: attachment.thumbnailBlobId,
-      source: attachment.source,
-    });
-    attachmentsByItem.set(attachment.inboxItemId, forItem);
-  }
+  );
 
   const summaries: JournalInboxItemSummary[] = [];
   for (const item of items) {

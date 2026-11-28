@@ -5,7 +5,7 @@ import { GraphRestClient } from "../mail/graphRestClient.js";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -26,7 +26,8 @@ import { EMAILS_RELATION_CONTEXT } from "../mail/emailsRelationContext.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { FOLDERS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { withTransaction } from "../db/pool.js";
-import { CORE_TASK_NAMES, enqueueJob, ensureQueueSchema, grantQueueSchemaPrivileges, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@alldots/queue";
+import { installQueueSchema } from "../db/queueSchema.js";
 import { createCoreTaskList } from "../worker.js";
 import { createActionRegistry } from "../scheduler/actions.js";
 import {
@@ -54,13 +55,23 @@ import { parseMailSearchQuery, reindexItemSearch, searchItems } from "../mail/se
 import { NotFoundError, ValidationError } from "../errors.js";
 import { storeCredential, getDecryptedCredential } from "../credentials/externalCredentialsStore.js";
 import {
+  IMAP_FULL_MESSAGES_PER_PASS,
   reconcileImapAccount,
   reconcileImapFolder,
   type ImapFetchedMessage,
+  type ImapFolderRef,
   type ImapMailClient,
 } from "../mail/imapReconcile.js";
+import { lockMailboxSync } from "../mail/mailboxSyncGuard.js";
+import { mailAccountSyncJobKey } from "../mail/mailSyncEnqueue.js";
 import { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
-import { reconcileGraphAccount, type GraphChangedMessage, type GraphMailClient } from "../mail/graphReconcile.js";
+import {
+  reconcileGraphAccount,
+  type GraphChangedMessage,
+  type GraphDeltaPage,
+  type GraphMailClient,
+  type GraphMessageEnvelope,
+} from "../mail/graphReconcile.js";
 import {
   handleMailSearchReindexSweepTask,
   handleSyncMailAccountTask,
@@ -71,10 +82,13 @@ import {
   ensureMailAccountSyncState,
   getMailAccountSyncState,
   defaultSyncModeForProvider,
+  listAccountsDueForSync,
   recordImapActivity,
   recordGmailActivity,
   recordGraphActivity,
   recordSyncError,
+  claimMailSyncPass,
+  clearMailSyncFailure,
 } from "../mail/mailAccountSyncStateStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { mailProblemKey } from "../semp/sourceProblemKeys.js";
@@ -84,14 +98,10 @@ import {
   MailReauthorizationRequiredError,
 } from "../mail/providerTypes.js";
 import { logger } from "../mail/logger.js";
-import {
-  walkBodyStructure,
-  parseHeaderBlock,
-  headerValues,
-  ImapFlowMailClient,
-  isImapConnectionLimitError,
-} from "../mail/imapFlowClient.js";
+import { ImapFlowMailClient, isImapConnectionLimitError } from "../mail/imapFlowClient.js";
+import { headerValues, parseHeaderBlock, walkBodyStructure } from "../mail/imapLightFetch.js";
 import { createImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
+import { createImapSessionPool } from "../mail/imapSessionPool.js";
 import { IMAP_FLAGGED_FLAG, IMAP_SEEN_FLAG, messageFlagProperties } from "../mail/messageFlags.js";
 import { ImapFlow, type FetchMessageObject, type MessageStructureObject } from "imapflow";
 import { createHash, randomUUID } from "node:crypto";
@@ -99,6 +109,17 @@ import { Readable } from "node:stream";
 import { createUser } from "../auth/usersStore.js";
 import { hashPassword } from "../auth/passwordHash.js";
 import { listPendingImapFlagWrites, recordConfirmedMailMessageFlag } from "../mail/mailMessageFlagSyncStore.js";
+import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
+import { elapseMailSyncBackoff } from "../testSupport/mailSyncBackoff.js";
+import { gmailHistory, recentGmailListing } from "../testSupport/gmailListing.js";
+import {
+  backfillOfFetchedSince,
+  fakeFetchedMessage,
+  fakeImapRange,
+  fakeImapSince,
+} from "../testSupport/fakeImapMessages.js";
+import type { FetchedMessage } from "../mail/providerTypes.js";
+import { FakeImapAccount } from "../testSupport/fakeImapAccount.js";
 
 const tenantIt = (name: string, fn: () => unknown, timeout?: number) =>
   it(
@@ -202,7 +223,8 @@ let chokePoint: ChokePoint;
  */
 const TEST_MAILBOX_ITEM_ID = randomUUID();
 
-type IngestInput = Parameters<typeof ingestEmailMessage>[1];
+/** A full message's ingest input; the IMAP sync tests reach index content through the reconcile. */
+type IngestInput = Extract<Parameters<typeof ingestEmailMessage>[1], { contentState: "full" }>;
 
 function useSeededDatabase(): void {
   beforeEach(async () => {
@@ -270,6 +292,8 @@ async function ingestFixture(
       )
     ).id;
   return (messageId, overrides = {}) => ({
+    arrival: "live",
+    contentState: "full",
     emailsDatabaseId: emailsId,
     filesDatabaseId: filesId,
     folderRelationPropertyId,
@@ -339,6 +363,14 @@ async function reconcileParams() {
   };
 }
 
+/** An IMAP adapter whose connect fails with a plain error: an ordinary sync failure, not a reauthorization. */
+const UNEXPECTED_FAILURE = "IMAP connection failed unexpectedly";
+const unexpectedlyFailing: MailSyncAdapterFactory = {
+  createImapClient: async () => {
+    throw new Error(UNEXPECTED_FAILURE);
+  },
+};
+
 /** A Mailbox item with sync state and, unless `credential` is null, a stored app password. */
 async function createSyncMailbox(
   options: {
@@ -373,7 +405,7 @@ async function runSync(
   storage: BlobStorageWriter = noopStorage,
   ...rest: [
     helpers?: Parameters<typeof handleSyncMailAccountTask>[5],
-    limiter?: Parameters<typeof handleSyncMailAccountTask>[6],
+    random?: Parameters<typeof handleSyncMailAccountTask>[6],
   ]
 ): Promise<void> {
   await handleSyncMailAccountTask(pool, { mailboxItemId }, adapters, await moduleIds(), storage, ...rest);
@@ -381,6 +413,11 @@ async function runSync(
 
 function syncState(mailboxItemId: string) {
   return withTransaction(pool, (client) => getMailAccountSyncState(client, mailboxItemId));
+}
+
+/** The time the sweep waits after a failed pass: the account is due again. */
+async function backoffElapsed(mailboxItemId: string): Promise<void> {
+  await withTransaction(pool, (client) => elapseMailSyncBackoff(client, mailboxItemId));
 }
 
 async function syncStatusOf(mailboxItemId: string): Promise<unknown> {
@@ -396,25 +433,64 @@ async function createOwner(): Promise<{ id: string }> {
   return createUser(pool, { email: "owner@example.test", passwordHash, locale: "en", tenantId: getTenantZeroId() });
 }
 
-/** An IMAP client over an empty account; every call succeeds and returns nothing. */
+const derivedBackfills = new WeakSet<object>();
+
+/**
+ * An IMAP client over an empty account; every call succeeds and returns nothing. Unless `overrides` gives its own,
+ * `fetchMessagesBefore` serves the messages the client's `fetchMessagesSince` reports, so the backfill of a folder
+ * established at its UIDNEXT ingests them.
+ */
 function fakeImap(overrides: Partial<ImapMailClient> = {}): ImapMailClient {
-  return {
+  const client: ImapMailClient = {
     appendMessage: async () => {},
     getCapabilities: async () => new Set(),
     listFolders: async () => [],
-    selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
-    fetchMessagesSince: async () => [],
-    fetchVanishedSince: async () => [],
+    selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 }),
+    fetchMessagesSince: async () => fakeImapRange([]),
+    fetchMessagesBefore: async () => fakeImapRange([]),
+    fetchSnippets: async () => new Map(),
+    fetchChangesSince: async () => ({ flags: [], vanished: [] }),
     fetchAllUids: async () => [],
     fetchFlagsChangedSince: async () => [],
     setMessageFlag: async () => {},
     close: async () => {},
     ...overrides,
   };
+  const given: unknown = Reflect.get(overrides, "fetchMessagesBefore");
+  if (typeof given !== "function" || derivedBackfills.has(given)) {
+    const derived = backfillOfFetchedSince(client);
+    derivedBackfills.add(derived);
+    client.fetchMessagesBefore = derived;
+  }
+  return client;
 }
 
-function fetched(uid: number, messageId: string, extra: Partial<ImapFetchedMessage["message"]> = {}) {
-  return { uid, message: { messageId, envelope: { from: { address: "a@x.com" } }, attachments: [], ...extra } };
+/** A fetched message from a@x.com, dated now unless `extra` says otherwise, so that its content is stored in full. */
+function fetched(uid: number, messageId: string, extra: Partial<FetchedMessage> = {}): ImapFetchedMessage {
+  return fakeFetchedMessage(uid, {
+    messageId,
+    envelope: { from: { address: "a@x.com" } },
+    date: new Date(),
+    attachments: [],
+    ...extra,
+  });
+}
+
+/** An IMAP account whose folders hold `counts[path]` messages with UIDs 1..n, honouring `sinceUid` and `limit`. */
+function fakeImapAccount(folders: Array<ImapFolderRef & { count: number }>): ImapMailClient {
+  const countOf = (path: string) => folders.find((folder) => folder.path === path)?.count ?? 0;
+  return fakeImap({
+    listFolders: async () => folders.map(({ path, specialUse }) => ({ path, ...(specialUse ? { specialUse } : {}) })),
+    selectFolder: async (path) => ({ uidvalidity: 7, uidnext: countOf(path) + 1, highestModSeq: null, messages: 0 }),
+    fetchMessagesSince: async (path, sinceUid, limit) =>
+      fakeImapRange(
+        Array.from({ length: countOf(path) }, (_, index) => index + 1)
+          .filter((uid) => uid >= sinceUid)
+          .map((uid) => fetched(uid, `<${path}-${uid}@x>`, { subject: `${path} ${uid}` })),
+        limit,
+      ),
+    fetchAllUids: async (path) => Array.from({ length: countOf(path) }, (_, index) => index + 1),
+  });
 }
 
 /** A real ImapFlow connection that is never opened; tests stub the methods they reach. */
@@ -429,6 +505,7 @@ function unopenedImapFlow(): ImapFlow {
 }
 
 function stubInboxOpen(connection: ImapFlow): void {
+  vi.spyOn(connection, "search").mockResolvedValue([1]);
   vi.spyOn(connection, "mailboxOpen").mockResolvedValue({
     path: "INBOX",
     delimiter: "/",
@@ -523,8 +600,11 @@ describe("email module seed", () => {
       (await chokePoint.listProperties(await databaseIdFor(moduleId))).map((p) => p.key).sort();
     expect(await keysOf("mailboxes")).toEqual([
       "addresses",
+      "calendars",
+      "calendarsEnabled",
       "connectionLimit",
       "folders",
+      "mailEnabled",
       "name",
       "provider",
       "syncStatus",
@@ -662,7 +742,7 @@ describe("conversation threading", () => {
       const itemId = randomUUID();
       await insertItemsWithIds(client, [itemId]);
       await client.query(
-        "INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope) VALUES ($1, $2, $3, $4, '{}')",
+        "INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, thread_id, envelope, arrival, content_state) VALUES ($1, $2, $3, $4, '{}', 'live', 'full')",
         [itemId, messageId, inReplyTo, threadId],
       );
     });
@@ -929,7 +1009,7 @@ describe("provider_message_id uniqueness convergence", () => {
       const conflictInput = await baseInput("<conflict@x>", { providerMessageId: "guarded-provider" });
       const continuationInput = await baseInput("<continuation@x>");
       const nextInput = await baseInput("<next@x>");
-      const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+      const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
       const operationPids: Array<Promise<number>> = [];
       runtimePool.on("acquire", (client: PoolClient) => {
         operationPids.push(
@@ -970,7 +1050,7 @@ describe("provider_message_id uniqueness convergence", () => {
         const role = await runtimePool.query<{ name: string; bypass: boolean; superuser: boolean }>(
           "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
         );
-        expect(role.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
+        expect(role.rows[0]).toEqual({ name: "alldots_data", bypass: false, superuser: false });
         const holderPid = await bounded(holderStarted);
         waiter = withTransaction(runtimePool, async (client) => {
           reportWaiter(await backendPid(client));
@@ -1037,7 +1117,14 @@ describe("provider_message_id uniqueness convergence", () => {
 
   it("fills a null provider_message_id via the message_id upsert's ON CONFLICT DO UPDATE", async () => {
     const itemId = randomUUID();
-    const meta = { itemId, mailboxItemId: TEST_MAILBOX_ITEM_ID, messageId: "<fill@x>", envelope: {} };
+    const meta = {
+      itemId,
+      mailboxItemId: TEST_MAILBOX_ITEM_ID,
+      messageId: "<fill@x>",
+      envelope: {},
+      arrival: "live" as const,
+      contentState: "full" as const,
+    };
     await withTransaction(pool, async (client) => {
       await insertItemsWithIds(client, [itemId]);
       await upsertMailMessageMeta(client, meta);
@@ -1379,6 +1466,12 @@ describe("full-text search over Emails", () => {
     expect(await search(emailsId, "nonexistentword")).not.toContain(itemId);
   });
 
+  it("indexes text that carries U+0000, as text extracted from a PDF can", async () => {
+    const emailsId = await databaseIdFor("emails");
+    const itemId = await indexedEmail(emailsId, "Contract\u0000annex\u0000");
+    expect(await search(emailsId, "annex")).toContain(itemId);
+  });
+
   it("ranks a more recently indexed match above an older one with identical text relevance", async () => {
     const emailsId = await databaseIdFor("emails");
     const olderId = await indexedEmail(emailsId, "quarterly report");
@@ -1516,15 +1609,15 @@ describe("IMAP reconcile core", () => {
   const twoMessages = fakeImap({
     getCapabilities: async () => new Set(["CONDSTORE", "QRESYNC"]),
     listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
-    selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5 }),
-    fetchMessagesSince: async () => [
+    selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 5, messages: 2 }),
+    fetchMessagesSince: fakeImapSince(() => [
       fetched(1, "<one@x>", { subject: "First" }),
       fetched(2, "<two@x>", { envelope: { from: { address: "b@x.com" } }, subject: "Second" }),
-    ],
+    ]),
     fetchAllUids: async () => [1, 2],
   });
   const reconcile = (client: ImapMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
-    withTransaction(pool, (tx) => reconcileImapAccount(tx, client, params));
+    reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
   const folderEdges = async (folderRelationPropertyId: string, itemId?: string) =>
     countRows(`item_relations WHERE relation_definition_id = $1 ${itemId ? "AND (item_a = $2 OR item_b = $2)" : ""}`, [
       await relationDefinitionIdFor(folderRelationPropertyId),
@@ -1551,25 +1644,34 @@ describe("IMAP reconcile core", () => {
     expect(emailRows.map((r) => r.name)).toEqual(["First", "Second"]);
   });
 
-  tenantIt("a UIDVALIDITY change resets folder sync state and forces a full re-fetch", async () => {
+  tenantIt("a UIDVALIDITY change establishes the folder anew and backfills it again from its new UIDNEXT", async () => {
     const params = await reconcileParams();
     await reconcile(twoMessages, params);
 
     const sinceUids: number[] = [];
+    const beforeUids: number[] = [];
     await reconcile(
       fakeImap({
         ...twoMessages,
-        selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
+        selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1, messages: 1 }),
         fetchMessagesSince: async (_path, sinceUid) => {
           sinceUids.push(sinceUid);
-          return [];
+          return fakeImapRange([]);
+        },
+        fetchMessagesBefore: async (_path, beforeUid) => {
+          beforeUids.push(beforeUid);
+          return fakeImapRange([]);
         },
       }),
       params,
     );
-    expect(sinceUids).toEqual([1]);
-    const { rows } = await pool.query<{ uidvalidity: string }>("SELECT uidvalidity FROM mail_folder_sync_state");
-    expect(rows[0]?.uidvalidity).toBe("999");
+    // No live fetch: every message the folder holds under the new UIDVALIDITY is the backfill's.
+    expect(sinceUids).toEqual([]);
+    expect(beforeUids).toEqual([2]);
+    const { rows } = await pool.query<Record<string, unknown>>(
+      "SELECT uidvalidity::text, uidnext::text, live_from_uid::text, backfill_below_uid::text FROM mail_folder_sync_state",
+    );
+    expect(rows).toEqual([{ uidvalidity: "999", uidnext: "2", live_from_uid: "2", backfill_below_uid: null }]);
   });
 
   tenantIt(
@@ -1577,13 +1679,13 @@ describe("IMAP reconcile core", () => {
     async () => {
       const params = await reconcileParams();
       const survivor = (uid: number) => fetched(uid, "<survivor@x>", { subject: "Survivor" });
-      await reconcile(fakeImap({ ...twoMessages, fetchMessagesSince: async () => [survivor(5)] }), params);
+      await reconcile(fakeImap({ ...twoMessages, fetchMessagesSince: fakeImapSince(() => [survivor(5)]) }), params);
       // Server rebuilt the folder (UIDVALIDITY changed) — the same message now has UID 1, not 5.
       await reconcile(
         fakeImap({
           ...twoMessages,
-          selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1 }),
-          fetchMessagesSince: async () => [survivor(1)],
+          selectFolder: async () => ({ uidvalidity: 999, uidnext: 2, highestModSeq: 1, messages: 0 }),
+          fetchMessagesSince: fakeImapSince(() => [survivor(1)]),
         }),
         params,
       );
@@ -1604,22 +1706,74 @@ describe("IMAP reconcile core", () => {
     expect(await emailIds(params.emailsDatabaseId)).toHaveLength(2);
 
     await reconcile(
-      fakeImap({ ...twoMessages, fetchMessagesSince: async () => [], fetchVanishedSince: async () => [1] }),
+      fakeImap({
+        ...twoMessages,
+        selectFolder: async () => ({ uidvalidity: 111, uidnext: 3, highestModSeq: 6, messages: 1 }),
+        fetchMessagesSince: async () => fakeImapRange([]),
+        fetchChangesSince: async () => ({ flags: [], vanished: [1] }),
+      }),
       params,
     );
     expect(await folderEdges(params.folderRelationPropertyId)).toBe(1); // one of the two original edges was removed
+  });
+
+  tenantIt("a backfill ingests one pass's budget, newest first, then resumes below the last ingested UID", async () => {
+    const params = await reconcileParams();
+    const account = fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: IMAP_FULL_MESSAGES_PER_PASS + 3 }]);
+    const initialSyncCompletedAt = async () =>
+      (
+        await pool.query<{ initial_sync_completed_at: Date | null; due: boolean }>(
+          `SELECT initial_sync_completed_at, next_expected_activity_at <= now() AS due
+           FROM mail_account_sync_state WHERE item_id = $1`,
+          [params.mailboxItemId],
+        )
+      ).rows[0];
+
+    const names = async () =>
+      (
+        await pool.query<{ name: string }>("SELECT properties->>'name' AS name FROM items WHERE database_id = $1", [
+          params.emailsDatabaseId,
+        ])
+      ).rows.map((row) => row.name);
+
+    expect(await reconcile(account, params)).toEqual({ ran: true, complete: false });
+    // UIDs 4 and up, the highest ones.
+    expect((await names()).sort()).toEqual(
+      Array.from({ length: IMAP_FULL_MESSAGES_PER_PASS }, (_, index) => `INBOX ${index + 4}`).sort(),
+    );
+    expect(await initialSyncCompletedAt()).toEqual({ initial_sync_completed_at: null, due: true });
+
+    expect(await reconcile(account, params)).toEqual({ ran: true, complete: true });
+    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_FULL_MESSAGES_PER_PASS + 3);
+    expect(await initialSyncCompletedAt()).toEqual({ initial_sync_completed_at: expect.any(Date), due: false });
+  });
+
+  tenantIt("a pass syncs the inbox before folders listed ahead of it", async () => {
+    const params = await reconcileParams();
+    const account = fakeImapAccount([
+      { path: "Archive", count: IMAP_FULL_MESSAGES_PER_PASS },
+      { path: "INBOX", specialUse: "\\Inbox", count: 2 },
+    ]);
+
+    expect(await reconcile(account, params)).toEqual({ ran: true, complete: false });
+    const { rows } = await pool.query<{ name: string }>(
+      "SELECT properties->>'name' AS name FROM items WHERE database_id = $1 AND properties->>'name' LIKE 'INBOX %' ORDER BY 1",
+      [params.emailsDatabaseId],
+    );
+    expect(rows.map((row) => row.name)).toEqual(["INBOX 1", "INBOX 2"]);
+    expect(await emailIds(params.emailsDatabaseId)).toHaveLength(IMAP_FULL_MESSAGES_PER_PASS);
   });
 
   tenantIt(
     "Gmail in IMAP fallback mode: derives label-folder membership from X-GM-LABELS alongside the physical All Mail edge",
     async () => {
       const params = { ...(await reconcileParams()), folderPaths: ["[Gmail]/All Mail"] };
-      const labeled = (gmailLabels: string[]) =>
+      const labeled = (gmailLabels: string[], uidnext = 2) =>
         fakeImap({
           ...twoMessages,
           listFolders: async () => [{ path: "[Gmail]/All Mail", specialUse: "\\All" }],
-          selectFolder: async () => ({ uidvalidity: 1, uidnext: 1, highestModSeq: null }),
-          fetchMessagesSince: async () => [fetched(1, "<labeled@x>", { subject: "Labeled", gmailLabels })],
+          selectFolder: async () => ({ uidvalidity: 1, uidnext, highestModSeq: null, messages: 1 }),
+          fetchMessagesSince: fakeImapSince(() => [fetched(1, "<labeled@x>", { subject: "Labeled", gmailLabels })]),
           fetchAllUids: async () => [1],
         });
       await reconcile(labeled(["\\Inbox", "Work"]), params);
@@ -1642,8 +1796,9 @@ describe("IMAP reconcile core", () => {
       expect(await folderEdges(params.folderRelationPropertyId, emailItemId)).toBe(3); // All Mail + \Inbox + Work
 
       // A second pass re-observing the message with one label dropped removes only that label's edge. The fake
-      // client ignores `sinceUid`, so it can re-report uid 1 with a narrowed label set.
-      await reconcile(labeled(["Work"]), params);
+      // client reports a higher UIDNEXT, so the pass searches for new UIDs, and ignores `sinceUid`, so it can
+      // re-report uid 1 with a narrowed label set.
+      await reconcile(labeled(["Work"], 3), params);
       expect(await folderEdges(params.folderRelationPropertyId, emailItemId)).toBe(2); // \Inbox's edge was dropped
     },
   );
@@ -1655,13 +1810,8 @@ describe("Gmail reconcile core", () => {
   function fakeGmailClient(overrides: Partial<GmailMailClient> = {}): GmailMailClient {
     return {
       getCurrentHistoryId: async () => "100",
-      listHistorySince: async () => ({
-        invalidated: false,
-        newHistoryId: "101",
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
-      listAllMessageIds: async () => ["m1"],
+      listHistorySince: async () => gmailHistory("101"),
+      listMessageIds: recentGmailListing(["m1"]),
       fetchMessage: async (id) => ({
         id,
         threadId: "t1",
@@ -1674,9 +1824,9 @@ describe("Gmail reconcile core", () => {
     };
   }
   const reconcile = (client: GmailMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
-    inTenantZero(() => withTransaction(pool, (tx) => reconcileGmailAccount(tx, client, params)));
+    inTenantZero(() => reconcileGmailAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }));
 
-  it("initial sync does a full listAllMessageIds pass, and a history.list 404 forces a full resync instead of resuming", async () => {
+  it("initial sync lists the whole account, and a history.list 404 forces a full resync instead of resuming", async () => {
     const params = await reconcileParams();
     await reconcile(fakeGmailClient(), params);
     expect((await syncState(params.mailboxItemId))?.gmailHistoryId).toBe("100");
@@ -1685,21 +1835,17 @@ describe("Gmail reconcile core", () => {
     let fullResyncCallCount = 0;
     await reconcile(
       fakeGmailClient({
-        listHistorySince: async () => ({
-          invalidated: true,
-          newHistoryId: "100",
-          changedMessageIds: [],
-          removedMessageIds: [],
-        }),
-        listAllMessageIds: async () => {
+        listHistorySince: async () => ({ invalidated: true, newHistoryId: "100", records: [] }),
+        listMessageIds: async (query, pageToken) => {
           fullResyncCallCount++;
-          return ["m2"];
+          return recentGmailListing(["m2"])(query, pageToken);
         },
         getCurrentHistoryId: async () => "200",
       }),
       params,
     );
-    expect(fullResyncCallCount).toBe(1);
+    // Both listing phases, each one page.
+    expect(fullResyncCallCount).toBe(2);
     expect((await syncState(params.mailboxItemId))?.gmailHistoryId).toBe("200");
     // The first sync's message plus the resync's new one.
     expect(await countRows("items WHERE database_id = $1", [params.emailsDatabaseId])).toBe(2);
@@ -1736,12 +1882,7 @@ describe("Gmail reconcile core", () => {
 
     await patch({ read: true });
     const observed = fakeGmailClient({
-      listHistorySince: async () => ({
-        invalidated: false,
-        newHistoryId: "102",
-        changedMessageIds: ["m1"],
-        removedMessageIds: [],
-      }),
+      listHistorySince: async () => gmailHistory("102", ["m1"]),
       fetchMessage: async () => ({
         id: "m1",
         threadId: "t1",
@@ -1759,29 +1900,32 @@ describe("Gmail reconcile core", () => {
 describe("Graph reconcile core", () => {
   useSeededDatabase();
 
-  const change = (id: string, message: Partial<ImapFetchedMessage["message"]> = {}): GraphChangedMessage => ({
+  // Dated now: a delta from scratch stores a message inside the full-content window in full.
+  const change = (id: string, message: Partial<GraphMessageEnvelope> = {}): GraphChangedMessage => ({
     id,
     parentFolderId: "f1",
     removed: false,
-    message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, attachments: [], ...message },
+    message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, date: new Date(), ...message },
+  });
+  const lastPage = (deltaLink: string, changes: GraphChangedMessage[]): GraphDeltaPage => ({
+    changes,
+    nextLink: null,
+    deltaLink,
   });
   function fakeGraphClient(overrides: Partial<GraphMailClient> = {}): GraphMailClient {
     return {
       listFolders: async () => [{ id: "f1", displayName: "Inbox", wellKnownName: "inbox" }],
-      fetchDelta: async () => ({
-        invalidated: false,
-        newDeltaLink: "link-1",
-        changes: [change("m1", { subject: "Hi" })],
-      }),
+      fetchDeltaPage: async () => lastPage("link-1", [change("m1", { subject: "Hi" })]),
+      fetchMessageContent: async () => ({ attachments: [] }),
       patchMessage: async () => {},
       ...overrides,
     };
   }
   const reconcile = (client: GraphMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
-    withTransaction(pool, (tx) => reconcileGraphAccount(tx, client, params));
+    reconcileGraphAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
 
   tenantIt(
-    "stores the returned deltaLink, and a 410 Gone clears it and runs a full resync (fetchDelta(null)) instead of resuming",
+    "stores the returned deltaLink, and a 410 Gone clears it and runs a full resync (a round from scratch) instead of resuming",
     async () => {
       const params = await reconcileParams();
       await reconcile(fakeGraphClient(), params);
@@ -1791,11 +1935,9 @@ describe("Graph reconcile core", () => {
       const deltaLinksSeen: (string | null)[] = [];
       await reconcile(
         fakeGraphClient({
-          fetchDelta: async (deltaLink) => {
-            deltaLinksSeen.push(deltaLink);
-            return deltaLink !== null
-              ? { invalidated: true, newDeltaLink: "", changes: [] }
-              : { invalidated: false, newDeltaLink: "link-2", changes: [change("m2", { subject: "Second" })] };
+          fetchDeltaPage: async (url) => {
+            deltaLinksSeen.push(url);
+            return url !== null ? null : lastPage("link-2", [change("m2", { subject: "Second" })]);
           },
         }),
         params,
@@ -1811,21 +1953,21 @@ describe("Graph reconcile core", () => {
     async () => {
       const params = await reconcileParams();
       const body = "<p>Message</p><p>[itemAttachment: meeting]</p><p>[referenceAttachment: shared document]</p>";
-      const mixed = change("mixed-1", {
-        subject: "Mixed attachments",
-        bodyHtml: body,
-        attachments: [
-          {
-            filename: "report.txt",
-            contentType: "text/plain",
-            contentId: null,
-            disposition: "attachment",
-            openStream: () => Readable.from("real file"),
-          },
-        ],
-      });
+      const mixed = change("mixed-1", { subject: "Mixed attachments" });
       const graph = fakeGraphClient({
-        fetchDelta: async () => ({ invalidated: false, newDeltaLink: "link-mixed", changes: [mixed] }),
+        fetchDeltaPage: async () => lastPage("link-mixed", [mixed]),
+        fetchMessageContent: async () => ({
+          bodyHtml: body,
+          attachments: [
+            {
+              filename: "report.txt",
+              contentType: "text/plain",
+              contentId: null,
+              disposition: "attachment",
+              openStream: () => Readable.from("real file"),
+            },
+          ],
+        }),
       });
 
       await reconcile(graph, params);
@@ -1874,16 +2016,244 @@ describe("Graph reconcile core", () => {
 
       await patch({ read: true });
       const observed = fakeGraphClient({
-        fetchDelta: async () => ({
-          invalidated: false,
-          newDeltaLink: "link-2",
-          changes: [change("m1", { envelope: {}, flags: [IMAP_SEEN_FLAG] })],
-        }),
+        fetchDeltaPage: async () => lastPage("link-2", [change("m1", { envelope: {}, flags: [IMAP_SEEN_FLAG] })]),
         patchMessage: async () => {
           throw new Error("converged Graph observation must not echo");
         },
       });
       await reconcile(observed, params);
+    },
+  );
+});
+
+describe("message arrival: live and backfill", () => {
+  useSeededDatabase();
+
+  /** Older than any `connected_at` a pass in this suite sets, less the one-day grace. */
+  const OLD_DATE = new Date("2001-01-01T00:00:00.000Z");
+
+  async function arrivals(mailboxItemId: string): Promise<Record<string, string>> {
+    const { rows } = await pool.query<{ message_id: string; arrival: string }>(
+      "SELECT message_id, arrival FROM mail_message_meta WHERE mailbox_item_id = $1 ORDER BY message_id",
+      [mailboxItemId],
+    );
+    return Object.fromEntries(rows.map((row) => [row.message_id, row.arrival]));
+  }
+
+  async function liveFromUidOf(mailboxItemId: string): Promise<string | null> {
+    const { rows } = await pool.query<{ live_from_uid: string | null }>(
+      `SELECT s.live_from_uid FROM mail_folder_sync_state s
+         JOIN items f ON f.id = s.item_id
+        WHERE f.properties->>'providerId' = 'INBOX'
+          AND EXISTS (SELECT 1 FROM item_relations r
+                       WHERE (r.item_a = f.id AND r.item_b = $1) OR (r.item_b = f.id AND r.item_a = $1))`,
+      [mailboxItemId],
+    );
+    return rows[0]?.live_from_uid ?? null;
+  }
+
+  function rawMessage(messageId: string, date: Date): Buffer {
+    return Buffer.from(
+      [
+        `Message-ID: ${messageId}`,
+        "From: Sender <sender@example.test>",
+        "To: owner@example.test",
+        `Subject: ${messageId}`,
+        `Date: ${date.toUTCString()}`,
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "body",
+        "",
+      ].join("\r\n"),
+    );
+  }
+
+  const reconcileImap = async (client: ImapMailClient, params: Awaited<ReturnType<typeof reconcileParams>>) =>
+    reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
+
+  tenantIt(
+    "IMAP: the initial backfill is backfill over every pass it takes; a delivery after the first pass is live unless its Date is old",
+    async () => {
+      const params = await reconcileParams();
+      const account = new FakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox" }]);
+      const history = Array.from({ length: IMAP_FULL_MESSAGES_PER_PASS + 2 }, (_, index) => `<history-${index}@x>`);
+      for (const messageId of history) account.deliver("INBOX", rawMessage(messageId, new Date()));
+
+      expect(await reconcileImap(account.client(), params)).toEqual({ ran: true, complete: false });
+      expect(await liveFromUidOf(params.mailboxItemId)).toBe(String(history.length + 1));
+      expect((await syncState(params.mailboxItemId))?.connectedAt).not.toBeNull();
+
+      account.deliver("INBOX", rawMessage("<new@x>", new Date()));
+      account.deliver("INBOX", rawMessage("<moved-in-old@x>", OLD_DATE));
+      expect(await reconcileImap(account.client(), params)).toEqual({ ran: true, complete: true });
+
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        ...Object.fromEntries(history.map((messageId) => [messageId, "backfill"])),
+        "<new@x>": "live",
+        "<moved-in-old@x>": "backfill",
+      });
+      expect(await liveFromUidOf(params.mailboxItemId)).toBe(String(history.length + 1));
+    },
+  );
+
+  tenantIt(
+    "IMAP: a UIDVALIDITY reset makes the folder's mail backfill and keeps the arrival of mail already ingested",
+    async () => {
+      const params = await reconcileParams();
+      const folder = (uidvalidity: number, uidnext: number, messages: Array<[number, string]>) =>
+        fakeImap({
+          listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+          selectFolder: async () => ({ uidvalidity, uidnext, highestModSeq: null, messages: messages.length }),
+          fetchMessagesSince: fakeImapSince((_path, sinceUid) =>
+            messages.filter(([uid]) => uid >= sinceUid).map(([uid, messageId]) => fetched(uid, messageId)),
+          ),
+          fetchAllUids: async () => messages.map(([uid]) => uid),
+        });
+
+      await reconcileImap(
+        folder(111, 3, [
+          [1, "<one@x>"],
+          [2, "<two@x>"],
+        ]),
+        params,
+      );
+      await reconcileImap(
+        folder(111, 4, [
+          [1, "<one@x>"],
+          [2, "<two@x>"],
+          [3, "<three@x>"],
+        ]),
+        params,
+      );
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        "<one@x>": "backfill",
+        "<three@x>": "live",
+        "<two@x>": "backfill",
+      });
+
+      // The server rebuilt the folder: every message has a new UID, and one it never reported before is among them.
+      await reconcileImap(
+        folder(999, 5, [
+          [1, "<one@x>"],
+          [2, "<two@x>"],
+          [3, "<three@x>"],
+          [4, "<four@x>"],
+        ]),
+        params,
+      );
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        "<four@x>": "backfill",
+        "<one@x>": "backfill",
+        "<three@x>": "live",
+        "<two@x>": "backfill",
+      });
+      expect(await liveFromUidOf(params.mailboxItemId)).toBe("5");
+
+      await reconcileImap(
+        folder(999, 6, [
+          [1, "<one@x>"],
+          [2, "<two@x>"],
+          [3, "<three@x>"],
+          [4, "<four@x>"],
+          [5, "<five@x>"],
+        ]),
+        params,
+      );
+      expect((await arrivals(params.mailboxItemId))["<five@x>"]).toBe("live");
+    },
+  );
+
+  tenantIt(
+    "Gmail: the full listing is backfill, a message reached through history.list is live, and a resync after invalidation is backfill",
+    async () => {
+      const params = await reconcileParams();
+      const dates: Record<string, Date> = { "old-in-history": OLD_DATE };
+      const gmail = (sync: Pick<GmailMailClient, "listHistorySince" | "listMessageIds">): GmailMailClient => ({
+        getCurrentHistoryId: async () => "100",
+        fetchMessage: async (id) => ({
+          id,
+          threadId: `thread-${id}`,
+          labelIds: ["INBOX"],
+          message: {
+            messageId: `<${id}@x>`,
+            envelope: { from: { address: "a@x.com" } },
+            attachments: [],
+            date: dates[id] ?? new Date(),
+          },
+        }),
+        listLabels: async () => [{ id: "INBOX", name: "INBOX", type: "system" }],
+        modifyMessageLabels: async () => {},
+        ...sync,
+      });
+      const history = (changedMessageIds: string[], invalidated = false) => ({
+        listHistorySince: async () =>
+          invalidated ? { invalidated, newHistoryId: "101", records: [] } : gmailHistory("101", changedMessageIds),
+      });
+      const reconcile = (client: GmailMailClient) =>
+        reconcileGmailAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
+
+      await reconcile(gmail({ ...history([]), listMessageIds: recentGmailListing(["listed"]) }));
+      const connectedAt = (await syncState(params.mailboxItemId))?.connectedAt;
+      expect(connectedAt).not.toBeNull();
+      await reconcile(
+        gmail({
+          ...history(["listed", "delivered", "old-in-history"]),
+          listMessageIds: async () => {
+            throw new Error("a pass with a valid history id must not list every message");
+          },
+        }),
+      );
+      await reconcile(gmail({ ...history([], true), listMessageIds: recentGmailListing(["listed", "resynced"]) }));
+
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        "<delivered@x>": "live",
+        "<listed@x>": "backfill",
+        "<old-in-history@x>": "backfill",
+        "<resynced@x>": "backfill",
+      });
+      expect((await syncState(params.mailboxItemId))?.connectedAt).toBe(connectedAt);
+    },
+  );
+
+  tenantIt(
+    "Graph: a delta from scratch is backfill, a delta from the stored link is live, and the resync after a 410 is backfill",
+    async () => {
+      const params = await reconcileParams();
+      const change = (id: string, date: Date = new Date()): GraphChangedMessage => ({
+        id,
+        parentFolderId: "f1",
+        removed: false,
+        message: { messageId: `<${id}@x>`, envelope: { from: { address: "a@x.com" } }, date },
+      });
+      const graph = (fetchDeltaPage: GraphMailClient["fetchDeltaPage"]): GraphMailClient => ({
+        listFolders: async () => [{ id: "f1", displayName: "Inbox", wellKnownName: "inbox" }],
+        fetchDeltaPage,
+        fetchMessageContent: async () => ({ attachments: [] }),
+        patchMessage: async () => {},
+      });
+      const reconcile = (client: GraphMailClient) =>
+        reconcileGraphAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
+      const lastPage = (deltaLink: string, changes: GraphChangedMessage[]): GraphDeltaPage => ({
+        changes,
+        nextLink: null,
+        deltaLink,
+      });
+
+      await reconcile(graph(async () => lastPage("link-1", [change("scratch")])));
+      await reconcile(
+        graph(async (url) => {
+          expect(url).toBe("link-1");
+          return lastPage("link-2", [change("delivered"), change("old-in-delta", OLD_DATE)]);
+        }),
+      );
+      await reconcile(graph(async (url) => (url === null ? lastPage("link-3", [change("resynced")]) : null)));
+
+      expect(await arrivals(params.mailboxItemId)).toEqual({
+        "<delivered@x>": "live",
+        "<old-in-delta@x>": "backfill",
+        "<resynced@x>": "backfill",
+        "<scratch@x>": "backfill",
+      });
     },
   );
 });
@@ -1910,7 +2280,7 @@ describe("mail sync job error handling", () => {
     "competing-in-flight",
   ] as const)
     tenantIt(`runs the real Gmail move phase outside transactions before reconcile: ${scenario}`, async () => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       let releaseOwner: () => void = () => {};
       let owner: Promise<void> | undefined;
       let ownerToken: string | null | undefined;
@@ -1940,6 +2310,8 @@ describe("mail sync job error handling", () => {
             await ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "gmail_api" });
             await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
             await upsertMailMessageMeta(client, {
+              arrival: "live",
+              contentState: "full",
               itemId: message.id,
               mailboxItemId: mailbox.id,
               messageId: "<move-job@example.test>",
@@ -1963,7 +2335,7 @@ describe("mail sync job error handling", () => {
           const calls: string[] = [];
           const assertNoTransaction = async () => {
             const result = await pool.query<{ pid: number; xact_start: Date | null }>(
-              "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+              "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'alldots_data'",
             );
             expect(result.rows.length).toBeGreaterThan(0);
             expect(result.rows.every((row) => row.xact_start === null)).toBe(true);
@@ -1978,13 +2350,8 @@ describe("mail sync job error handling", () => {
               calls.push("reconcile");
               return "1";
             },
-            listHistorySince: async () => ({
-              invalidated: false,
-              newHistoryId: "1",
-              changedMessageIds: [],
-              removedMessageIds: [],
-            }),
-            listAllMessageIds: async () => ["fake-provider-id"],
+            listHistorySince: async () => gmailHistory("1"),
+            listMessageIds: recentGmailListing(["fake-provider-id"]),
             fetchMessage: async () => ({
               id: "fake-provider-id",
               threadId: "fake-thread",
@@ -2123,7 +2490,7 @@ describe("mail sync job error handling", () => {
   for (const provider of ["graph", "imap"] as const)
     for (const scenario of ["competing-completion", "competing-in-flight", "completed-before-baseline"] as const)
       tenantIt(`protects ${provider} job observations for ${scenario}`, async () => {
-        const runtime = await createRuntimeRolePool(pool, "semprec_data");
+        const runtime = await createRuntimeRolePool(pool, "alldots_data");
         let releaseOwner: () => void = () => {};
         let owner: Promise<void> | undefined;
         let ownerToken: string | null | undefined;
@@ -2155,6 +2522,8 @@ describe("mail sync job error handling", () => {
               });
               await storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fake" });
               await upsertMailMessageMeta(client, {
+                arrival: "live",
+                contentState: "full",
                 itemId: message.id,
                 mailboxItemId: mailbox.id,
                 messageId: "<baseline@example.test>",
@@ -2177,7 +2546,10 @@ describe("mail sync job error handling", () => {
                     itemId: id,
                     uidvalidity: validity,
                     uidnext: path === "Source" ? "1" : "50",
+                    liveFromUid: path === "Source" ? "1" : "50",
+                    backfillBelowUid: null,
                     highestmodseq: null,
+                    messageCount: "0",
                   });
                 }
                 return id;
@@ -2275,7 +2647,9 @@ describe("mail sync job error handling", () => {
                 listFolders: unexpected,
                 selectFolder: unexpected,
                 fetchMessagesSince: unexpected,
-                fetchVanishedSince: unexpected,
+                fetchMessagesBefore: unexpected,
+                fetchSnippets: unexpected,
+                fetchChangesSince: unexpected,
                 fetchAllUids: unexpected,
                 fetchFlagsChangedSince: unexpected,
                 setMessageFlag: unexpected,
@@ -2307,11 +2681,12 @@ describe("mail sync job error handling", () => {
                 { id: "Source", displayName: "Source", wellKnownName: "inbox" },
                 { id: "Destination", displayName: "Destination", wellKnownName: "archive" },
               ],
-              fetchDelta: async () => ({
-                invalidated: false,
-                newDeltaLink: "delta",
+              fetchDeltaPage: async () => ({
                 changes: [{ id: "old-id", parentFolderId: "Source", removed: false, message: observedMessage }],
+                nextLink: null,
+                deltaLink: "delta",
               }),
+              fetchMessageContent: async () => ({ attachments: [] }),
               patchMessage: async () => {
                 throw new Error("Unexpected Graph flag mutation");
               },
@@ -2328,9 +2703,12 @@ describe("mail sync job error handling", () => {
                 uidvalidity: path === "Source" ? 11 : 12,
                 uidnext: 50,
                 highestModSeq: null,
+                messages: 0,
               }),
-              fetchMessagesSince: async (path) => (path === "Source" ? [{ uid: 7, message: observedMessage }] : []),
-              fetchVanishedSince: async () => null,
+              fetchMessagesSince: fakeImapSince((path) =>
+                path === "Source" ? [fakeFetchedMessage(7, { ...observedMessage, date: new Date() })] : [],
+              ),
+              fetchChangesSince: async () => null,
               fetchAllUids: async () => [7, 27],
               setMessageFlag: async () => {
                 throw new Error("Unexpected IMAP flag mutation");
@@ -2469,54 +2847,92 @@ describe("mail sync job error handling", () => {
     },
   );
 
+  /** One fetched message with one attachment named `filename`. */
+  const withAttachment = (uid: number, messageId: string, filename: string) =>
+    fetched(uid, messageId, {
+      subject: "Has attachment",
+      attachments: [
+        {
+          filename,
+          contentType: "text/plain",
+          contentId: null,
+          disposition: "attachment",
+          openStream: () => Readable.from(Buffer.from(`${filename}-bytes`)),
+        },
+      ],
+    });
+
+  tenantIt("a provider failure after the messages were fetched writes no Email and no attachment bytes", async () => {
+    const mailbox = await createSyncMailbox();
+    const writtenKeys: string[] = [];
+    const deletedKeys: string[] = [];
+    const trackingStorage = blobStorage(writtenKeys, deletedKeys);
+    const inbox = { listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }] };
+
+    // A new folder's first reconcile pass never calls fetchChangesSince/fetchAllUids (nothing to diff
+    // against), so a first pass establishes uidvalidity/uidnext and the second reaches the vanished-UID check.
+    await runSync(
+      mailbox,
+      { createImapClient: async () => fakeImap({ ...inbox, fetchChangesSince: async () => null }) },
+      trackingStorage,
+    );
+
+    const failingAfterFetch = fakeImap({
+      ...inbox,
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 }),
+      fetchMessagesSince: fakeImapSince(() => [withAttachment(1, "<orphan@x>", "f.txt")]),
+      // No QRESYNC and a known uidvalidity: the non-CONDSTORE fallback, which diffs via fetchAllUids.
+      fetchChangesSince: async () => null,
+      fetchAllUids: async () => {
+        throw new Error("boom after the messages were fetched");
+      },
+    });
+    await expect(
+      runSync(mailbox, { createImapClient: async () => failingAfterFetch }, trackingStorage),
+    ).rejects.toThrow("boom after the messages were fetched");
+
+    expect(writtenKeys).toEqual([]);
+    expect(await countRows("items WHERE database_id = $1", [await databaseIdFor("emails")])).toBe(0);
+  });
+
   tenantIt(
-    "cleans up an attachment already written to disk when a later step in the same pass aborts the transaction",
+    "a batch whose transaction fails deletes the attachment bytes it wrote and keeps an earlier committed batch's",
     async () => {
       const mailbox = await createSyncMailbox();
       const writtenKeys: string[] = [];
       const deletedKeys: string[] = [];
-      const trackingStorage = blobStorage(writtenKeys, deletedKeys);
-      const inbox = { listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }] };
+      const recording = blobStorage(writtenKeys, deletedKeys);
+      const failingStorage: BlobStorageWriter = {
+        ...recording,
+        async writeStream(storageKey, source) {
+          const result = await recording.writeStream(storageKey, source);
+          if (storageKey.endsWith("fails.txt")) throw new Error("disk full while writing the second batch");
+          return result;
+        },
+      };
+      const imap = fakeImap({
+        listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }, { path: "Archive" }],
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 1 }),
+        fetchMessagesSince: fakeImapSince((path) =>
+          path === "INBOX"
+            ? [withAttachment(1, "<kept@x>", "kept.txt")]
+            : [withAttachment(1, "<failed@x>", "fails.txt")],
+        ),
+      });
 
-      // A new folder's first reconcile pass never calls fetchVanishedSince/fetchAllUids (nothing to diff
-      // against), so a first pass establishes uidvalidity/uidnext and the second reaches the vanished-UID check.
-      await runSync(
-        mailbox,
-        { createImapClient: async () => fakeImap({ ...inbox, fetchVanishedSince: async () => null }) },
-        trackingStorage,
+      await expect(runSync(mailbox, { createImapClient: async () => imap }, failingStorage)).rejects.toThrow(
+        "disk full while writing the second batch",
       );
 
-      const failingAfterAttachment = fakeImap({
-        ...inbox,
-        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-        fetchMessagesSince: async () => [
-          fetched(1, "<orphan@x>", {
-            subject: "Has attachment",
-            attachments: [
-              {
-                filename: "f.txt",
-                contentType: "text/plain",
-                contentId: null,
-                disposition: "attachment",
-                openStream: () => Readable.from(Buffer.from("orphan-bytes")),
-              },
-            ],
-          }),
-        ],
-        // No QRESYNC and a known uidvalidity: imapReconcile.ts's non-CONDSTORE fallback, which diffs via
-        // fetchAllUids.
-        fetchVanishedSince: async () => null,
-        fetchAllUids: async () => {
-          throw new Error("boom after the attachment was already written");
-        },
-      });
-      await expect(
-        runSync(mailbox, { createImapClient: async () => failingAfterAttachment }, trackingStorage),
-      ).rejects.toThrow("boom after the attachment was already written");
-
-      expect(writtenKeys).toHaveLength(1);
-      expect(deletedKeys).toEqual(writtenKeys);
-      expect(await countRows("items WHERE database_id = $1", [await databaseIdFor("emails")])).toBe(0);
+      expect(writtenKeys).toHaveLength(2);
+      const [keptKey, failedKey] = writtenKeys;
+      expect(keptKey).toMatch(/kept\.txt$/);
+      expect(deletedKeys).toEqual([failedKey]);
+      const { rows } = await pool.query<{ name: string }>(
+        "SELECT properties->>'name' AS name FROM items WHERE database_id = $1",
+        [await databaseIdFor("emails")],
+      );
+      expect(rows).toEqual([{ name: "Has attachment" }]);
     },
   );
 
@@ -2551,7 +2967,7 @@ describe("mail sync job error handling", () => {
           ? client.listFolders()
           : stage === "select"
             ? client.selectFolder("INBOX")
-            : client.fetchMessagesSince("INBOX", 1);
+            : client.fetchMessagesSince("INBOX", 1, 10).then(({ messages: [message] }) => message?.fetchContent());
       expectSafeImapFailure(await rejectionOf(work), secret);
     },
   );
@@ -2577,7 +2993,7 @@ describe("mail sync job error handling", () => {
     const close = vi.spyOn(iterator, "return").mockRejectedValue(cleanup);
     vi.spyOn(connection, "fetch").mockReturnValue(iterator);
     const warn = vi.spyOn(logger, "warn");
-    const outcome = await rejectionOf(new ImapFlowMailClient(connection).fetchMessagesSince("INBOX", 1));
+    const outcome = await rejectionOf(new ImapFlowMailClient(connection).fetchMessagesSince("INBOX", 1, 10));
     expect(next).toHaveBeenCalledOnce();
     expect(close).toHaveBeenCalledOnce();
     expectSafeImapFailure(outcome, "PRIVATE-SENTINEL");
@@ -2610,7 +3026,7 @@ describe("mail sync job error handling", () => {
       yield {
         seq: 1,
         uid: 1,
-        envelope: { messageId: "<privacy-storage@example.test>" },
+        envelope: { messageId: "<privacy-storage@example.test>", date: new Date() },
         bodyStructure: { type: "application/pdf", part: "1", disposition: "attachment" },
       };
     });
@@ -2660,8 +3076,16 @@ describe("mail sync job error handling", () => {
       const success = () =>
         withTransaction(pool, (client) =>
           mode === "gmail"
-            ? recordGmailActivity(client, { itemId: mailbox, historyId: "1", nextExpectedActivityAt: new Date() })
-            : recordGraphActivity(client, { itemId: mailbox, deltaLink: "delta", nextExpectedActivityAt: new Date() }),
+            ? recordGmailActivity(client, {
+                itemId: mailbox,
+                nextExpectedActivityAt: new Date(),
+                completesInitialSync: true,
+              })
+            : recordGraphActivity(client, {
+                itemId: mailbox,
+                nextExpectedActivityAt: new Date(),
+                completesInitialSync: true,
+              }),
         );
       await success();
       const first = await syncState(mailbox);
@@ -2725,18 +3149,25 @@ describe("mail sync job error handling", () => {
         lastFailureKind: "other",
       });
 
-      await expect(runSync(mailbox, failing(new MailReauthorizationRequiredError("revoked")))).rejects.toThrow();
-      expect(await syncState(mailbox)).toMatchObject({
-        failingSince: afterFirstFailure?.failingSince,
-        lastFailureKind: "reauthorization",
-        lastSuccessfulSyncAt: second?.lastSuccessfulSyncAt,
-      });
-
+      await backoffElapsed(mailbox);
       await runSync(mailbox, failing(new MailConnectionLimitError("Too many simultaneous connections.")));
       expect(await syncState(mailbox)).toMatchObject({
         failingSince: afterFirstFailure?.failingSince,
         lastFailureKind: "connectionLimit",
       });
+
+      await backoffElapsed(mailbox);
+      await runSync(mailbox, failing(new MailReauthorizationRequiredError("revoked")));
+      const refused = await syncState(mailbox);
+      expect(refused).toMatchObject({
+        failingSince: afterFirstFailure?.failingSince,
+        lastFailureKind: "reauthorization",
+        lastSuccessfulSyncAt: second?.lastSuccessfulSyncAt,
+      });
+      // Only a sign-in again lets the next pass reach the provider.
+      await runSync(mailbox, healthy);
+      expect(await syncState(mailbox)).toEqual(refused);
+      await withTransaction(pool, (client) => clearMailSyncFailure(client, mailbox));
 
       await runSync(mailbox, healthy);
       const recovered = await syncState(mailbox);
@@ -2763,7 +3194,9 @@ describe("mail sync job error handling", () => {
     };
 
     const errorSpy = vi.spyOn(logger, "error");
-    await expect(runSync(mailbox, adapters)).rejects.toThrow("provider-auth-exchange-secret");
+    // Recorded, not rethrown: graphile-worker's retries would only be refused again.
+    await runSync(mailbox, adapters);
+    expect((await syncState(mailbox))?.lastError).toContain("provider-auth-exchange-secret");
     const logArguments = JSON.stringify(errorSpy.mock.calls);
     expect(logArguments).not.toContain("provider-auth-exchange-secret");
     expect(logArguments).toContain("reauthorizationRequired");
@@ -2774,10 +3207,14 @@ describe("mail sync job error handling", () => {
 
   it("writes a mail_sync_error notification on failure, deduped by job id but not across distinct failing jobs", async () => {
     const user = await createOwner();
-    // No stored credential: reaches `recordSyncError` without a real adapter failure.
-    const mailbox = await createSyncMailbox({ credential: null });
-    const failWith = (jobId: string) =>
-      expect(runSync(mailbox, {}, noopStorage, { job: { id: jobId } })).rejects.toThrow("has no stored credential");
+    const mailbox = await createSyncMailbox();
+    // Each job runs once the backoff of the one before it ran out, as the sweep queues it.
+    const failWith = async (jobId: string) => {
+      await backoffElapsed(mailbox);
+      await expect(runSync(mailbox, unexpectedlyFailing, noopStorage, { job: { id: jobId } })).rejects.toThrow(
+        UNEXPECTED_FAILURE,
+      );
+    };
 
     await failWith("job-1");
     const { rows: afterFirst } = await pool.query(
@@ -2802,19 +3239,54 @@ describe("mail sync job error handling", () => {
     expect(await notificationCount(mailbox)).toBe(2);
   });
 
-  it("sets syncStatus 'error' and records the error, but notifies nobody, when no credential is stored before any user exists", async () => {
-    // The "no stored credential" throw fires before the reconcile transaction opens, the same path a decrypt
-    // failure takes.
-    const mailbox = await createSyncMailbox({ credential: null });
+  it("sets syncStatus 'error' and records the error, but notifies nobody, when a pass fails before any user exists", async () => {
+    const mailbox = await createSyncMailbox();
 
-    await expect(runSync(mailbox, {}, noopStorage, { job: { id: "job-1" } })).rejects.toThrow(
-      "has no stored credential",
+    await expect(runSync(mailbox, unexpectedlyFailing, noopStorage, { job: { id: "job-1" } })).rejects.toThrow(
+      UNEXPECTED_FAILURE,
     );
 
     expect(await notificationCount(mailbox)).toBe(0);
-    expect((await syncState(mailbox))?.lastError).toContain("has no stored credential");
+    expect((await syncState(mailbox))?.lastError).toContain(UNEXPECTED_FAILURE);
     expect(await syncStatusOf(mailbox)).toBe("error");
   });
+
+  it.each([
+    ["no status yet", undefined],
+    ["status ok", "ok"],
+    ["status error", "error"],
+  ])(
+    "fails a password mailbox without a credential as a reauthorization from %s, and the sweep then leaves it alone",
+    async (_name, previousStatus) => {
+      await createOwner();
+      const mailbox = await createSyncMailbox({
+        credential: null,
+        properties: { name: "M", provider: "icloud", ...(previousStatus ? { syncStatus: previousStatus } : {}) },
+        allowedSystemKeys: ["syncStatus"],
+      });
+      const errorSpy = vi.spyOn(logger, "error");
+      let connects = 0;
+      const counting: MailSyncAdapterFactory = {
+        createImapClient: async () => {
+          connects += 1;
+          return fakeImap();
+        },
+      };
+      expect((await inTenantZero(() => withTransaction(pool, listAccountsDueForSync))).map((a) => a.itemId)).toEqual([
+        mailbox,
+      ]);
+
+      await runSync(mailbox, counting);
+
+      expect(connects).toBe(0);
+      expect((await syncState(mailbox))?.lastError).toContain("has no stored credential");
+      expect(await syncStatusOf(mailbox)).toBe("needsReauthorization");
+      expect(await syncState(mailbox)).toMatchObject({ lastFailureKind: "reauthorization" });
+      expect(JSON.stringify(errorSpy.mock.calls)).toContain("reauthorizationRequired");
+      expect(await notificationCount(mailbox)).toBe(0);
+      expect(await inTenantZero(() => withTransaction(pool, listAccountsDueForSync))).toEqual([]);
+    },
+  );
 
   it.each([
     ["has been soft-deleted", true],
@@ -2832,6 +3304,184 @@ describe("mail sync job error handling", () => {
     expect(createImapClient).not.toHaveBeenCalled();
   });
 });
+describe("bounded IMAP sync passes", () => {
+  useSeededDatabase();
+
+  const queuedSyncJobs = async (mailboxItemId: string) =>
+    (
+      await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM graphile_worker.jobs WHERE key = $1", [
+        mailAccountSyncJobKey(mailboxItemId),
+      ])
+    ).rows[0]?.count;
+
+  tenantIt("an unfinished backfill queues the next pass with its batch, a finished one does not", async () => {
+    const mailbox = await createSyncMailbox();
+    const imap = () =>
+      fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: IMAP_FULL_MESSAGES_PER_PASS + 1 }]);
+
+    await runSync(mailbox, { createImapClient: async () => imap() });
+    expect(await queuedSyncJobs(mailbox)).toBe("1");
+    expect(await syncStatusOf(mailbox)).toBe("ok");
+    expect((await syncState(mailbox))?.initialSyncCompletedAt).toBeNull();
+
+    await pool.query("DELETE FROM graphile_worker._private_jobs WHERE key = $1", [mailAccountSyncJobKey(mailbox)]);
+    await runSync(mailbox, { createImapClient: async () => imap() });
+    expect(await queuedSyncJobs(mailbox)).toBe("0");
+    expect((await syncState(mailbox))?.initialSyncCompletedAt).not.toBeNull();
+  });
+
+  tenantIt(
+    "a pass that finds the mailbox held by another pass is skipped without recording a failure",
+    async () => {
+      const mailbox = await createSyncMailbox();
+      let release: () => void = () => {};
+      const released = new Promise<void>((resolve) => (release = resolve));
+      let held: () => void = () => {};
+      const holding = new Promise<void>((resolve) => (held = resolve));
+      const holder = withTransaction(pool, async (client) => {
+        await lockMailboxSync(client, mailbox);
+        held();
+        await released;
+      });
+      try {
+        await holding;
+        // The folder list is fetched before the pass's first transaction; nothing after it runs.
+        const fetchedMessages = vi.fn(async () => fakeImapRange([]));
+        await runSync(mailbox, {
+          createImapClient: async () =>
+            fakeImap({
+              listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+              fetchMessagesSince: fetchedMessages,
+            }),
+        });
+        expect(fetchedMessages).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await holder;
+      }
+      expect(await syncStatusOf(mailbox)).toBeUndefined();
+      expect(await syncState(mailbox)).toMatchObject({ lastError: null, failingSince: null });
+    },
+    30_000,
+  );
+
+  /** Open transactions and advisory locks of other sessions on this worker's database. */
+  const heldDatabaseState = async () => {
+    const transactions = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM pg_stat_activity
+        WHERE datname = current_database() AND pid <> pg_backend_pid() AND xact_start IS NOT NULL`,
+    );
+    const advisoryLocks = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM pg_locks l JOIN pg_database d ON d.oid = l.database
+        WHERE l.locktype = 'advisory' AND d.datname = current_database() AND l.pid <> pg_backend_pid()`,
+    );
+    return { transactions: transactions.rows[0]?.count, advisoryLocks: advisoryLocks.rows[0]?.count };
+  };
+
+  /** A promise the fake waits on, and a promise that resolves once the fake has started waiting. */
+  function gate() {
+    let open: () => void = () => {};
+    const opened = new Promise<void>((resolve) => (open = resolve));
+    let arrive: () => void = () => {};
+    const arrived = new Promise<void>((resolve) => (arrive = resolve));
+    const wait = () => {
+      arrive();
+      return opened;
+    };
+    return { open, arrived, wait };
+  }
+
+  tenantIt(
+    "holds no transaction and no advisory lock while it fetches messages and downloads an attachment",
+    async () => {
+      const mailbox = await createSyncMailbox();
+      const fetching = gate();
+      const downloading = gate();
+      const imap = fakeImap({
+        listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
+        selectFolder: async () => ({ uidvalidity: 7, uidnext: 3, highestModSeq: null, messages: 0 }),
+        fetchMessagesSince: fakeImapSince(async () => {
+          await fetching.wait();
+          return [
+            fetched(1, "<slow-1@x>", {
+              subject: "Slow 1",
+              attachments: [
+                {
+                  filename: "slow.txt",
+                  contentType: "text/plain",
+                  contentId: null,
+                  disposition: "attachment",
+                  openStream: async () => {
+                    await downloading.wait();
+                    return Readable.from(Buffer.from("slow-bytes"));
+                  },
+                },
+              ],
+            }),
+            fetched(2, "<slow-2@x>", { subject: "Slow 2" }),
+          ];
+        }),
+      });
+      const pass = runSync(mailbox, { createImapClient: async () => imap }, blobStorage());
+      try {
+        await fetching.arrived;
+        expect(await heldDatabaseState()).toEqual({ transactions: "0", advisoryLocks: "0" });
+        fetching.open();
+        await downloading.arrived;
+        expect(await heldDatabaseState()).toEqual({ transactions: "0", advisoryLocks: "0" });
+      } finally {
+        fetching.open();
+        downloading.open();
+        await pass;
+      }
+
+      const { rows } = await pool.query<{ message_id: string }>(
+        "SELECT message_id FROM mail_message_meta WHERE mailbox_item_id = $1 ORDER BY message_id",
+        [mailbox],
+      );
+      expect(rows.map((row) => row.message_id)).toEqual(["<slow-1@x>", "<slow-2@x>"]);
+      expect(await countRows("mail_attachments")).toBe(1);
+      expect(await syncStatusOf(mailbox)).toBe("ok");
+    },
+    30_000,
+  );
+
+  tenantIt(
+    "a pass whose folder another pass moved on during its fetch writes nothing for it and leaves the cursor as written",
+    async () => {
+      const mailbox = await createSyncMailbox();
+      const folderCursor = async () =>
+        (
+          await pool.query<{ uidnext: string | null }>(
+            `SELECT s.uidnext FROM mail_folder_sync_state s JOIN items f ON f.id = s.item_id
+              WHERE f.properties->>'providerId' = 'INBOX'`,
+          )
+        ).rows.map((row) => row.uidnext);
+      const account = () => fakeImapAccount([{ path: "INBOX", specialUse: "\\Inbox", count: 2 }]);
+      const overtaken = account();
+      const fetchMessagesSince = overtaken.fetchMessagesSince.bind(overtaken);
+      overtaken.fetchMessagesSince = async (path, sinceUid, limit) => {
+        // Another pass of the same mailbox runs to completion while this one is fetching.
+        await runSync(mailbox, { createImapClient: async () => account() });
+        return fetchMessagesSince(path, sinceUid, limit);
+      };
+      await pool.query("DELETE FROM graphile_worker._private_jobs");
+
+      await runSync(mailbox, { createImapClient: async () => overtaken });
+
+      expect(await folderCursor()).toEqual(["3"]);
+      expect(await countRows("mail_message_meta WHERE mailbox_item_id = $1", [mailbox])).toBe(2);
+      // The pass started during the fetch found the lease held and only asked for one more round, which the running
+      // pass ran itself: nothing is queued, and a later pass finds nothing new.
+      expect(await queuedSyncJobs(mailbox)).toBe("0");
+      await runSync(mailbox, { createImapClient: async () => account() });
+      expect(await countRows("mail_message_meta WHERE mailbox_item_id = $1", [mailbox])).toBe(2);
+      expect(await folderCursor()).toEqual(["3"]);
+    },
+    30_000,
+  );
+});
+
 describe("mailbox Semp problem raised by the sync job", () => {
   interface MailProblemRow {
     category: string;
@@ -2868,12 +3518,14 @@ describe("mailbox Semp problem raised by the sync job", () => {
 
   it("raises one warning problem per mailbox, merging every failing pass and counting a retry of the same job once", async () => {
     await createOwner();
-    const mailboxId = await createSyncMailbox({ credential: null });
+    const mailboxId = await createSyncMailbox();
 
-    // No stored credential: each pass fails before any provider call, with the default severity. The last
-    // job-3 is a redelivery of the same report.
-    for (const jobId of ["job-1", "job-2", "job-3", "job-3"])
-      await expect(syncPass(mailboxId, {}, jobId)).rejects.toThrow("has no stored credential");
+    // Each pass fails at the provider with an ordinary error, so the default severity. The last job-3 is a
+    // redelivery of the same report.
+    for (const jobId of ["job-1", "job-2", "job-3", "job-3"]) {
+      await backoffElapsed(mailboxId);
+      await expect(syncPass(mailboxId, unexpectedlyFailing, jobId)).rejects.toThrow(UNEXPECTED_FAILURE);
+    }
 
     const problems = await mailProblems(mailboxId);
     expect(problems).toMatchObject([
@@ -2895,9 +3547,7 @@ describe("mailbox Semp problem raised by the sync job", () => {
     await createOwner();
     const mailboxId = await createSyncMailbox();
 
-    await expect(
-      syncPass(mailboxId, failingWith(new MailReauthorizationRequiredError("token revoked"))),
-    ).rejects.toThrow("token revoked");
+    await syncPass(mailboxId, failingWith(new MailReauthorizationRequiredError("token revoked")));
 
     expect(await mailProblems(mailboxId)).toMatchObject([
       { severity: "critical", occurrence_count: 1, resolved_at: null },
@@ -2907,19 +3557,20 @@ describe("mailbox Semp problem raised by the sync job", () => {
 
   it("does not count an older retried job after a different job reported the same failure", async () => {
     await createOwner();
-    const mailboxId = await createSyncMailbox({ credential: null });
+    const mailboxId = await createSyncMailbox();
     const ids = await moduleIds();
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     await runWithCleanup(
       "Runtime pool cleanup failed",
       () =>
         inTenantZero(async () => {
           for (const jobId of ["job-a", "job-b", "job-a"]) {
+            await withTransaction(runtime, (client) => elapseMailSyncBackoff(client, mailboxId));
             await expect(
-              handleSyncMailAccountTask(runtime, { mailboxItemId: mailboxId }, {}, ids, noopStorage, {
+              handleSyncMailAccountTask(runtime, { mailboxItemId: mailboxId }, unexpectedlyFailing, ids, noopStorage, {
                 job: { id: jobId },
               }),
-            ).rejects.toThrow("has no stored credential");
+            ).rejects.toThrow(UNEXPECTED_FAILURE);
           }
           const result = await withTransaction(runtime, (client) =>
             client.query<{ occurrence_count: number; resolved_at: Date | null }>(
@@ -2935,7 +3586,8 @@ describe("mailbox Semp problem raised by the sync job", () => {
 
   it("raises no problem before any user account exists", async () => {
     const mailboxId = await createSyncMailbox({ credential: null });
-    await expect(syncPass(mailboxId, {}, "job-1")).rejects.toThrow("has no stored credential");
+    await syncPass(mailboxId, {}, "job-1");
+    expect((await syncState(mailboxId))?.lastError).toContain("has no stored credential");
     expect(await mailProblems(mailboxId)).toEqual([]);
   });
 
@@ -2965,6 +3617,7 @@ describe("mailbox Semp problem raised by the sync job", () => {
     await expect(syncPass(mailboxId, refusing, "job-1")).rejects.toThrow("connection refused");
     expect(await mailProblems(mailboxId)).toMatchObject([{ resolved_at: null, occurrence_count: 1 }]);
 
+    await backoffElapsed(mailboxId);
     await syncPass(mailboxId, completing, "job-2");
     expect(await mailProblems(mailboxId)).toMatchObject([
       { resolved_at: expect.any(Date), resolution_kind: "recovered" },
@@ -2990,7 +3643,7 @@ describe("mail_sync_error recipient in a tenant", () => {
 
   beforeEach(async () => {
     pool ??= getTestPool();
-    runtimePool ??= await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "semprec_data"));
+    runtimePool ??= await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(pool, "alldots_data"));
     await runInTenant(getTenantZeroId(), () => resetDatabase(pool));
   });
 
@@ -3029,17 +3682,19 @@ describe("mail_sync_error recipient in a tenant", () => {
       await withTransaction(runtimePool, (client) =>
         ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }),
       );
+      await withTransaction(runtimePool, (client) =>
+        storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "s3cr3t" }),
+      );
       return { mailboxItemId: mailbox.id, moduleIds: ids };
     });
 
-    // No stored credential: reaches `recordSyncError` without a real adapter failure.
     await expect(
       runInTenant(tenantB, () =>
-        handleSyncMailAccountTask(runtimePool, { mailboxItemId }, {}, moduleIds, noopStorage, {
+        handleSyncMailAccountTask(runtimePool, { mailboxItemId }, unexpectedlyFailing, moduleIds, noopStorage, {
           job: { id: "job-b" },
         }),
       ),
-    ).rejects.toThrow("has no stored credential");
+    ).rejects.toThrow(UNEXPECTED_FAILURE);
 
     const { rows } = await pool.query<{ user_id: string; kind: string; tenant_id: string }>(
       `SELECT user_id, kind, tenant_id FROM notifications WHERE source_id = $1`,
@@ -3255,6 +3910,10 @@ describe("ImapFlowMailClient", () => {
         calls.push("download");
         return { content: (async function* () {})() };
       },
+      async search() {
+        calls.push("search");
+        return [1];
+      },
       fetch() {
         calls.push("fetch");
         return (async function* () {
@@ -3283,12 +3942,13 @@ describe("ImapFlowMailClient", () => {
 
   it("never calls messageFlagsAdd while fetching message bodies in the background", async () => {
     const raw = fakeImapFlow();
-    const fetchedMessages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1);
+    const { messages: fetchedMessages } = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
+    const content = await fetchedMessages[0]!.fetchContent();
 
     // Proves the fetch reached a real message body (`download` was called), so no flag mutation is not
     // merely an empty fetch.
     expect(fetchedMessages).toHaveLength(1);
-    expect(fetchedMessages[0]!.message.bodyText).toBeDefined();
+    expect(content.bodyText).toBeDefined();
     expect(raw.calls).toContain("download");
     expect(raw.calls.some((c) => c.startsWith("messageFlagsAdd"))).toBe(false);
   });
@@ -3371,10 +4031,41 @@ describe("ImapFlowMailClient", () => {
     expect(isImapConnectionLimitError(error)).toBe(expected);
   });
 
+  it("reads an empty body part and an empty attachment, which imapflow answers without a stream", async () => {
+    const raw = fakeImapFlow({
+      download: async () => ({ meta: {} }),
+      fetch: () =>
+        (async function* () {
+          yield {
+            seq: 1,
+            uid: 1,
+            envelope: { from: [{ address: "a@x.com" }], to: [], cc: [] },
+            bodyStructure: {
+              type: "multipart/mixed",
+              childNodes: [
+                { type: "text/plain", part: "1" },
+                { type: "application/pdf", part: "2", disposition: "attachment" },
+              ],
+            },
+            headers: Buffer.from(""),
+          };
+        })(),
+    });
+
+    const {
+      messages: [fetched],
+    } = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
+    const content = await fetched!.fetchContent();
+    expect(content.bodyText).toBe("");
+    const chunks: Buffer[] = [];
+    for await (const chunk of await content.attachments[0]!.openStream()) chunks.push(chunk as Buffer);
+    expect(Buffer.concat(chunks)).toHaveLength(0);
+  });
+
   describe("attachment download fallback", () => {
     const attachmentStream = async (raw: ImapFlow): Promise<Readable> => {
-      const messages = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1);
-      return await messages[0]!.message.attachments[0]!.openStream();
+      const { messages } = await new ImapFlowMailClient(raw).fetchMessagesSince("INBOX", 1, 10);
+      return await (await messages[0]!.fetchContent()).attachments[0]!.openStream();
     };
     function attachmentFetch(): AsyncIterableIterator<FetchMessageObject> {
       return (async function* () {
@@ -3525,104 +4216,6 @@ describe("ImapFlowMailClient", () => {
   });
 });
 
-describe("per-account IMAP concurrency limiter", () => {
-  it("bounds each account's concurrency by its own limit, never another account's", async () => {
-    const limiter = createImapConnectionLimiter();
-    const active = new Map<string, number>();
-    const maxActive = new Map<string, number>();
-    const task = (accountId: string, limit: number) =>
-      limiter.run(accountId, limit, async () => {
-        active.set(accountId, (active.get(accountId) ?? 0) + 1);
-        maxActive.set(accountId, Math.max(maxActive.get(accountId) ?? 0, active.get(accountId)!));
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        active.set(accountId, active.get(accountId)! - 1);
-      });
-
-    await Promise.all([
-      ...Array.from({ length: 3 }, () => task("account-a", 1)),
-      ...Array.from({ length: 5 }, () => task("account-b", 3)),
-    ]);
-
-    expect(Object.fromEntries(maxActive)).toEqual({ "account-a": 1, "account-b": 3 });
-  });
-
-  it("wakes a queued task immediately when a later call raises the account's limit, instead of waiting for an unrelated task to finish", async () => {
-    const limiter = createImapConnectionLimiter();
-    let releaseFirst: () => void = () => {};
-    const first = limiter.run("account-raise", 1, () => new Promise<void>((resolve) => (releaseFirst = resolve)));
-
-    let secondStarted = false;
-    const second = limiter.run("account-raise", 1, async () => {
-      secondStarted = true;
-    });
-
-    expect(secondStarted).toBe(false); // still queued behind `first` at the original limit of 1
-
-    // A later call for the same account raises the limit to 2, so `second` is released right away.
-    await limiter.run("account-raise", 2, async () => {});
-    expect(secondStarted).toBe(true);
-
-    releaseFirst();
-    await Promise.all([first, second]);
-  });
-
-  it("rejects a queued task that waits past the per-account timeout instead of hanging on a stalled connection forever", async () => {
-    vi.useFakeTimers();
-    try {
-      const limiter = createImapConnectionLimiter();
-      void limiter.run("account-stalled", 1, () => new Promise<void>(() => {})); // never resolves — a stuck connection
-      const queued = limiter.run("account-stalled", 1, async () => {});
-      const expectation = expect(queued).rejects.toThrow(/Timed out/);
-
-      await vi.advanceTimersByTimeAsync(3 * 60 * 1000 + 1);
-      await expectation;
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("bounds a limit raise's wake-up to the capacity that actually freed up, not every queued waiter", async () => {
-    // Resolves once pending microtasks (a woken waiter's `run()` continuation) settled, without advancing
-    // real time.
-    const flushMicrotasks = () => new Promise<void>((resolve) => setImmediate(resolve));
-
-    const limiter = createImapConnectionLimiter();
-    let concurrent = 0;
-    let maxConcurrent = 0;
-    const releasers: Array<() => void> = [];
-
-    const runTask = (limit: number) =>
-      limiter.run("account-bounded-raise", limit, async () => {
-        concurrent++;
-        maxConcurrent = Math.max(maxConcurrent, concurrent);
-        await new Promise<void>((resolve) => releasers.push(resolve));
-        concurrent--;
-      });
-
-    // One task runs under limit 1; three more queue up behind it.
-    const results = [runTask(1), runTask(1), runTask(1), runTask(1)];
-    await flushMicrotasks();
-    expect(concurrent).toBe(1);
-
-    // Raising the limit to 3 frees exactly two more slots (3 - 1 active), not all three waiters.
-    const raised = runTask(3);
-    await flushMicrotasks();
-    expect(concurrent).toBe(3);
-    expect(maxConcurrent).toBe(3);
-
-    // Release the first task: every queued task eventually runs and the limit is never exceeded.
-    for (let i = 0; i < 10 && releasers.length > 0; i++) {
-      releasers.splice(0).forEach((release) => release());
-      await flushMicrotasks();
-      expect(concurrent).toBeLessThanOrEqual(3);
-    }
-
-    await Promise.all([...results, raised]);
-    expect(maxConcurrent).toBe(3);
-    expect(concurrent).toBe(0);
-  });
-});
-
 describe("mail sync connection-limit backoff", () => {
   useSeededDatabase();
 
@@ -3644,8 +4237,8 @@ describe("mail sync connection-limit backoff", () => {
 
     const state = await syncState(mailbox);
     expect(state?.lastError).toBe("Too many simultaneous connections.");
-    // Gmail's provider-aware backoff (10 minutes) is well past the generic 15-minute window's
-    // midpoint, distinguishing it from `recordSyncError`'s fixed backoff.
+    // Gmail's provider-aware base (10 minutes) puts the first retry at least that far out, past the 5-minute
+    // base of `recordSyncError`.
     expect(new Date(state!.nextExpectedActivityAt!).getTime()).toBeGreaterThan(Date.now() + 8 * 60 * 1000);
     // Mail is not syncing, so syncStatus reflects it like any failure and clears to 'ok' on the next
     // successful pass.
@@ -3655,70 +4248,227 @@ describe("mail sync connection-limit backoff", () => {
   it.each([
     ["Gmail's provider default", { name: "M", provider: "gmail" }, 5],
     ["Mailboxes.connectionLimit over the provider default", { name: "M", provider: "gmail", connectionLimit: 1 }, 1],
-  ])("routes a real IMAP connection attempt through the per-account limiter with %s", (_name, properties, limit) =>
+  ])("opens the pass's IMAP connection under the account's budget with %s", (_name, properties, limit) =>
     inTenantZero(async () => {
       const mailbox = await createSyncMailbox({ properties });
-      const runCalls: Array<{ accountId: string; limit: number }> = [];
-      const recordingLimiter = {
-        run: <T>(accountId: string, accountLimit: number, task: () => Promise<T>) => {
-          runCalls.push({ accountId, limit: accountLimit });
-          return task();
+      const opened: Array<{ accountId: string; limit: number }> = [];
+
+      await runSync(mailbox, {
+        createImapClient: async (accountId, _credential, accountLimit) => {
+          opened.push({ accountId, limit: accountLimit });
+          return fakeImap();
         },
-      };
+      });
 
-      await runSync(mailbox, { createImapClient: async () => fakeImap() }, noopStorage, undefined, recordingLimiter);
-
-      expect(runCalls).toEqual([{ accountId: mailbox, limit }]);
+      expect(opened).toEqual([{ accountId: mailbox, limit }]);
     }),
   );
 
   tenantIt("holds no pooled database connection while a sync pass waits for an IMAP connection slot", async () => {
-    // connectionLimit: 1 forces contention between two concurrent passes; at the default limit of 2 they
-    // never wait and this test would pass vacuously.
+    // connectionLimit: 1 and another holder of the account's only slot (an IDLE session, a move) make the pass wait;
+    // with a free slot it would never wait and this test would pass vacuously.
     const mailbox = await createSyncMailbox({ properties: { name: "M", connectionLimit: 1 } });
     const limiter = createImapConnectionLimiter();
+    const sessions = createImapSessionPool(limiter);
+    const host = "imap.example.test";
 
-    let releaseFirst: () => void = () => {};
-    let resolveFirstStarted: () => void = () => {};
-    const firstStarted = new Promise<void>((resolve) => {
-      resolveFirstStarted = resolve;
+    let releaseSlot: () => void = () => {};
+    let resolveSlotTaken: () => void = () => {};
+    const slotTaken = new Promise<void>((resolve) => {
+      resolveSlotTaken = resolve;
     });
-    const blockingImap = fakeImap({
-      listFolders: async () => [{ path: "INBOX", specialUse: "\\Inbox" }],
-      selectFolder: async () => {
-        resolveFirstStarted();
-        await new Promise<void>((resolve) => {
-          releaseFirst = resolve;
-        });
-        return { uidvalidity: 1, uidnext: 1, highestModSeq: null };
-      },
+    const holder = limiter.run({ accountId: mailbox, accountLimit: 1, host, kind: "idle" }, async () => {
+      resolveSlotTaken();
+      await new Promise<void>((resolve) => {
+        releaseSlot = resolve;
+      });
     });
-
-    // The first pass takes the account's only slot and holds it (blocked in `selectFolder`, its write
-    // transaction's connection checked out) until `releaseFirst()`.
-    const firstPass = runSync(mailbox, { createImapClient: async () => blockingImap }, noopStorage, undefined, limiter);
-    await firstStarted;
+    await slotTaken;
 
     const checkedOut = () => pool.totalCount - pool.idleCount;
     const baseline = checkedOut();
 
-    const secondPass = runSync(mailbox, { createImapClient: async () => fakeImap() }, noopStorage, undefined, limiter);
+    let opened = false;
+    const pass = runSync(mailbox, {
+      createImapClient: (mailboxItemId, credential, accountLimit) =>
+        sessions.checkout({
+          mailboxItemId,
+          accountLimit,
+          host,
+          signIn: credential,
+          connect: async () => {
+            opened = true;
+            return fakeImap();
+          },
+        }),
+    });
 
-    // Waits until the second pass's credential fetch (before it calls the limiter) has been logged, so it is
-    // calling or blocked in `imapConnectionLimiter.run`.
-    while ((await countRows("credential_access_log WHERE item_id = $1", [mailbox])) < 2)
+    // Waits until the pass's credential fetch (before it asks for its connection) has been logged, so it is asking or
+    // blocked in the limiter.
+    while ((await countRows("credential_access_log WHERE item_id = $1", [mailbox])) < 1)
       await new Promise((resolve) => setTimeout(resolve, 5));
-    // One more tick so the second pass's synchronous `imapConnectionLimiter.run(...)` call has run.
+    // One more tick so the pass's checkout has reached the limiter.
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(opened).toBe(false);
 
-    // The second pass is queued behind the first and must not have checked out a database connection while
-    // it waits: the write transaction opens after the limiter wait.
+    // The pass is queued behind the holder and must not have checked out a database connection while it waits:
+    // the write transaction opens after the limiter wait.
     expect(checkedOut() - baseline).toBe(0);
 
-    releaseFirst();
-    await firstPass;
-    await secondPass;
+    releaseSlot();
+    await holder;
+    await pass;
+    expect(opened).toBe(true);
+    await sessions.close();
   });
+});
+
+describe("mail sync failure backoff", () => {
+  useSeededDatabase();
+
+  const failingWith = (error: Error): MailSyncAdapterFactory => ({
+    createImapClient: async () => {
+      throw error;
+    },
+  });
+  /** The delay the last failure recorded: both columns are written from the same `now()`. */
+  const recordedDelayMinutes = async (mailbox: string) => {
+    const state = await syncState(mailbox);
+    const delayMs = new Date(state!.nextExpectedActivityAt!).getTime() - new Date(state!.lastActivityAt!).getTime();
+    return delayMs / 60_000;
+  };
+
+  it.each([
+    // Decorrelated jitter: uniform between the 5-minute base and three times the previous delay, capped at 6 hours.
+    ["the low end", () => 0, [5, 5, 5, 5, 5]],
+    ["the high end", () => 1, [15, 45, 135, 360, 360]],
+    ["the middle", () => 0.5, [10, 17.5, 28.75, 45.625, 70.9375]],
+  ])(
+    "pushes an ordinary failure's next pass out further with each failure of the streak, at %s of the jitter",
+    (_name, random, expectedMinutes) =>
+      inTenantZero(async () => {
+        const mailbox = await createSyncMailbox();
+        const recorded: number[] = [];
+        for (let failure = 0; failure < expectedMinutes.length; failure++) {
+          await backoffElapsed(mailbox);
+          await expect(
+            runSync(mailbox, failingWith(new Error("boom")), noopStorage, undefined, random),
+          ).rejects.toThrow("boom");
+          recorded.push(await recordedDelayMinutes(mailbox));
+        }
+        expect(recorded).toEqual(expectedMinutes);
+      }),
+  );
+
+  it("starts a new streak at the base after a pass succeeded", () =>
+    inTenantZero(async () => {
+      const mailbox = await createSyncMailbox();
+      const high = () => 1;
+      for (let failure = 0; failure < 2; failure++) {
+        await backoffElapsed(mailbox);
+        await expect(runSync(mailbox, failingWith(new Error("boom")), noopStorage, undefined, high)).rejects.toThrow();
+      }
+      expect(await recordedDelayMinutes(mailbox)).toBe(45);
+      await backoffElapsed(mailbox);
+      await runSync(mailbox, { createImapClient: async () => fakeImap() });
+      await expect(runSync(mailbox, failingWith(new Error("boom")), noopStorage, undefined, high)).rejects.toThrow();
+      expect(await recordedDelayMinutes(mailbox)).toBe(15);
+    }));
+
+  it("ends a pass queued while the account backs off a failure without a provider call, and runs once it is due", () =>
+    inTenantZero(async () => {
+      const mailbox = await createSyncMailbox();
+      await expect(runSync(mailbox, failingWith(new Error("boom")))).rejects.toThrow("boom");
+      const failed = await syncState(mailbox);
+      const credentialReads = await countRows("credential_access_log WHERE item_id = $1", [mailbox]);
+      const createImapClient = vi.fn(async () => fakeImap());
+
+      // What IDLE, a push or a flag write-back queues right after the failure.
+      await runSync(mailbox, { createImapClient });
+
+      expect(createImapClient).not.toHaveBeenCalled();
+      expect(await countRows("credential_access_log WHERE item_id = $1", [mailbox])).toBe(credentialReads);
+      expect(await syncState(mailbox)).toEqual(failed);
+
+      await backoffElapsed(mailbox);
+      await runSync(mailbox, { createImapClient });
+
+      expect(createImapClient).toHaveBeenCalledTimes(1);
+      expect((await syncState(mailbox))?.failingSince).toBeNull();
+    }));
+
+  it("queues no follow-up pass after a failed pass, though a trigger asked for one while it ran", () =>
+    inTenantZero(async () => {
+      const mailbox = await createSyncMailbox();
+      const jobs = () => countRows("graphile_worker._private_jobs");
+      const before = await jobs();
+      const failingAfterTrigger: MailSyncAdapterFactory = {
+        createImapClient: async () => {
+          // A trigger finds the pass running and asks it for one more run.
+          const claim = await withTransaction(pool, (client) =>
+            claimMailSyncPass(client, mailbox, randomUUID(), 60_000),
+          );
+          expect(claim).toBe("busy");
+          throw new Error("boom");
+        },
+      };
+
+      await expect(runSync(mailbox, failingAfterTrigger)).rejects.toThrow("boom");
+
+      expect(await jobs()).toBe(before);
+    }));
+
+  it("jitters a connection-limit backoff over the provider's base and grows it over the streak", () =>
+    inTenantZero(async () => {
+      const mailbox = await createSyncMailbox({ properties: { name: "M", provider: "gmail" } });
+      const limited = failingWith(new MailConnectionLimitError("Too many simultaneous connections."));
+      const recorded: number[] = [];
+      for (let failure = 0; failure < 3; failure++) {
+        await backoffElapsed(mailbox);
+        await runSync(mailbox, limited, noopStorage, undefined, () => 0.5);
+        recorded.push(await recordedDelayMinutes(mailbox));
+      }
+      // Gmail's base is 10 minutes: 10 + 0.5 * (30 - 10), then from 20 and from 35 minutes.
+      expect(recorded).toEqual([20, 35, 57.5]);
+    }));
+});
+
+describe("mail sync of an account whose sign-in the provider refused", () => {
+  useSeededDatabase();
+
+  it("ends every later pass without reading the credential or calling the provider, until a sign-in clears it", () =>
+    inTenantZero(async () => {
+      await createOwner();
+      const mailbox = await createSyncMailbox();
+      const refused = {
+        createImapClient: async () => {
+          throw new MailReauthorizationRequiredError("The IMAP server rejected the stored login");
+        },
+      };
+      // Resolves: a refused login is recorded, and graphile-worker does not retry it.
+      await runSync(mailbox, refused);
+      const recorded = await syncState(mailbox);
+      expect(recorded?.lastFailureKind).toBe("reauthorization");
+      const credentialReads = await countRows("credential_access_log WHERE item_id = $1", [mailbox]);
+      const jobs = await countRows("graphile_worker._private_jobs");
+
+      const createImapClient = vi.fn(async () => fakeImap());
+      for (let pass = 0; pass < 2; pass++) await runSync(mailbox, { createImapClient });
+
+      expect(createImapClient).not.toHaveBeenCalled();
+      expect(await countRows("credential_access_log WHERE item_id = $1", [mailbox])).toBe(credentialReads);
+      expect(await syncState(mailbox)).toEqual(recorded);
+      expect(await syncStatusOf(mailbox)).toBe("needsReauthorization");
+      expect(await countRows("graphile_worker._private_jobs")).toBe(jobs);
+
+      // What both sign-in routes write before they queue the next pass.
+      await withTransaction(pool, (client) => clearMailSyncFailure(client, mailbox));
+      await runSync(mailbox, { createImapClient });
+
+      expect(createImapClient).toHaveBeenCalledTimes(1);
+      expect(await syncStatusOf(mailbox)).toBe("ok");
+      expect((await syncState(mailbox))?.lastFailureKind).toBeNull();
+    }));
 });
 
 describe("mail flag write-back", () => {
@@ -3729,15 +4479,20 @@ describe("mail flag write-back", () => {
     async () => {
       const params = await reconcileParams();
       const reconcile = (client: ImapMailClient) =>
-        withTransaction(pool, (tx) => reconcileImapAccount(tx, client, params));
+        reconcileImapAccount(pool, client, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS });
       const message = { messageId: "<writeback@x>", envelope: {}, attachments: [], flags: [] };
       const initial = fakeImap({
         listFolders: async () => [
           { path: "INBOX", specialUse: "\\Inbox" },
           { path: "Archive", specialUse: "\\Archive" },
         ],
-        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-        fetchMessagesSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, message }],
+        selectFolder: async (path) => ({
+          uidvalidity: 1,
+          uidnext: path === "INBOX" ? 2 : 3,
+          highestModSeq: null,
+          messages: 1,
+        }),
+        fetchMessagesSince: fakeImapSince((path) => [fetched(path === "INBOX" ? 1 : 2, message.messageId, message)]),
         fetchAllUids: async (path) => (path === "INBOX" ? [1] : [2]),
       });
       await reconcile(initial);
@@ -3755,7 +4510,7 @@ describe("mail flag write-back", () => {
       const writes: Array<{ path: string; flag: string; value: boolean }> = [];
       const writingClient: ImapMailClient = {
         ...initial,
-        fetchMessagesSince: async () => [],
+        fetchMessagesSince: async () => fakeImapRange([]),
         setMessageFlag: async (path, _uid, flag, value) => {
           writes.push({ path, flag, value });
         },
@@ -3773,9 +4528,8 @@ describe("mail flag write-back", () => {
       await patch({ read: true });
       await reconcile({
         ...initial,
-        fetchMessagesSince: async (path) => [
-          { uid: path === "INBOX" ? 1 : 2, message: { ...message, flags: [IMAP_SEEN_FLAG] } },
-        ],
+        fetchMessagesSince: async () => fakeImapRange([]),
+        fetchFlagsChangedSince: async (path) => [{ uid: path === "INBOX" ? 1 : 2, flags: [IMAP_SEEN_FLAG] }],
         setMessageFlag: async () => {
           throw new Error("a provider observation matching desired state must not be echoed");
         },
@@ -3844,8 +4598,8 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
   const knownUidPass = (overrides: Partial<ImapMailClient>) =>
     fakeImap({
       listFolders: async () => [{ path: "INBOX" }],
-      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null }),
-      fetchVanishedSince: async () => null,
+      selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 1 }),
+      fetchChangesSince: async () => null,
       fetchAllUids: async () => [1],
       setMessageFlag: async () => {
         throw new Error("this pass must not attempt a write-back");
@@ -3862,12 +4616,10 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
     overrides: Partial<ImapMailClient> = {},
   ): Promise<string> {
     const firstPass = knownUidPass({
-      fetchMessagesSince: async () => [
-        { uid: 1, message: { messageId: "<obs@x>", envelope: {}, attachments: [], flags: [] } },
-      ],
+      fetchMessagesSince: fakeImapSince(() => [fetched(1, "<obs@x>", { envelope: {}, flags: [] })]),
       ...overrides,
     });
-    await withTransaction(pool, (client) => reconcileImapFolder(client, firstPass, params));
+    await reconcileImapFolder(pool, firstPass, params);
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
       params.emailsDatabaseId,
     ]);
@@ -3907,7 +4659,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
       expect(await flagStateRowFor(emailItemId, "read")).toEqual({ desired_state: true, current_state: confirmed });
 
       const secondPass = knownUidPass({ fetchFlagsChangedSince: async () => [{ uid: 1, flags: observedFlags }] });
-      await withTransaction(pool, (client) => reconcileImapFolder(client, secondPass, params));
+      await reconcileImapFolder(pool, secondPass, params);
 
       expect(await readOf(emailItemId)).toBe(expectedRead);
       expect(await flagStateRowFor(emailItemId, "read")).toEqual({
@@ -3945,24 +4697,24 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
   );
 
   describe("applyObservedMailMessageFlags, called directly", () => {
-    const observe = (emailsDatabaseId: string, messageItemId: string, flags: string[]) =>
+    const observe = (emailsDatabaseId: string, messageItemId: string, flags: string[], folderItemId: string) =>
       withTransaction(pool, (client) =>
-        applyObservedMailMessageFlags(client, { emailsDatabaseId, messageItemId, flags }),
+        applyObservedMailMessageFlags(client, { emailsDatabaseId, messageItemId, folderItemId, flags }),
       );
 
     it("throws NotFoundError when the item does not exist", async () => {
-      const { emailsId } = await setUpFolder();
-      await expect(observe(emailsId, randomUUID(), [])).rejects.toThrow(NotFoundError);
+      const { emailsId, params } = await setUpFolder();
+      await expect(observe(emailsId, randomUUID(), [], params.folderItemId)).rejects.toThrow(NotFoundError);
     });
 
     tenantIt("patches the item and creates a converged sync-state row when none exists yet", async () => {
-      const { emailsId, ingestKnown, readOf } = await setUpFolder();
+      const { emailsId, params, ingestKnown, readOf } = await setUpFolder();
       // No `flags`: ingestEmailMessage's created branch only records observed flags when the caller passes them,
       // so this message lands with no mail_message_flag_sync_state rows at all.
       const { itemId } = await ingestKnown("<no-rows@x>");
       expect(await flagStateRowFor(itemId, "read")).toBeUndefined();
 
-      await observe(emailsId, itemId, [IMAP_SEEN_FLAG]);
+      await observe(emailsId, itemId, [IMAP_SEEN_FLAG], params.folderItemId);
 
       expect(await readOf(itemId)).toBe(true);
       expect(await flagStateRowFor(itemId, "read")).toEqual({ desired_state: true, current_state: true });
@@ -3971,7 +4723,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
     tenantIt(
       "leaves a pending property untouched while converging a different, non-pending property in the same call",
       async () => {
-        const { emailsId, ingestKnown, markRead } = await setUpFolder();
+        const { emailsId, params, ingestKnown, markRead } = await setUpFolder();
         // Unread, unflagged — seeds converged sync-state rows for both properties.
         const { itemId } = await ingestKnown("<pending-plus-converge@x>", { flags: [] });
 
@@ -3979,7 +4731,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
         await markRead(itemId);
         expect(await flagStateRowFor(itemId, "flagged")).toEqual({ desired_state: false, current_state: false });
 
-        await observe(emailsId, itemId, [IMAP_FLAGGED_FLAG]); // still unread (the old value) but now flagged
+        await observe(emailsId, itemId, [IMAP_FLAGGED_FLAG], params.folderItemId); // still unread (the old value) but now flagged
 
         // The pending `read` write survives untouched, while `flagged`, which had no pending write, converges to
         // the observation: both properties were recorded in this one call.
@@ -3996,7 +4748,7 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
       const { params } = await setUpFolder();
       const calls: Array<number | null> = [];
       const recording = {
-        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42 }),
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 42, messages: 0 }),
         fetchFlagsChangedSince: async (_path: string, sinceModSeq: number | null) => {
           calls.push(sinceModSeq);
           return [];
@@ -4008,11 +4760,16 @@ describe("flag observation convergence and IMAP known-UID re-fetch", () => {
       expect(calls).toEqual([]);
 
       const noCondstore = knownUidPass(recording);
-      await withTransaction(pool, (client) => reconcileImapFolder(client, noCondstore, params));
+      await reconcileImapFolder(pool, noCondstore, params);
       expect(calls).toEqual([null]);
 
-      const condstore = { ...noCondstore, getCapabilities: async () => new Set(["CONDSTORE"]) };
-      await withTransaction(pool, (client) => reconcileImapFolder(client, condstore, params));
+      // A flag change since raised the folder's mod-sequence; an unchanged one would skip the fetch.
+      const condstore = {
+        ...noCondstore,
+        getCapabilities: async () => new Set(["CONDSTORE"]),
+        selectFolder: async () => ({ uidvalidity: 1, uidnext: 2, highestModSeq: 43, messages: 1 }),
+      };
+      await reconcileImapFolder(pool, condstore, params);
       expect(calls).toEqual([null, 42]);
     },
   );
@@ -4031,9 +4788,8 @@ describe("queued sync status forward repair", () => {
     await resetDatabase(pool);
     tenantA = getTenantZeroId();
     tenantB = await createTestTenant(pool);
-    await ensureQueueSchema(pool);
-    await grantQueueSchemaPrivileges(pool);
-    runtime = await createRuntimeRolePool(pool, "semprec_data");
+    await installQueueSchema(pool);
+    runtime = await createRuntimeRolePool(pool, "alldots_data");
   });
   afterEach(async () => {
     await runtime?.end();
@@ -4084,7 +4840,11 @@ describe("queued sync status forward repair", () => {
         ]);
         locked();
         await proceed;
-        await recordImapActivity(client, { itemId: success, nextExpectedActivityAt: new Date("2099-01-01") });
+        await recordImapActivity(client, {
+          itemId: success,
+          nextExpectedActivityAt: new Date("2099-01-01"),
+          completesInitialSync: true,
+        });
         await recordSyncError(client, failed, "known failure", "reauthorization");
       }),
     );
@@ -4204,7 +4964,7 @@ describe("queued sync status forward repair", () => {
       async () => {
         await pool.query("CREATE SEQUENCE test_sync_repair_order");
         sequenceCreated = true;
-        await pool.query("GRANT USAGE ON SEQUENCE test_sync_repair_order TO semprec_data");
+        await pool.query("GRANT USAGE ON SEQUENCE test_sync_repair_order TO alldots_data");
         await pool.query(`CREATE FUNCTION test_sync_repair_failure() RETURNS trigger LANGUAGE plpgsql AS $$
           BEGIN IF nextval('test_sync_repair_order') > 1 THEN RAISE EXCEPTION 'test later tenant repair failure'; END IF;
           RETURN NEW; END $$`);

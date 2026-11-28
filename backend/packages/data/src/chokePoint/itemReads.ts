@@ -205,6 +205,25 @@ async function resolveFilterSql(
   return buildFilterSqlForDatabase(client, databaseId, options.filter, options.now, options.closedDatabaseIds);
 }
 
+/** `countItemsBatch` in the caller's transaction. */
+export async function countItemsBatchWithClient(
+  client: PoolClient,
+  entries: ItemCountEntryInput[],
+  options: CountItemsBatchOptions,
+  reader?: DatabaseReader,
+): Promise<ItemCountEntry[]> {
+  const closed =
+    options.agentProjectItemId !== undefined
+      ? await listClosedSensitiveDatabaseIds(client, options.agentProjectItemId)
+      : undefined;
+  const counts: ItemCountEntry[] = [];
+  for (const entry of entries) {
+    if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, entry.databaseId, "read");
+    counts.push(await countItemsEntry(client, entry, options, closed));
+  }
+  return counts;
+}
+
 export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
   const { pool } = deps;
   return {
@@ -354,18 +373,7 @@ export function createItemReadOps(deps: Pick<ChokePointDeps, "pool">) {
       options: CountItemsBatchOptions,
       reader?: DatabaseReader,
     ): Promise<ItemCountEntry[]> {
-      return withTransaction(pool, async (client) => {
-        const closed =
-          options.agentProjectItemId !== undefined
-            ? await listClosedSensitiveDatabaseIds(client, options.agentProjectItemId)
-            : undefined;
-        const counts: ItemCountEntry[] = [];
-        for (const entry of entries) {
-          if (reader !== undefined) await assertReaderDatabaseAccess(client, reader, entry.databaseId, "read");
-          counts.push(await countItemsEntry(client, entry, options, closed));
-        }
-        return counts;
-      });
+      return withTransaction(pool, (client) => countItemsBatchWithClient(client, entries, options, reader));
     },
 
     /**

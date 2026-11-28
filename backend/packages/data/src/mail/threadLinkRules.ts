@@ -4,7 +4,7 @@ import { getDatabase, getDatabaseByKey } from "../chokePoint/databasesStore.js";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
 import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
-import { listValueLinksBySourceItem } from "../chokePoint/valueLinksStore.js";
+import { listValueLinksByItemIds, listValueLinksBySourceItem } from "../chokePoint/valueLinksStore.js";
 import type { LinkRuleResolution, LinkRuleResolver } from "../valueLinks/linkResolver.js";
 import { enqueueLinkPropagation } from "../valueLinks/linkPropagation.js";
 import { COMPANIES_MODULE_ID, PEOPLE_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
@@ -322,7 +322,11 @@ export const threadProjectLinkResolver: LinkRuleResolver = {
   },
 };
 
-/** Queues both Threads link rules only when the new message is now its thread's first inbound one. */
+/**
+ * Queues the Threads link rules only when the new message is now its thread's first inbound one. The project rule
+ * resolves from the thread's company, so for a thread with no live company and no project link it would write
+ * nothing; it is then left to the company edge, whose write queues it.
+ */
 export async function enqueueThreadLinkRulesForFirstInbound(
   client: PoolClient,
   messageItemId: string,
@@ -339,7 +343,10 @@ export async function enqueueThreadLinkRulesForFirstInbound(
   if (!thread?.item_id) return null;
   const first = await firstInboundMessage(client, thread.id);
   if (first?.itemId !== messageItemId) return null;
-  for (const ruleKey of [THREAD_COMPANY_LINK_RULE_KEY, THREAD_PROJECT_LINK_RULE_KEY])
-    await enqueueLinkPropagation(client, ruleKey, thread.item_id, 1);
+  await enqueueLinkPropagation(client, THREAD_COMPANY_LINK_RULE_KEY, thread.item_id, 1);
+  const hasProjectInput =
+    (await relatedLiveItems(client, THREADS_MODULE_ID, "company", thread.item_id)).length > 0 ||
+    (await listValueLinksByItemIds(client, [thread.item_id])).some((link) => link.propertyKey === "project");
+  if (hasProjectInput) await enqueueLinkPropagation(client, THREAD_PROJECT_LINK_RULE_KEY, thread.item_id, 1);
   return thread.item_id;
 }

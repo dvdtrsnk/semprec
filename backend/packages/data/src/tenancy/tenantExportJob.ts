@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import { finished } from "node:stream/promises";
 import { escapeIdentifier, type Pool, type PoolClient } from "pg";
 import yazl from "yazl";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { openBlobFromRoots } from "../blobs/openBlobFromRoots.js";
 import { requireSingleRow, withTransaction } from "../db/pool.js";
@@ -21,13 +21,19 @@ import {
 
 /** Builds one tenant's export archive from the catalog-driven table set. */
 
-/** Never exported: credential ciphertext, the wrapped tenant key, the exports themselves, and card-action responses (transient, 24 h). */
+/**
+ * Never exported: credential ciphertext, the wrapped tenant key, the exports themselves, card-action responses
+ * (transient, 24 h), the calendar push channels, whose rows hold the secret their webhooks are checked against, and
+ * the Sent copies waiting for their APPEND (transient; the message itself is exported as its Emails item).
+ */
 export const EXPORT_EXCLUDED_TABLES = [
   "external_credentials",
   "tenant_keys",
   "tenant_exports",
   "mail_oauth_states",
   "idempotent_responses",
+  "calendar_push_channels",
+  "mail_sent_copies",
 ] as const;
 
 /** Written to `manifest.json`. */
@@ -161,7 +167,7 @@ async function exportedTables(client: PoolClient): Promise<string[]> {
   const { rows } = await client.query<{ relname: string }>(
     `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-        AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+        AND obj_description(c.oid, 'pg_class') = 'alldots:tenancy=tenant'
       ORDER BY 1`,
   );
   const excluded: readonly string[] = EXPORT_EXCLUDED_TABLES;

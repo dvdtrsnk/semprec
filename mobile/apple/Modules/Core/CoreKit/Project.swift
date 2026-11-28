@@ -4,15 +4,17 @@ import ProjectDescriptionHelpers
 let project = Project(
     name: "CoreKit",
     options: .options(automaticSchemesOptions: .disabled),
-    settings: SemprecProject.moduleSettings(loadsKotlinFramework: true),
+    settings: AlldotsProject.moduleSettings(loadsKotlinFramework: true),
     targets: [
-        SemprecProject.framework(
+        AlldotsProject.framework(
             "CoreKit",
-            scripts: [SemprecProject.kotlinFrameworkScript(.build)],
-            settings: SemprecProject.kotlinFrameworkScriptSettings.merging([
+            resources: ["Resources/**"],
+            scripts: [AlldotsProject.kotlinFrameworkScript(.build)],
+            settings: AlldotsProject.kotlinFrameworkScriptSettings.merging([
                 "OTHER_LDFLAGS": .string("$(inherited) -framework \(ProjectConfiguration.frameworkName)"),
             ]) { _, new in new }
         ),
-        SemprecProject.tests("CoreKitTests", for: "CoreKit"),
-    ]
+        AlldotsProject.tests("CoreKitTests", for: "CoreKit"),
+    ],
+    resourceSynthesizers: []
 )

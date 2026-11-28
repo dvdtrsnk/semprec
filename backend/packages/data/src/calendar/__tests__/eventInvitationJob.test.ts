@@ -4,9 +4,9 @@ import { simpleParser } from "mailparser";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
@@ -28,6 +28,7 @@ import { mergeModuleTaskListForAffinity } from "../../moduleTasks.js";
 import { seedSystem } from "../../seed/seedSystem.js";
 import { getSystemSettingsDatabaseId, getSystemSettingsItemId } from "../../systemSettings.js";
 import { recordingTransport, transportFor } from "../../testSupport/mailSendFakes.js";
+import { mailSentCopyJobKey } from "../../mail/mailSentCopies.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { ValidationError } from "../../errors.js";
 import {
@@ -236,6 +237,23 @@ function world(tenantId: string) {
 
 type World = ReturnType<typeof world>;
 
+/** The Sent copies the jobs recorded in the tenant, each with whether its keyed append job is queued. */
+async function recordedSentCopies(pool: Pool, admin: Pool, tenantId: string) {
+  const { rows } = await runInTenant(tenantId, () =>
+    pool.query<{ id: string; mailbox_item_id: string; message_id: string; raw: Buffer }>(
+      "SELECT id, mailbox_item_id, message_id, raw FROM mail_sent_copies WHERE tenant_id = app_tenant_default()",
+    ),
+  );
+  const copies = [];
+  for (const row of rows) {
+    const { rows: jobs } = await admin.query("SELECT 1 FROM graphile_worker.jobs WHERE key = $1", [
+      mailSentCopyJobKey(row.id),
+    ]);
+    copies.push({ mailboxItemId: row.mailbox_item_id, messageId: row.message_id, raw: row.raw, jobs: jobs.length });
+  }
+  return copies;
+}
+
 async function readMessage(raw: Buffer) {
   const parsed = await simpleParser(raw);
   const calendar = parsed.attachments.find((attachment) => attachment.contentType === "text/calendar");
@@ -260,7 +278,7 @@ describe("event invitation messages (issue #1774)", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -297,7 +315,7 @@ describe("event invitation messages (issue #1774)", () => {
       const w = world(await newTenant());
       const ids = { eventId: randomUUID(), personId: randomUUID(), mailboxId: randomUUID() };
       const snapshot: EventInvitationSnapshot = {
-        uid: "u@semprec",
+        uid: "u@alldots",
         sequence: 4,
         title: "Gone",
         start: "2026-11-16",
@@ -611,6 +629,25 @@ describe("event invitation messages (issue #1774)", () => {
       expect((await f.w.edge(f.eventId, f.personId))?.invitation).toHaveProperty("sentAt");
     });
 
+    it("records one Sent copy of the accepted message and its keyed job when the transport files none, as SMTP", async () => {
+      const f = await invitedEvent();
+      transport = recordingTransport({
+        async send(message) {
+          transport.sent.push(message);
+          return { needsSentCopy: true };
+        },
+      });
+      setEventInvitationDelivery({ pool: dataPool, transports: transportFor(transport) });
+
+      await f.w.handle(plainRequest(f.ids));
+
+      const [sent] = transport.sent;
+      const parsed = await simpleParser(sent!.raw);
+      expect(await recordedSentCopies(dataPool, adminPool, f.w.tenantId)).toEqual([
+        { mailboxItemId: f.mailboxId, messageId: parsed.messageId, raw: sent!.raw, jobs: 1 },
+      ]);
+    });
+
     it("converts the wall-clock times of the tenant zone to UTC", async () => {
       const f = await invitedEvent();
       await f.w.setZone("America/New_York");
@@ -761,7 +798,7 @@ describe("event invitation messages (issue #1774)", () => {
         const w = world(await newTenant());
         const mailboxId = await w.mailbox("me@example.com", "outlook");
         const snapshot: EventInvitationSnapshot = {
-          uid: "u@semprec",
+          uid: "u@alldots",
           sequence: 2,
           title: "Meeting",
           start: "2026-11-16T08:00:00.000Z",
@@ -1156,7 +1193,7 @@ describe("event invitation messages (issue #1774)", () => {
       const mailboxId = await w.mailbox();
       const ids = { eventId: randomUUID(), personId: randomUUID(), mailboxId };
       const snapshot: EventInvitationSnapshot = {
-        uid: "gone@semprec",
+        uid: "gone@alldots",
         sequence: 2,
         title: 'Gone, "really"',
         start: "2026-11-16",
@@ -1173,7 +1210,7 @@ describe("event invitation messages (issue #1774)", () => {
       expect(message.lines).toEqual(
         expect.arrayContaining([
           "METHOD:CANCEL",
-          "UID:gone@semprec",
+          "UID:gone@alldots",
           "SEQUENCE:3",
           "DTSTART;VALUE=DATE:20261116",
           "DTEND;VALUE=DATE:20261117",
@@ -1225,7 +1262,7 @@ describe("event invitation messages (issue #1774)", () => {
         personId: randomUUID(),
         attendeeEmail: ATTENDEE,
         snapshot: {
-          uid: "u@semprec",
+          uid: "u@alldots",
           sequence: 0,
           title: "T",
           start: "2026-11-16",
@@ -1260,7 +1297,7 @@ describe("event invitation messages (issue #1774)", () => {
     const eventRow = (properties: Record<string, unknown>) =>
       ({
         ...base,
-        properties: { icalUid: "u@semprec", icalSequence: 1, name: "T", date: "2026-11-16", ...properties },
+        properties: { icalUid: "u@alldots", icalSequence: 1, name: "T", date: "2026-11-16", ...properties },
       }) as never;
 
     it("ends a timed Event that has no end time at the midnight that ends its last day", () => {

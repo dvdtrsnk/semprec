@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -155,6 +155,8 @@ export async function setupMailAttachmentWorld(runtime: Pool, tenantId: string):
       const { itemId: emailItemId } = await inTenant(() =>
         withTransaction(runtime, (client) =>
           ingestEmailMessage(client, {
+            arrival: "live",
+            contentState: "full",
             emailsDatabaseId: databaseId("emails"),
             filesDatabaseId: databaseId("files"),
             folderRelationPropertyId: properties.emailFolder,

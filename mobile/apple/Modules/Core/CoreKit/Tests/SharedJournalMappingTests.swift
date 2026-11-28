@@ -18,13 +18,49 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertEqual(SharedJournalScreenModel.state(JournalKotlin.state(.error)).phase, .failure(nil))
     }
 
-    func testStateMapsSelectionTodayAndFlags() {
-        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content, saving: true))
+    func testStateMapsSelectionAndToday() {
+        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content))
         XCTAssertEqual(state.selection, CoreKit.JournalSelection(kind: .month, start: "2026-10-01"))
         XCTAssertEqual(state.today, "2026-10-16")
-        XCTAssertTrue(state.saving)
         XCTAssertNil(state.page)
         XCTAssertEqual(state.weeks, [])
+        XCTAssertEqual(state.quarters, [])
+    }
+
+    func testStateMapsTheShownPeriodOrItsAbsence() {
+        XCTAssertNil(SharedJournalScreenModel.state(JournalKotlin.state(.loading)).shown)
+        let shown = SharedSDK.JournalSelection(kind: .day, start: "2026-10-15")
+        XCTAssertEqual(
+            SharedJournalScreenModel.state(JournalKotlin.state(.content, shown: shown)).shown,
+            CoreKit.JournalSelection(kind: .day, start: "2026-10-15")
+        )
+    }
+
+    func testStateMapsThePeriodsBesideTheShownOneOrTheirAbsence() {
+        let none = SharedJournalScreenModel.state(JournalKotlin.state(.content))
+        XCTAssertNil(none.before)
+        XCTAssertNil(none.after)
+        let ref = SharedSDK.JournalPageRef(kind: .day, period: "2026-10-17")
+        let after = SharedSDK.JournalPeriodContent(
+            shown: SharedSDK.JournalSelection(kind: .day, start: "2026-10-17"),
+            page: SharedSDK.JournalPageState(ref: ref, blocks: []),
+            weeks: [],
+            quarters: [],
+            events: [JournalKotlin.event(allDay: true)],
+            birthdays: [SharedSDK.JournalBirthdayState(id: "b1", personName: "Ada")],
+            inbox: []
+        )
+        let before = SharedSDK.JournalPeriodContent(
+            shown: SharedSDK.JournalSelection(kind: .day, start: "2026-10-15"),
+            page: nil, weeks: [], quarters: [], events: [], birthdays: [], inbox: []
+        )
+        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content, before: before, after: after))
+        XCTAssertEqual(state.after?.shown, CoreKit.JournalSelection(kind: .day, start: "2026-10-17"))
+        XCTAssertEqual(state.after?.page?.ref, CoreKit.JournalPageRef(kind: .day, period: "2026-10-17"))
+        XCTAssertEqual(state.after?.events.map(\.id), ["e1"])
+        XCTAssertEqual(state.after?.birthdays.map(\.personName), ["Ada"])
+        XCTAssertEqual(state.before?.shown, CoreKit.JournalSelection(kind: .day, start: "2026-10-15"))
+        XCTAssertNil(state.before?.page)
     }
 
     // MARK: - Content
@@ -57,10 +93,23 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertEqual(state.weeks.first?.page.ref, CoreKit.JournalPageRef(kind: .week, period: "2026-W42"))
     }
 
+    func testStateMapsAQuarterWithItsPage() {
+        let ref = SharedSDK.JournalPageRef(kind: .quarter, period: "2026-Q4")
+        let quarter = SharedSDK.JournalQuarterState(
+            number: 4, from: "2026-10-01", to: "2026-12-31",
+            page: SharedSDK.JournalPageState(ref: ref, blocks: [])
+        )
+        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content, quarters: [quarter]))
+        XCTAssertEqual(state.quarters.first?.number, 4)
+        XCTAssertEqual(state.quarters.first?.firstDay, "2026-10-01")
+        XCTAssertEqual(state.quarters.first?.lastDay, "2026-12-31")
+        XCTAssertEqual(state.quarters.first?.page.ref, CoreKit.JournalPageRef(kind: .quarter, period: "2026-Q4"))
+    }
+
     func testStateMapsEventsBirthdaysInboxAndAxis() {
         let inbox = SharedSDK.JournalInboxState(
             id: "i1", time: "08:15", text: "Idea", emoji: "x", status: .proposed,
-            attachmentName: "scan.pdf", attachmentCount: 2
+            attachments: [SharedSDK.AttachmentState(id: "a1", name: "scan.pdf", mediaType: "application/pdf")]
         )
         let state = SharedJournalScreenModel.state(JournalKotlin.state(
             .content,
@@ -75,7 +124,10 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertEqual(state.events.first?.hasTranscript, true)
         XCTAssertEqual(state.birthdays, [JournalBirthday(id: "b1", personName: "Jana")])
         XCTAssertEqual(state.inbox.first?.status, .proposed)
-        XCTAssertEqual(state.inbox.first?.attachmentCount, 2)
+        XCTAssertEqual(
+            state.inbox.first?.attachments,
+            [InboxAttachment(id: "a1", name: "scan.pdf", mediaType: "application/pdf")]
+        )
         XCTAssertEqual(state.axis.first?.kind, .day)
         XCTAssertEqual(state.axis.first?.cells.first?.start, "2026-10-16")
         XCTAssertEqual(state.axis.first?.cells.first?.weekday, 5)
@@ -87,24 +139,5 @@ final class SharedJournalMappingTests: XCTestCase {
         XCTAssertNil(event.startMinutes)
         XCTAssertNil(event.endMinutes)
         XCTAssertTrue(event.allDay)
-    }
-
-    // MARK: - Edit problems
-    func testEditProblemsMapWithTheirFailure() {
-        XCTAssertNil(SharedJournalScreenModel.state(JournalKotlin.state(.content)).editProblem)
-        XCTAssertEqual(
-            SharedJournalScreenModel.state(JournalKotlin.state(.content, editProblem: .stale)).editProblem,
-            .stale
-        )
-        XCTAssertEqual(
-            SharedJournalScreenModel.state(
-                JournalKotlin.state(.content, editProblem: .failed, editFailure: .rejected)
-            ).editProblem,
-            .failed(.rejected)
-        )
-        XCTAssertEqual(
-            SharedJournalScreenModel.state(JournalKotlin.state(.content, editProblem: .failed)).editProblem,
-            .failed(nil)
-        )
     }
 }

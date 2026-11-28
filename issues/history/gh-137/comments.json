@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5588443079",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/137#issuecomment-5588443079",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/137",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5588443079",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/137#issuecomment-5588443079",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/137",
     "id": 5588443079,
     "node_id": "IC_kwDOUFuQ4c8AAAABTRjfxw",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5588443079/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5588443079/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5588550959",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/137#issuecomment-5588550959",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/137",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5588550959",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/137#issuecomment-5588550959",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/137",
     "id": 5588550959,
     "node_id": "IC_kwDOUFuQ4c8AAAABTRqFLw",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-08T16:35:50Z",
     "updated_at": "2026-09-08T16:35:50Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #342\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-137-heartbeat-agent-tools-04-04-document-a-thr_e87cvek5j2`.\n\n## Summary\n\nDocuments `agent-runtime`'s SOLID responsibility split as a compatibility boundary, closing issue #137:\n\n- Added `backend/packages/agent-runtime/README.md`: an ownership map across pi-agent-core (single-run lifecycle/compaction), this package (session audit — `agent_runs`/`agent_run_events`, `unit`), `services/semprec-agents` (orchestration, not yet built), `services/semprec-ai-gateway` (egress/budget, not yet built), and `packages/module-registry` (tool allowlist); plus the explicit five-principle SOLID mapping (SRP/OCP/LSP/ISP/DIP) to the concrete files and types that express it.\n- Added two `dependency-cruiser` rules scoped to `packages/agent-runtime`: internals reachable only through `src/index.ts`, and no direct import of `pi-agent-core`/`@anthropic-ai/*` from inside the package — both verified to actually fire against induced violations.\n- Switched the shared depcruise config from `exclude: node_modules` to `doNotFollow: node_modules` so the provider-internals rule can see a direct edge without recursing into that package's own subgraph, and extended `check:boundaries` to scan `packages/` too.\n\nVerified in this run: unit (83), integration (455, against an ephemeral Postgres), and e2e (5) test suites all pass; `check:boundaries` reports no violations; full workspace `tsc` build succeeds; working tree is clean post-push.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #342\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to `bb/relay-137-heartbeat-agent-tools-04-04-document-a-thr_e87cvek5j2`.\n\n## Summary\n\nDocuments `agent-runtime`'s SOLID responsibility split as a compatibility boundary, closing issue #137:\n\n- Added `backend/packages/agent-runtime/README.md`: an ownership map across pi-agent-core (single-run lifecycle/compaction), this package (session audit — `agent_runs`/`agent_run_events`, `unit`), `services/alldots-agents` (orchestration, not yet built), `services/alldots-ai-gateway` (egress/budget, not yet built), and `packages/module-registry` (tool allowlist); plus the explicit five-principle SOLID mapping (SRP/OCP/LSP/ISP/DIP) to the concrete files and types that express it.\n- Added two `dependency-cruiser` rules scoped to `packages/agent-runtime`: internals reachable only through `src/index.ts`, and no direct import of `pi-agent-core`/`@anthropic-ai/*` from inside the package — both verified to actually fire against induced violations.\n- Switched the shared depcruise config from `exclude: node_modules` to `doNotFollow: node_modules` so the provider-internals rule can see a direct edge without recursing into that package's own subgraph, and extended `check:boundaries` to scan `packages/` too.\n\nVerified in this run: unit (83), integration (455, against an ephemeral Postgres), and e2e (5) test suites all pass; `check:boundaries` reports no violations; full workspace `tsc` build succeeds; working tree is clean post-push.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5588550959/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5588550959/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5588733988",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/137#issuecomment-5588733988",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/137",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5588733988",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/137#issuecomment-5588733988",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/137",
     "id": 5588733988,
     "node_id": "IC_kwDOUFuQ4c8AAAABTR1QJA",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5588733988/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5588733988/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5588734201",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/137#issuecomment-5588734201",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/137",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5588734201",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/137#issuecomment-5588734201",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/137",
     "id": 5588734201,
     "node_id": "IC_kwDOUFuQ4c8AAAABTR1Q-Q",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5588734201/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5588734201/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

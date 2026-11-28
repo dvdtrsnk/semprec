@@ -5,9 +5,8 @@ import { createServer as createNetServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import tls from "node:tls";
-import { ImapFlow } from "imapflow";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ValidationError } from "../errors.js";
 import { storeCredential } from "../credentials/externalCredentialsStore.js";
@@ -15,18 +14,8 @@ import { withTransaction } from "../db/pool.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
-import {
-  createMailTransportFactory,
-  createSentCopySaver,
-  createSmtpMailTransport,
-  type ImapConnectionOpener,
-  type SmtpTransporterOpener,
-} from "../mail/mailTransport.js";
-import { ensureFolderItem } from "../mail/folderDiscovery.js";
-import type { ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
-import type { ImapMailClient } from "../mail/imapReconcile.js";
-import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
+import { createMailTransportFactory, createSmtpMailTransport } from "../mail/mailTransport.js";
+import { sharedImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import type { SyncMode } from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { logger } from "../mail/logger.js";
@@ -322,7 +311,7 @@ describe("createSmtpMailTransport (issue #1634): raw submission over SMTP", () =
       envelope: { from: "me@mail.test", recipients: ["bob@mail.test", "carol@mail.test"] },
     });
 
-    expect(result).toEqual({});
+    expect(result).toEqual({ needsSentCopy: true });
     expect(server.accepted).toHaveLength(1);
     const [message] = server.accepted;
     expect(message?.from).toBe("me@mail.test");
@@ -645,11 +634,8 @@ describe("createSmtpMailTransport closes its transporter on every path out (issu
     expect(close).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps an accepted send successful when close, copy, and diagnostic publication fail", async () => {
+  it("keeps an accepted send successful when close and diagnostic publication fail", async () => {
     const close = vi.fn(() => {
-      throw new Error("SMTP-PRIVATE-SENTINEL");
-    });
-    const copy = vi.fn(async () => {
       throw new Error("SMTP-PRIVATE-SENTINEL");
     });
     vi.spyOn(logger, "warn").mockImplementation(() => {
@@ -665,11 +651,9 @@ describe("createSmtpMailTransport closes its transporter on every path out (issu
       settingsFor("mail.test", 465),
       credential,
       () => transporter,
-      copy,
     );
-    await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
+    await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({ needsSentCopy: true });
     expect(close).toHaveBeenCalledTimes(1);
-    expect(copy).toHaveBeenCalledTimes(1);
   });
 
   it("joins the owned send after the deadline closes the transporter", async () => {
@@ -722,7 +706,7 @@ describe("createSmtpMailTransport closes its transporter on every path out (issu
       () => transporter,
     );
 
-    await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
+    await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({ needsSentCopy: true });
   });
 
   it("returns a safe unknown send failure when both send and close fail", async () => {
@@ -824,7 +808,7 @@ describe("createMailTransportFactory (issue #1634)", () => {
   it("allows the owning runtime tenant and refuses a foreign mailbox without reading its credential", async () => {
     const owner = getTenantZeroId();
     const other = await createTestTenant(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     const failures: unknown[] = [];
     try {
       await runInTenant(owner, () =>
@@ -928,118 +912,9 @@ describe("createMailTransportFactory (issue #1634)", () => {
   });
 });
 
-async function notCalled(): Promise<never> {
-  throw new Error("the Sent-copy path calls no reconcile method");
-}
-
-const unusedReconcileMethods: Omit<ImapMailClient, "appendMessage" | "close"> = {
-  getCapabilities: notCalled,
-  listFolders: notCalled,
-  selectFolder: notCalled,
-  fetchMessagesSince: notCalled,
-  fetchVanishedSince: notCalled,
-  fetchAllUids: notCalled,
-  fetchFlagsChangedSince: notCalled,
-  setMessageFlag: notCalled,
-};
-
-interface AppendRecord {
-  path: string;
-  raw: Buffer;
-  flags: readonly string[];
-}
-
-interface RecordingImap {
-  readonly appends: AppendRecord[];
-  readonly opened: MailServerConnectionSettings[];
-  readonly open: ImapConnectionOpener;
-}
-
-/** Records each connection, append and close into `events`; `appendError` makes every append fail. */
-function recordingImap(events: string[], appendError?: Error): RecordingImap {
-  const appends: AppendRecord[] = [];
-  const opened: MailServerConnectionSettings[] = [];
-  const open: ImapConnectionOpener = async (settings) => {
-    opened.push(settings);
-    events.push("imap-open");
-    const client: ImapMailClient = {
-      ...unusedReconcileMethods,
-      appendMessage: async (path, raw, flags) => {
-        appends.push({ path, raw, flags });
-        events.push("imap-append");
-        if (appendError) throw appendError;
-      },
-      close: async () => {
-        events.push("imap-close");
-      },
-    };
-    return client;
-  };
-  return { appends, opened, open };
-}
-
-function recordingSmtp(events: string[]): SmtpTransporterOpener {
-  return (settings, credential) => {
-    const transporter = createSmtpTransporter(settings, credential);
-    return {
-      ...transporter,
-      close: () => {
-        events.push("smtp-close");
-        transporter.close();
-      },
-    };
-  };
-}
-
-function recordingLimiter(events: string[]): ImapConnectionLimiter {
-  return {
-    run<T>(accountId: string, limit: number, task: () => Promise<T>): Promise<T> {
-      events.push(`limit:${accountId}:${limit}`);
-      return task();
-    },
-  };
-}
-
-/** The Sent Folder item `reconcileImapAccount` creates, so the Sent-copy path finds it. */
-async function addSentFolder(pool: Pool, mailboxItemId: string, providerId: string): Promise<void> {
-  await withTransaction(pool, async (client) => {
-    const moduleIds = await resolveMailModuleIds(client);
-    const mailboxRelation = await getPropertyByKey(client, moduleIds.foldersDatabaseId, "mailbox");
-    if (!mailboxRelation) throw new Error("the Folders.mailbox relation property is not seeded");
-    await ensureFolderItem(client, {
-      foldersDatabaseId: moduleIds.foldersDatabaseId,
-      mailboxItemId,
-      mailboxRelationPropertyId: mailboxRelation.id,
-      providerId,
-      name: providerId,
-      behavior: "folder",
-      specialPurpose: "sent",
-    });
-  });
-}
-
-/** `addresses` is system-owned, so it goes through the sanctioned writer in the same transaction. */
-async function createMailbox(
-  pool: Pool,
-  { addresses, ...properties }: { addresses: string } & Record<string, unknown>,
-): Promise<string> {
-  const moduleIds = await withTransaction(pool, (client) => resolveMailModuleIds(client));
-  return withTransaction(pool, async (client) => {
-    const item = await createItemWithClient(client, { databaseId: moduleIds.mailboxesDatabaseId, properties });
-    await writeMailboxAddresses(client, {
-      mailboxesDatabaseId: moduleIds.mailboxesDatabaseId,
-      mailboxItemId: item.id,
-      address: addresses,
-    });
-    return item.id;
-  });
-}
-
-describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
+describe("the Sent copy of an accepted SMTP send", () => {
   let pool: Pool;
   let mailboxId: string;
-  const imapEndpoint: MailServerEndpoint = { host: "mail.test", port: 993, security: "tls" };
-  const smtpEndpoint: MailServerEndpoint = { host: "mail.test", port: 465, security: "tls" };
   const envelope = { from: "me@mail.test", recipients: ["bob@mail.test"] };
 
   beforeAll(() => {
@@ -1049,181 +924,62 @@ describe("Sent-folder copy of an accepted SMTP send (issue #1641)", () => {
   beforeEach(async () => {
     await resetDatabase(pool);
     await seedSystem(pool);
-    mailboxId = await createMailbox(pool, { name: "Test", provider: "generic", addresses: "me@mail.test" });
-    await upsertMailServerSettings(pool, mailboxId, { imap: imapEndpoint, smtp: smtpEndpoint, username });
+    const moduleIds = await withTransaction(pool, (client) => resolveMailModuleIds(client));
+    mailboxId = await withTransaction(pool, async (client) => {
+      const item = await createItemWithClient(client, {
+        databaseId: moduleIds.mailboxesDatabaseId,
+        properties: { name: "Test", provider: "generic" },
+      });
+      await writeMailboxAddresses(client, {
+        mailboxesDatabaseId: moduleIds.mailboxesDatabaseId,
+        mailboxItemId: item.id,
+        address: "me@mail.test",
+      });
+      return item.id;
+    });
   });
 
   afterAll(async () => {
     await pool.end();
   });
 
-  it("keeps the accepted message in the Sent folder: the same bytes with \\Seen, appended after the SMTP connection closed", async () => {
-    useLoopbackPolicy();
-    trustMailCertificate();
-    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
-    await addSentFolder(pool, mailboxId, "Sent Items");
-    const server = await startFakeSmtp();
-    const events: string[] = [];
-    const imap = recordingImap(events);
-    const transport = createSmtpMailTransport(
-      mailboxId,
-      settingsFor("mail.test", server.port),
-      credential,
-      recordingSmtp(events),
-      createSentCopySaver(pool, mailboxId, credential, imap.open),
-    );
-
-    await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
-
-    expect(server.accepted).toHaveLength(1);
-    expect(imap.opened).toEqual([{ endpoint: imapEndpoint, username }]);
-    expect(imap.appends).toEqual([{ path: "Sent Items", raw: rawMessage, flags: ["\\Seen"] }]);
-    expect(events).toEqual(["smtp-close", "imap-open", "imap-append", "imap-close"]);
-  });
-
-  it("keeps no copy when the server refuses the submission", async () => {
-    useLoopbackPolicy();
-    trustMailCertificate();
-    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
-    await addSentFolder(pool, mailboxId, "Sent Items");
-    const server = await startFakeSmtp({ acceptedPassword: "another-password" });
-    const imap = recordingImap([]);
-    const transport = createSmtpMailTransport(
-      mailboxId,
-      settingsFor("mail.test", server.port),
-      credential,
-      createSmtpTransporter,
-      createSentCopySaver(pool, mailboxId, credential, imap.open),
-    );
-
-    const error = await rejectionOf(transport.send({ raw: rawMessage, envelope }));
-
-    expect(error).toBeInstanceOf(MailSendAuthFailedError);
-    expect(server.accepted).toHaveLength(0);
-    expect(imap.opened).toEqual([]);
-    expect(imap.appends).toEqual([]);
-  });
-
-  it("a copy the server refuses leaves the send successful, logs a fixed stage, and closes the IMAP connection", async () => {
-    useLoopbackPolicy();
-    trustMailCertificate();
-    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
-    await addSentFolder(pool, mailboxId, "Sent Items");
-    const server = await startFakeSmtp();
-    const warn = vi.spyOn(logger, "warn");
-    const events: string[] = [];
-    const imap = recordingImap(events, new Error("[NO] Subject: quarterly numbers for bob@mail.test"));
-    const transport = createSmtpMailTransport(
-      mailboxId,
-      settingsFor("mail.test", server.port),
-      credential,
-      createSmtpTransporter,
-      createSentCopySaver(pool, mailboxId, credential, imap.open),
-    );
-
-    await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
-
-    expect(server.accepted).toHaveLength(1);
-    expect(events).toEqual(["imap-open", "imap-append", "imap-close"]);
-    expect(warn).toHaveBeenCalledWith(
-      { mailboxItemId: mailboxId, stage: "sent_copy" },
-      "SMTP operation reported a failure",
-    );
-    expect(JSON.stringify(warn.mock.calls)).not.toContain("quarterly numbers");
-  });
-
-  it("keeps SMTP accepted and diagnoses an IMAP APPEND that did not run", async () => {
-    useLoopbackPolicy();
-    trustMailCertificate();
-    stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
-    await addSentFolder(pool, mailboxId, "Sent Items");
-    const server = await startFakeSmtp();
-    const imap = new ImapFlow({ host: "unused.example.test", port: 993, secure: true, logger: false });
-    const append = vi.spyOn(imap, "append").mockResolvedValue(false);
-    vi.spyOn(imap, "logout").mockResolvedValue(undefined);
-    const close = vi.spyOn(imap, "close").mockImplementation(() => {});
-    const warn = vi.spyOn(logger, "warn");
-    const transport = createSmtpMailTransport(
-      mailboxId,
-      settingsFor("mail.test", server.port),
-      credential,
-      createSmtpTransporter,
-      createSentCopySaver(pool, mailboxId, credential, async () => new ImapFlowMailClient(imap)),
-    );
-    await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({});
-    expect(server.accepted).toHaveLength(1);
-    expect(append).toHaveBeenCalledTimes(1);
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(
-      { mailboxItemId: mailboxId, stage: "sent_copy" },
-      "SMTP operation reported a failure",
-    );
-    expect(JSON.stringify(warn.mock.calls)).not.toContain(rawMessage.toString());
-  });
-
-  it("keeps no copy when the mailbox has no Sent folder yet, and logs the reason", async () => {
-    const warn = vi.spyOn(logger, "warn");
-    const events: string[] = [];
-    const imap = recordingImap(events);
-
-    await expect(createSentCopySaver(pool, mailboxId, credential, imap.open)(rawMessage)).resolves.toBeUndefined();
-
-    expect(events).toEqual([]);
-    expect(warn).toHaveBeenCalledWith({ mailboxItemId: mailboxId, reason: "no_sent_folder" }, expect.any(String));
-  });
-
-  it("fails the copy with a ValidationError that names imap when the mailbox has no IMAP settings, and opens nothing", async () => {
-    await upsertMailServerSettings(pool, mailboxId, { imap: null, smtp: smtpEndpoint, username });
-    await addSentFolder(pool, mailboxId, "Sent Items");
-    const imap = recordingImap([]);
-
-    const error = await rejectionOf(createSentCopySaver(pool, mailboxId, credential, imap.open)(rawMessage));
-
-    expect(error).toBeInstanceOf(ValidationError);
-    expect(error).toMatchObject({ details: { field: "imap" } });
-    expect(imap.opened).toEqual([]);
-  });
-
-  it("appends under the account's IMAP connection slot at the provider's default limit when the mailbox sets none", async () => {
-    await addSentFolder(pool, mailboxId, "Sent Items");
-    const events: string[] = [];
-    const imap = recordingImap(events);
-
-    await createSentCopySaver(pool, mailboxId, credential, imap.open, recordingLimiter(events))(rawMessage);
-
-    expect(events).toEqual([`limit:${mailboxId}:2`, "imap-open", "imap-append", "imap-close"]);
-  });
-
-  it("appends under the limit the mailbox itself sets", async () => {
-    const limitedMailboxId = await createMailbox(pool, {
-      name: "Limited",
-      provider: "generic",
-      addresses: "me@mail.test",
-      connectionLimit: 1,
+  it("answers an accepted submission with needsSentCopy while every IMAP connection slot of the account is taken", async () => {
+    let freeSlots!: () => void;
+    const slotsTaken = new Promise<void>((resolve) => {
+      freeSlots = resolve;
     });
-    await upsertMailServerSettings(pool, limitedMailboxId, { imap: imapEndpoint, smtp: smtpEndpoint, username });
-    await addSentFolder(pool, limitedMailboxId, "Sent Items");
-    const events: string[] = [];
-    const imap = recordingImap(events);
+    // The account's IDLE connection and a running sync pass take both slots of a provider without its own limit.
+    const slot = { accountId: mailboxItemId, accountLimit: 2, host: "mail.test", kind: "work" } as const;
+    const holders = [
+      sharedImapConnectionLimiter.run({ ...slot, kind: "idle" }, () => slotsTaken),
+      sharedImapConnectionLimiter.run(slot, () => slotsTaken),
+    ];
+    try {
+      const transport = createSmtpMailTransport(mailboxItemId, settingsFor("mail.test", 465), credential, () => ({
+        verify: () => Promise.resolve(true),
+        sendMail: () => Promise.resolve({ refusedRecipientCount: 0 }),
+        close: () => {},
+      }));
 
-    await createSentCopySaver(pool, limitedMailboxId, credential, imap.open, recordingLimiter(events))(rawMessage);
-
-    expect(events).toEqual([`limit:${limitedMailboxId}:1`, "imap-open", "imap-append", "imap-close"]);
+      await expect(transport.send({ raw: rawMessage, envelope })).resolves.toEqual({ needsSentCopy: true });
+    } finally {
+      freeSlots();
+      await Promise.all(holders);
+    }
   });
 
-  it("the production factory keeps no copy of a send the outbound policy refuses", async () => {
-    await addSentFolder(pool, mailboxId, "Sent Items");
+  it("the production factory's refused send reports no Sent copy", async () => {
+    await upsertMailServerSettings(pool, mailboxId, {
+      imap: { host: "mail.test", port: 993, security: "tls" },
+      smtp: { host: "mail.test", port: 465, security: "tls" },
+      username,
+    });
     await storeCredential(pool, { itemId: mailboxId, credentialType: "app_password", plaintext: password });
     stub = stubDnsLookup({ "mail.test": ["127.0.0.1"] });
-    const imap = recordingImap([]);
-    const transport = await createMailTransportFactory(pool, { openImapConnection: imap.open }).forMailbox(
-      mailboxId,
-      "imap",
-    );
+    const transport = await createMailTransportFactory(pool).forMailbox(mailboxId, "imap");
 
     const error = await rejectionOf(transport.send({ raw: rawMessage, envelope }));
 
     expect(error).toBeInstanceOf(MailServerUnreachableError);
-    expect(imap.opened).toEqual([]);
   });
 });

@@ -2,12 +2,13 @@ import CoreKit
 import Foundation
 import SwiftUI
 
-/// The rows of each card of the overview, from the loaded content.
+/// The rows of each card of the overview, from the loaded content. Only the Inbox and the mail count anything: what
+/// waits for the person; the Journal has its own tab.
 enum OverviewRows {
 
     // MARK: - Main
     static func main(_ content: OverviewContent) -> [OverviewRow] {
-        communication(content) + planning(content)
+        communication(content) + planning()
     }
 
     private static func communication(_ content: OverviewContent) -> [OverviewRow] {
@@ -41,23 +42,13 @@ enum OverviewRows {
         ]
     }
 
-    private static func planning(_ content: OverviewContent) -> [OverviewRow] {
+    private static func planning() -> [OverviewRow] {
         [
-            OverviewRow(
-                id: "journal",
-                symbol: "book",
-                tile: .tile("#FF9500"),
-                title: Text("overview.row.journal", bundle: .module),
-                trailing: .today,
-                target: .journal(itemId: content.journalTodayItemId),
-                identifier: OverviewIdentifiers.rowPrefix + "journal"
-            ),
             OverviewRow(
                 id: "tasks",
                 symbol: "checkmark.circle",
                 tile: .tile("#007AFF"),
                 title: Text("overview.row.tasks", bundle: .module),
-                trailing: .count(content.tasksToday),
                 target: .tasks,
                 identifier: OverviewIdentifiers.rowPrefix + "tasks"
             ),
@@ -72,21 +63,6 @@ enum OverviewRows {
         ]
     }
 
-    // MARK: - Areas
-    static func areas(_ content: OverviewContent) -> [OverviewRow] {
-        content.areas.map { area in
-            OverviewRow(
-                id: area.id,
-                symbol: OverviewSymbols.area(icon: area.icon),
-                tile: .tile(area.color, fallback: .indigo),
-                title: Text(verbatim: area.name),
-                trailing: area.activeProjectCount > 0 ? .count(area.activeProjectCount) : .none,
-                target: .area(id: area.id),
-                identifier: OverviewIdentifiers.areaPrefix + area.id
-            )
-        }
-    }
-
     // MARK: - Projects
     static func projects(_ content: OverviewContent) -> [OverviewRow] {
         content.projects.map { project in
@@ -95,7 +71,7 @@ enum OverviewRows {
                 symbol: OverviewSymbols.projectFallback,
                 tile: .tile(project.color, fallback: .purple),
                 title: Text(verbatim: project.name),
-                subtitle: subtitle(of: project).map { Text(verbatim: $0) },
+                subtitle: status(project.status).map { Text(verbatim: $0) },
                 target: .project(id: project.id),
                 identifier: OverviewIdentifiers.projectPrefix + project.id
             )
@@ -110,7 +86,6 @@ enum OverviewRows {
                 symbol: OverviewSymbols.collection(icon: collection.icon, ownerModuleId: collection.ownerModuleId),
                 tile: .tile(collection.color),
                 title: Text(verbatim: collection.name),
-                trailing: .count(collection.itemCount),
                 target: .collection(ownerModuleId: collection.ownerModuleId, databaseId: collection.databaseId),
                 identifier: OverviewIdentifiers.collectionPrefix + collection.ownerModuleId
             )
@@ -118,12 +93,7 @@ enum OverviewRows {
     }
 
     // MARK: - Words
-    /// "Work · In progress": the area of a project and its status, whichever the server tells.
-    static func subtitle(of project: OverviewProject) -> String? {
-        let parts = [project.areaName, status(project.status)].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
-    }
-
+    /// The words of a project's status, or nil for a status the app does not know.
     static func status(_ key: String?) -> String? {
         switch key {
         case "inProgress": String(localized: "overview.project.status.inProgress", bundle: .module)

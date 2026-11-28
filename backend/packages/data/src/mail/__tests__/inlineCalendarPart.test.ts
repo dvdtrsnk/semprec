@@ -137,11 +137,16 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
         uidNext: 2,
         exists: 1,
       });
+      vi.spyOn(connection, "search").mockResolvedValue([1]);
       vi.spyOn(connection, "fetch").mockImplementation(async function* () {
         yield {
           seq: 1,
           uid: 1,
-          envelope: { messageId: "<imap-invite@example.test>", from: [{ address: "olga@example.test" }] },
+          envelope: {
+            messageId: "<imap-invite@example.test>",
+            from: [{ address: "olga@example.test" }],
+            date: new Date(),
+          },
           bodyStructure: {
             type: "multipart/alternative",
             childNodes: [
@@ -162,21 +167,19 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
         content: Readable.from([Buffer.from(part === "3" ? INVITATION : "body")]),
       }));
 
-      await withTransaction(pool, (client) =>
-        reconcileImapFolder(client, new ImapFlowMailClient(connection), {
-          folderItemId: setup.folder.id,
-          folderPath: "INBOX",
-          emailsDatabaseId: setup.emailsId,
-          filesDatabaseId: setup.filesId,
-          folderRelationPropertyId: setup.folderRelationPropertyId,
-          attachmentsRelationPropertyId: setup.attachmentsRelationPropertyId,
-          storage,
-          storageKeyPrefix: "test",
-          mailboxItemId: setup.mailbox.id,
-          foldersDatabaseId: setup.foldersId,
-          mailboxFolderRelationPropertyId: setup.mailboxFolderRelationPropertyId,
-        }),
-      );
+      await reconcileImapFolder(pool, new ImapFlowMailClient(connection), {
+        folderItemId: setup.folder.id,
+        folderPath: "INBOX",
+        emailsDatabaseId: setup.emailsId,
+        filesDatabaseId: setup.filesId,
+        folderRelationPropertyId: setup.folderRelationPropertyId,
+        attachmentsRelationPropertyId: setup.attachmentsRelationPropertyId,
+        storage,
+        storageKeyPrefix: "test",
+        mailboxItemId: setup.mailbox.id,
+        foldersDatabaseId: setup.foldersId,
+        mailboxFolderRelationPropertyId: setup.mailboxFolderRelationPropertyId,
+      });
 
       expect(download.mock.calls.map((call) => call[1]).sort()).toEqual(["1", "2", "3"]);
       expect(await storedAttachments()).toEqual([
@@ -228,12 +231,14 @@ describe("an inline text/calendar part of a multipart/alternative message (issue
             ),
         ),
       );
-      const fetched = await new GmailRestClient(async () => "test-token").fetchMessage("gmail-invite-1");
+      const fetched = await new GmailRestClient(async () => "test-token").fetchMessage("gmail-invite-1", "full");
       if (!fetched) throw new Error("The stubbed Gmail message was not returned");
       expect(fetched.message.attachments.map((entry) => entry.contentType)).toEqual(["text/calendar"]);
 
       await withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: setup.emailsId,
           filesDatabaseId: setup.filesId,
           folderRelationPropertyId: setup.folderRelationPropertyId,

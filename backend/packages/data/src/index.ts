@@ -16,6 +16,7 @@ export { readItemPatchChangeMetadata } from "./chokePoint/itemPatchChangeMetadat
 export { assertRuntimeRole, RuntimeRoleAssertionError } from "./db/runtimeRoleAssertion.js";
 export { assertNotDerivedValueWrite } from "./chokePoint/derivedValueGuard.js";
 export { runMigrations } from "./db/migrate.js";
+export { installQueueSchema } from "./db/queueSchema.js";
 export * from "./errors.js";
 export * from "./types.js";
 export { normalizeWallClockTime } from "./timezone.js";
@@ -100,7 +101,6 @@ export * from "./views/filterTree.js";
 export { compileFilterNode, type FilterProperty, type FilterProperties } from "./views/filterCompiler.js";
 export * from "./views/sortSpec.js";
 export { compileSort } from "./views/sortCompiler.js";
-export { expandAreaFilter, resolveDatabaseAreaFilters } from "./views/areaFilter.js";
 export * from "./views/viewConfig.js";
 export * from "./views/mailboxClientViewType.js";
 export { buildFilterProperties } from "./views/filterProperties.js";
@@ -312,8 +312,9 @@ export {
   type MailLiveSyncRoot,
   type MailLiveSyncRootOptions,
 } from "./mail/mailLiveSyncRoot.js";
+export { bindMailboxServiceLiveSyncStop } from "./mail/mailboxServiceHooks.js";
 export { resolveMailModuleIds, type MailModuleIds } from "./mail/mailModuleIds.js";
-// The Gmail watch and Graph subscription owners, hosted by semprec-api.
+// The Gmail watch and Graph subscription owners, hosted by alldots-api.
 export {
   createGmailPubSubDispatcher,
   createGmailWatchLifecycleFactory,
@@ -334,6 +335,7 @@ export {
   type MailServerSettingsInput,
 } from "./mail/mailServerSettingsStore.js";
 export {
+  classifyImapConnectFailure,
   createSmtpTransporter,
   openImapConnection,
   openImapFlow,
@@ -355,6 +357,7 @@ export {
   type ImapIdleFlowOptions,
 } from "./mail/imapIdleClient.js";
 export { imapConnectionLimitForProvider, sharedImapConnectionLimiter } from "./mail/imapConnectionLimiter.js";
+export { sharedImapSessionPool, type ImapSessionPool } from "./mail/imapSessionPool.js";
 export { getDecryptedCredential } from "./credentials/externalCredentialsStore.js";
 export {
   MailConnectionLimitError,
@@ -373,6 +376,7 @@ export {
 } from "./mail/mailCredentialVerification.js";
 export { isImapConnectionLimitError } from "./mail/imapFlowClient.js";
 export type { ImapMailClient } from "./mail/imapReconcile.js";
+export { recordPendingSentCopy, type PendingSentCopy } from "./mail/mailSentCopies.js";
 export {
   createMailTransportFactory,
   type MailTransport,
@@ -406,6 +410,8 @@ export { GOOGLE_TOKEN_URL, MICROSOFT_TOKEN_URL } from "./mail/oauthTokenExchange
 export { GmailRestClient } from "./mail/gmailRestClient.js";
 export { GraphRestClient } from "./mail/graphRestClient.js";
 export type { MailSyncAdapterFactory } from "./mail/mailSyncJob.js";
+export type { MailContentProviders, MailProviderAccess } from "./mail/mailMessageContent.js";
+export { bindMailAgentRemoteSearch } from "./mail/mailRemoteSearch.js";
 export type { MailSendAdapterFactory } from "./mail/send.js";
 export {
   createImapMailFlagWritebackAdapter,
@@ -527,6 +533,7 @@ export { createTaskSeriesPatchRouteHandler } from "./tasks/taskSeriesRoutes.js";
 export { createTaskOccurrenceMaterializeRouteHandler } from "./tasks/taskOccurrenceRoutes.js";
 export {
   createTaskHostEventPutRouteHandler,
+  createTaskCompleteInEventRouteHandler,
   createTaskHostEventRemoveRouteHandler,
   createTaskHostEventsClearRouteHandler,
 } from "./tasks/taskHostEventRouteHandlers.js";
@@ -625,7 +632,6 @@ export {
 } from "./calendar/eventParticipantsRouteHandlers.js";
 export { duplicateCalendarItem } from "./calendar/duplicateCalendarItem.js";
 export { createDuplicateCalendarItemRouteHandler } from "./calendar/duplicateCalendarItemRouteHandler.js";
-export { createAreaOverviewRouteHandler } from "./areas/areaOverviewRouteHandler.js";
 export { createEventInCalendar } from "./calendar/defaultCalendarCreateHook.js";
 export { setThreadTaskPeopleDelivery, type ThreadTaskPeopleDelivery } from "./mail/threadTaskPeople.js";
 export {
@@ -636,6 +642,8 @@ export {
   type EventInvitationSnapshot,
 } from "./calendar/eventInvitationJob.js";
 export { setInvitationReplyDelivery, type InvitationReplyDelivery } from "./calendar/invitationReplyJob.js";
+export * from "./calendar/sync/adapters/composition.js";
+export * from "./calendar/sync/calendarPushComposition.js";
 export {
   eventRecurrenceOccursOn,
   parseEventRecurrenceRule,
@@ -886,7 +894,6 @@ export {
 } from "./semp/sempThreadsListStore.js";
 export { enqueueSempMessage } from "./semp/sempMessageQueue.js";
 export * from "./semp/sempTurnCancellation.js";
-export { reindexSempMessageSearch, type SempMessageSearchReindexOptions } from "./semp/sempMessageSearch.js";
 export { validateSempMessageRefs } from "./semp/sempMessageRefs.js";
 export { readSempRefContext, type SempRefContext, type SempRefReadOptions } from "./semp/sempRefReadContext.js";
 export { listSleepNightReadItemIds } from "./semp/sempSleepNightContext.js";
@@ -923,6 +930,7 @@ export {
   createMailOauthCompleteRouteHandler,
   createMailOauthStartRouteHandler,
 } from "./mail/mailOauthRouteHandlers.js";
+export { resolveMailOauthRedirectUrl } from "./mail/mailOauthStatesStore.js";
 export { createMailboxPasswordConnectRouteHandler } from "./mail/mailboxPasswordRouteHandlers.js";
 export { createMailSummaryRouteHandler } from "./mail/mailSummary.js";
 export { createMailFolderListRouteHandler } from "./mail/mailFolderList.js";

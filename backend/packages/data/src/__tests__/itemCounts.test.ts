@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import type { ItemCountEntryInput } from "../chokePoint/itemReads.js";
@@ -78,13 +78,13 @@ async function notFoundAnswer(databaseId: string, entries: ItemCountEntryInput[]
 describe("choke-point countItemsBatch (issue #1709)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:verify-runtime-role", () =>
       pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(pool);
     resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
   });
@@ -272,13 +272,13 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
       expect(await count(entries)).toEqual(live);
     }));
 
-  it("groups active projects by area: one count per area that occurs, the projects without one, and the total", () =>
+  it("groups active projects by company: one count per company that occurs, the projects without one, and the total", () =>
     runInTenant(tenant, async () => {
       const projects = await database("projects");
-      const work = await make("areas", { name: "Work" });
-      const home = await make("areas", { name: "Home" });
-      // An area no active project belongs to gets no group.
-      const unused = await make("areas", { name: "Unused" });
+      const work = await make("companies", { name: "Work" });
+      const home = await make("companies", { name: "Home" });
+      // A company no active project belongs to gets no group.
+      const unused = await make("companies", { name: "Unused" });
       const active = [
         await make("projects", { name: "Launch", status: "inProgress" }),
         await make("projects", { name: "Hiring", status: "longTerm" }),
@@ -286,17 +286,17 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
         await make("projects", { name: "Someday", status: "inProgress" }),
       ];
       const finished = await make("projects", { name: "Old", status: "done" });
-      await link(active[0]!, "area", work);
-      await link(active[1]!, "area", work);
-      await link(active[2]!, "area", home);
-      await link(finished, "area", unused);
+      await link(active[0]!, "company", work);
+      await link(active[1]!, "company", work);
+      await link(active[2]!, "company", home);
+      await link(finished, "company", unused);
 
       const [answer] = await count([
         {
           databaseId: projects.id,
           collection: true,
           filter: { type: "in", property: "status", value: ["inProgress", "longTerm"] },
-          groupBy: "area",
+          groupBy: "company",
         },
       ]);
 
@@ -599,7 +599,7 @@ describe("choke-point countItemsBatch (issue #1709)", () => {
       });
     };
     // A dedicated pool, so no instrumented client goes back into the pool the other tests use.
-    const observed = await createRuntimeRolePool(admin, "semprec_data");
+    const observed = await createRuntimeRolePool(admin, "alldots_data");
     try {
       await runInTenant(tenant, async () => {
         const people = await database("people");

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 
 /**
  * Cross-process correlation context. `traceId` is minted at whichever entry point starts a flow (HTTP/WS request,
- * scheduler tick, agent run, mail-sync cycle) and carried via `AsyncLocalStorage` in-process, the `@semprec/queue`
+ * scheduler tick, agent run, mail-sync cycle) and carried via `AsyncLocalStorage` in-process, the `@alldots/queue`
  * envelope across the queue, and the `x-trace-id` header to the AI gateway. Other fields are bound as they become
  * known.
  */

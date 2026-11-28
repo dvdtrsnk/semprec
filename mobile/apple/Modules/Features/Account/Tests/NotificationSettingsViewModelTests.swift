@@ -9,7 +9,7 @@ final class NotificationSettingsViewModelTests: XCTestCase {
     @MainActor
     func testStartsFromTheCurrentStateAndRepublishesChanges() async throws {
         let model = ScriptedNotificationSettingsScreenModel(state: NotificationSettingsState())
-        let viewModel = NotificationSettingsViewModel(model: model)
+        let viewModel = NotificationSettingsViewModel(model: model, router: RouterSpy())
         XCTAssertEqual(viewModel.state.phase, .loading)
         let observer = Task { await viewModel.observe() }
         defer { observer.cancel() }
@@ -22,15 +22,36 @@ final class NotificationSettingsViewModelTests: XCTestCase {
     @MainActor
     func testIntentsAreForwardedToTheModel() {
         let model = ScriptedNotificationSettingsScreenModel(state: NotificationSettingsState())
-        let viewModel = NotificationSettingsViewModel(model: model)
+        let viewModel = NotificationSettingsViewModel(model: model, router: RouterSpy())
         viewModel.retry()
         viewModel.set(.badgeInbox, enabled: true)
+        viewModel.set(.calendarChanges, enabled: true)
         viewModel.setProblemsLevel(.all)
         viewModel.dismissFailure()
         XCTAssertEqual(
             model.actions,
-            [.retry, .set(.badgeInbox, enabled: true), .setProblemsLevel(.all), .dismissFailure]
+            [
+                .retry,
+                .set(.badgeInbox, enabled: true),
+                .set(.calendarChanges, enabled: true),
+                .setProblemsLevel(.all),
+                .dismissFailure
+            ]
         )
+    }
+
+    @MainActor
+    func testAPermissionRequestReachesTheRouterOnceAlsoWhenRaisedBeforeObservation() async throws {
+        let model = ScriptedNotificationSettingsScreenModel(state: NotificationSettingsState())
+        let router = RouterSpy()
+        let viewModel = NotificationSettingsViewModel(model: model, router: router)
+        model.emit(.requestPermission)
+        let observer = Task { await viewModel.observe() }
+        defer { observer.cancel() }
+        try await eventually { router.permissionRequests == 1 }
+        model.emit(.requestPermission)
+        try await eventually { router.permissionRequests == 2 }
+        XCTAssertEqual(router.pages, [])
     }
 
     @MainActor
@@ -40,7 +61,7 @@ final class NotificationSettingsViewModelTests: XCTestCase {
         do {
             let model = ScriptedNotificationSettingsScreenModel(state: NotificationSettingsState())
             weakModel = model
-            viewModel = NotificationSettingsViewModel(model: model)
+            viewModel = NotificationSettingsViewModel(model: model, router: RouterSpy())
         }
         XCTAssertNotNil(weakModel)
         viewModel = nil
@@ -53,6 +74,7 @@ final class NotificationSettingsViewModelTests: XCTestCase {
             approvals: false,
             invites: false,
             reminders: false,
+            calendarChanges: false,
             problemsSummary: false,
             badgeApprovals: false,
             badgeInvites: false,
@@ -63,6 +85,9 @@ final class NotificationSettingsViewModelTests: XCTestCase {
         }
         choices.badgeInvites = true
         XCTAssertEqual(AccountNotificationSwitch.allCases.filter(choices.isOn), [.badgeInvites])
+        choices.badgeInvites = false
+        choices.calendarChanges = true
+        XCTAssertEqual(AccountNotificationSwitch.allCases.filter(choices.isOn), [.calendarChanges])
     }
 
     // MARK: - Helpers

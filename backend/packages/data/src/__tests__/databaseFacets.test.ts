@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -35,15 +35,6 @@ async function link(item: ItemRow, key: string, target: ItemRow): Promise<void> 
 
 function facets(input: DatabaseFacetsInput, options?: DatabaseFacetsOptions) {
   return cp.getDatabaseFacets(input, options);
-}
-
-/** The area every tenant is seeded with: the one that carries `systemActive`. It has no color. */
-async function seededArea(): Promise<ItemRow> {
-  const areas = await database("areas");
-  const { items } = await cp.listItems(areas.id, { limit: 200 });
-  const [seeded, ...others] = items.filter((item) => item.properties.systemActive === true);
-  if (!seeded || others.length > 0) throw new Error("Expected exactly the one seeded area");
-  return seeded;
 }
 
 function byCountThenId(values: DatabaseFacetValue[]): DatabaseFacetValue[] {
@@ -83,13 +74,13 @@ function projectStatuses(counts: [number, number, number, number]): DatabaseFace
 describe("choke-point getDatabaseFacets (issue #1759)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:verify-runtime-role", () =>
       pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(pool);
   });
 
@@ -105,11 +96,11 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
   });
 
   async function seedProjects() {
-    const work = await make("areas", { name: "Work", color: "#007AFF" });
-    const home = await make("areas", { name: "Home" });
-    const project = async (name: string, status: string, area?: ItemRow) => {
+    const work = await make("companies", { name: "Work" });
+    const home = await make("companies", { name: "Home" });
+    const project = async (name: string, status: string, company?: ItemRow) => {
       const created = await make("projects", { name, status });
-      if (area) await link(created, "area", area);
+      if (company) await link(created, "company", company);
       return created;
     };
     await project("Launch", "inProgress", work);
@@ -121,10 +112,10 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
     return { projects: await database("projects"), work, home };
   }
 
-  it("lists every status option in option order with its count inside the area, also one no project holds, whatever the status condition says", () =>
+  it("lists every status option in option order with its count inside the company, also one no project holds, whatever the status condition says", () =>
     runInTenant(tenant, async () => {
       const { projects, work } = await seedProjects();
-      const inWork = { type: "relation_contains", property: "area", value: work.id };
+      const inWork = { type: "relation_contains", property: "company", value: work.id };
       const expected = [
         { property: "status", all: 4, values: [...projectStatuses([2, 1, 1, 0]), { value: null, count: 0 }] },
       ];
@@ -144,36 +135,31 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       }
     }));
 
-  it("removes for each facet of one call only the conditions on that facet, and lists every area for the area facet", () =>
+  it("removes for each facet of one call only the conditions on that facet, and lists only the companies projects have", () =>
     runInTenant(tenant, async () => {
       const { projects, work, home } = await seedProjects();
-      const unused = await make("areas", { name: "Unused", color: "#34C759" });
-      const seeded = await seededArea();
+      await make("companies", { name: "Unused" });
       const filter = {
         type: "and",
         nodes: [
           { type: "is_empty", property: "systemActive" },
           { type: "equals", property: "status", value: "inProgress" },
-          { type: "relation_contains", property: "area", value: work.id },
+          { type: "relation_contains", property: "company", value: work.id },
         ],
       };
 
-      const answer = await facets({ databaseId: projects.id, filter, facets: ["status", "area"] });
+      const answer = await facets({ databaseId: projects.id, filter, facets: ["status", "company"] });
 
       expect(answer).toEqual([
-        // Inside Work, whatever the status: the area condition stays and the status condition goes.
+        // Inside Work, whatever the status: the company condition stays and the status condition goes.
         { property: "status", all: 4, values: [...projectStatuses([2, 1, 1, 0]), { value: null, count: 0 }] },
-        // In progress, whatever the area: the status condition stays and the area condition goes.
+        // In progress, whatever the company: the status condition stays and the company condition goes.
         {
-          property: "area",
+          property: "company",
           all: 4,
           values: [
-            ...byCountThenId([
-              { value: work.id, label: "Work", color: "#007AFF", count: 2 },
-              { value: home.id, label: "Home", count: 1 },
-              { value: unused.id, label: "Unused", color: "#34C759", count: 0 },
-              { value: seeded.id, label: String(seeded.properties.name), count: 0 },
-            ]),
+            { value: work.id, label: "Work", count: 2 },
+            { value: home.id, label: "Home", count: 1 },
             { value: null, count: 1 },
           ],
         },
@@ -184,7 +170,7 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
     runInTenant(tenant, async () => {
       const { projects, work } = await seedProjects();
       const inProgress = { type: "equals", property: "status", value: "inProgress" };
-      const inWork = { type: "relation_contains", property: "area", value: work.id };
+      const inWork = { type: "relation_contains", property: "company", value: work.id };
       const insideWork = [
         { property: "status", all: 4, values: [...projectStatuses([2, 1, 1, 0]), { value: null, count: 0 }] },
       ];
@@ -196,7 +182,7 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
           facets: ["status"],
         }),
       ).toEqual(insideWork);
-      // Without the nested status condition the inner `and` keeps the area condition; without both it is gone.
+      // Without the nested status condition the inner `and` keeps the company condition; without both it is gone.
       expect(
         await facets({
           databaseId: projects.id,
@@ -218,19 +204,13 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       expect(withoutFilter?.all).toBeGreaterThan(6);
     }));
 
-  it("lists only the projects tasks have, each with the color of its area, and the tasks without a live project", () =>
+  it("lists only the projects tasks have, each with its own color, and the tasks without a live project", () =>
     runInTenant(tenant, async () => {
       const tasks = await database("tasks");
-      const work = await make("areas", { name: "Work", color: "#007AFF" });
-      const home = await make("areas", { name: "Home", color: "#34C759" });
-      // The project's own color differs from its area's, so the answer shows which one is returned.
       const launch = await make("projects", { name: "Launch", color: "#FF3B30" });
-      const garden = await make("projects", { name: "Garden" });
-      const idle = await make("projects", { name: "Idle" });
-      const loose = await make("projects", { name: "Loose", color: "#FF3B30" });
-      await link(launch, "area", work);
-      await link(garden, "area", home);
-      await link(idle, "area", work);
+      const garden = await make("projects", { name: "Garden", color: "#34C759" });
+      await make("projects", { name: "Idle", color: "#007AFF" });
+      const loose = await make("projects", { name: "Loose" });
       const task = async (name: string, project?: ItemRow) => {
         const created = await make("tasks", { name });
         if (project) await link(created, "project", project);
@@ -250,10 +230,10 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
           property: "project",
           all: 5,
           values: [
-            { value: launch.id, label: "Launch", color: "#007AFF", count: 2 },
+            { value: launch.id, label: "Launch", color: "#FF3B30", count: 2 },
             ...byCountThenId([
               { value: garden.id, label: "Garden", color: "#34C759", count: 1 },
-              // A project without an area has no area color, and its own color is not used instead.
+              // A project without a color of its own carries none.
               { value: loose.id, label: "Loose", count: 1 },
             ]),
             { value: null, count: 1 },
@@ -268,30 +248,29 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
           property: "project",
           all: 5,
           values: [
-            { value: launch.id, label: "Launch", color: "#007AFF", count: 2 },
+            { value: launch.id, label: "Launch", color: "#FF3B30", count: 2 },
             { value: loose.id, label: "Loose", count: 1 },
             { value: null, count: 2 },
           ],
         },
       ]);
 
-      // An area in the trash gives its projects no color.
-      await cp.softDeleteItem(work.databaseId, work.id);
-      const [afterArea] = await facets(request);
-      expect(afterArea?.values[0]).toEqual({ value: launch.id, label: "Launch", count: 2 });
+      // The color follows the project's own color when it changes.
+      await cp.updateItem({ databaseId: launch.databaseId, itemId: launch.id, propertiesPatch: { color: "#AF52DE" } });
+      const [afterRecolor] = await facets(request);
+      expect(afterRecolor?.values[0]).toEqual({ value: launch.id, label: "Launch", color: "#AF52DE", count: 2 });
     }));
 
-  it("counts the tasks of each area through their project over every area, and the open ones, under the filter", () =>
+  it("counts the tasks of each company through their project, and the open ones, under the filter", () =>
     runInTenant(tenant, async () => {
       const tasks = await database("tasks");
-      const work = await make("areas", { name: "Work", color: "#007AFF" });
-      const home = await make("areas", { name: "Home", color: "#34C759" });
-      const unused = await make("areas", { name: "Unused" });
-      const seeded = await seededArea();
+      const work = await make("companies", { name: "Work" });
+      const home = await make("companies", { name: "Home" });
+      await make("companies", { name: "Unused" });
       const launch = await make("projects", { name: "Launch" });
       const garden = await make("projects", { name: "Garden" });
-      await link(launch, "area", work);
-      await link(garden, "area", home);
+      await link(launch, "company", work);
+      await link(garden, "company", home);
       const task = async (name: string, properties: Record<string, unknown>, project?: ItemRow) => {
         const created = await make("tasks", { name, ...properties });
         if (project) await link(created, "project", project);
@@ -305,22 +284,18 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       const open = { type: "equals", property: "status", value: "notDone" };
       const expected = [
         {
-          path: ["project", "area"],
+          path: ["project", "company"],
           all: 4,
           open: 3,
           values: [
-            ...byCountThenId([
-              { value: work.id, label: "Work", color: "#007AFF", count: 2 },
-              { value: home.id, label: "Home", color: "#34C759", count: 1 },
-              { value: unused.id, label: "Unused", count: 0 },
-              { value: seeded.id, label: String(seeded.properties.name), count: 0 },
-            ]),
+            { value: work.id, label: "Work", count: 2 },
+            { value: home.id, label: "Home", count: 1 },
             { value: null, count: 1 },
           ],
         },
       ];
 
-      const path: [string, string] = ["project", "area"];
+      const path: [string, string] = ["project", "company"];
       expect(await facets({ databaseId: tasks.id, filter: flagged, facets: [{ path }], extra: { open } })).toEqual(
         expected,
       );
@@ -370,8 +345,8 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       await make("tasks", { name: "Call", status: "done" });
       const done = { type: "equals", property: "status", value: "done" };
       const flagged = { type: "equals", property: "flagged", value: true };
-      const path: [string, string] = ["project", "area"];
-      const inArea = { type: "relation_path_contains", path, value: randomUUID() };
+      const path: [string, string] = ["project", "company"];
+      const inCompany = { type: "relation_path_contains", path, value: randomUUID() };
       const refusedCases: Array<{ filter: unknown; facet: string | { path: [string, string] } }> = [
         { filter: { type: "or", nodes: [done, flagged] }, facet: "status" },
         { filter: { type: "not", node: done }, facet: "status" },
@@ -379,8 +354,8 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
           filter: { type: "and", nodes: [flagged, { type: "not", node: { type: "and", nodes: [done] } }] },
           facet: "status",
         },
-        { filter: { type: "or", nodes: [inArea, flagged] }, facet: { path } },
-        { filter: { type: "not", node: inArea }, facet: { path } },
+        { filter: { type: "or", nodes: [inCompany, flagged] }, facet: { path } },
+        { filter: { type: "not", node: inCompany }, facet: { path } },
       ];
       for (const { filter, facet } of refusedCases) {
         const refused = facets({ databaseId: tasks.id, filter, facets: ["date", facet] });
@@ -407,7 +382,7 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       // A path condition is not a condition on the property facet of its first relation.
       const [pathUnderOr] = await facets({
         databaseId: tasks.id,
-        filter: { type: "or", nodes: [inArea, done] },
+        filter: { type: "or", nodes: [inCompany, done] },
         facets: ["project"],
       });
       expect(pathUnderOr).toMatchObject({ property: "project", all: 1 });
@@ -649,7 +624,7 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
 
     await runInTenant(tenant, async () => {
       const unknown = randomUUID();
-      const path: [string, string] = ["project", "area"];
+      const path: [string, string] = ["project", "company"];
       const requests: Array<Omit<DatabaseFacetsInput, "databaseId">> = [
         { facets: ["status"] },
         { facets: ["project", { path }], filter: { type: "equals", property: "status", value: "done" } },
@@ -669,27 +644,26 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
     });
   });
 
-  it("lists the areas and the projects of the caller's tenant only", async () => {
+  it("lists the companies and the projects of the caller's tenant only", async () => {
     const otherTenant = await createTestTenant(admin);
     const foreign = await runInTenant(otherTenant, async () => {
       await seedSystem(pool);
-      const area = await make("areas", { name: "Foreign area" });
+      const company = await make("companies", { name: "Foreign company" });
       const project = await make("projects", { name: "Foreign project" });
-      await link(project, "area", area);
+      await link(project, "company", company);
       const task = await make("tasks", { name: "Foreign task" });
       await link(task, "project", project);
-      return { area, project, seeded: await seededArea() };
+      return { company, project };
     });
 
     await runInTenant(tenant, async () => {
       const tasks = await database("tasks");
-      const work = await make("areas", { name: "Work" });
+      const work = await make("companies", { name: "Work" });
       const launch = await make("projects", { name: "Launch" });
-      await link(launch, "area", work);
+      await link(launch, "company", work);
       await link(await make("tasks", { name: "Announce" }), "project", launch);
-      const seeded = await seededArea();
 
-      const answer = await facets({ databaseId: tasks.id, facets: ["project", { path: ["project", "area"] }] });
+      const answer = await facets({ databaseId: tasks.id, facets: ["project", { path: ["project", "company"] }] });
 
       expect(answer).toEqual([
         {
@@ -701,17 +675,16 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
           ],
         },
         {
-          path: ["project", "area"],
+          path: ["project", "company"],
           all: 1,
           values: [
             { value: work.id, label: "Work", count: 1 },
-            { value: seeded.id, label: String(seeded.properties.name), count: 0 },
             { value: null, count: 0 },
           ],
         },
       ]);
       const text = JSON.stringify(answer);
-      for (const id of [foreign.area.id, foreign.project.id, foreign.seeded.id]) expect(text).not.toContain(id);
+      for (const id of [foreign.company.id, foreign.project.id]) expect(text).not.toContain(id);
     });
   });
 
@@ -959,109 +932,79 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
   it("lists the twenty related items most items have, counts an item in each of its targets, and takes label and color from the target", () =>
     runInTenant(tenant, async () => {
       const gifts = await cp.createDatabase({ name: "Gifts" });
-      const areas = await database("areas");
-      // Named like the relation the Projects area filter takes the area through, in a database that declares none.
-      const { property: forArea } = await cp.createRelationProperty({
+      const projects = await database("projects");
+      const { property: forProject } = await cp.createRelationProperty({
         sourceDatabaseId: gifts.id,
-        key: "area",
-        name: "Area",
-        targetDatabaseId: areas.id,
+        key: "project",
+        name: "Project",
+        targetDatabaseId: projects.id,
       });
       const targets: ItemRow[] = [];
       for (let index = 0; index < 22; index += 1) {
-        targets.push(await make("areas", { name: `Area ${index}`, ...(index === 0 ? { color: "#AF52DE" } : {}) }));
+        targets.push(
+          await make("projects", { name: `Project ${index}`, ...(index === 0 ? { color: "#AF52DE" } : {}) }),
+        );
       }
       const first = targets[0];
       const second = targets[1];
-      if (!first || !second) throw new Error("Expected the created areas");
+      if (!first || !second) throw new Error("Expected the created projects");
       for (const target of targets) {
         const gift = await cp.createItem({ databaseId: gifts.id, properties: {} });
-        await cp.createRelation({ relationPropertyId: forArea.id, callerItemId: gift.id, targetItemId: target.id });
+        await cp.createRelation({ relationPropertyId: forProject.id, callerItemId: gift.id, targetItemId: target.id });
       }
       const shared = await cp.createItem({ databaseId: gifts.id, properties: {} });
       for (const target of [first, second]) {
-        await cp.createRelation({ relationPropertyId: forArea.id, callerItemId: shared.id, targetItemId: target.id });
+        await cp.createRelation({
+          relationPropertyId: forProject.id,
+          callerItemId: shared.id,
+          targetItemId: target.id,
+        });
       }
       await cp.createItem({ databaseId: gifts.id, properties: {} });
 
-      const [answer] = await facets({ databaseId: gifts.id, facets: ["area"] });
+      const [answer] = await facets({ databaseId: gifts.id, facets: ["project"] });
 
       const others = byCountThenId(
         targets.slice(2).map((target) => ({ value: target.id, label: String(target.properties.name), count: 1 })),
       );
       expect(answer).toEqual({
-        property: "area",
+        property: "project",
         all: 24,
         values: [
           ...byCountThenId([
-            { value: first.id, label: "Area 0", color: "#AF52DE", count: 2 },
-            { value: second.id, label: "Area 1", count: 2 },
+            { value: first.id, label: "Project 0", color: "#AF52DE", count: 2 },
+            { value: second.id, label: "Project 1", count: 2 },
           ]),
-          // 18 of the 20 areas one gift has; a user database declares no area filter, so no area is listed with 0.
+          // 18 of the 20 projects one gift has; a project no gift has is not listed.
           ...others.slice(0, 18),
           { value: null, count: 1 },
         ],
       });
     }));
 
-  it("lists every area for each relation and path the declared area filter takes the area through, and only occurring items for another relation", () =>
-    runInTenant(tenant, async () => {
-      // Health records declare: the area of one of their projects, or, without a project, their own area.
-      const records = await database("healthRecords");
-      const work = await make("areas", { name: "Work", color: "#007AFF" });
-      const seeded = await seededArea();
-      const launch = await make("projects", { name: "Launch" });
-      await make("projects", { name: "Idle" });
-      await link(launch, "area", work);
-      const throughProject = await make("healthRecords", { name: "Blood test" });
-      await link(throughProject, "projects", launch);
-      const ownArea = await make("healthRecords", { name: "Checkup" });
-      await link(ownArea, "area", work);
-      await make("healthRecords", { name: "Loose" });
-      const everyArea = (count: number) => [
-        { value: work.id, label: "Work", color: "#007AFF", count },
-        { value: seeded.id, label: String(seeded.properties.name), count: 0 },
-        { value: null, count: 2 },
-      ];
-
-      const path: [string, string] = ["projects", "area"];
-      expect(await facets({ databaseId: records.id, facets: ["area", { path }, "projects"] })).toEqual([
-        { property: "area", all: 3, values: everyArea(1) },
-        { path, all: 3, values: everyArea(1) },
-        // The declaration names `projects` only to test that it is empty: no project is listed that no record has.
-        {
-          property: "projects",
-          all: 3,
-          values: [
-            { value: launch.id, label: "Launch", color: "#007AFF", count: 1 },
-            { value: null, count: 2 },
-          ],
-        },
-      ]);
-    }));
-
-  it("lists no area at all while the database of the areas is archived", () =>
+  it("lists no company at all while the database of the companies is archived", () =>
     runInTenant(tenant, async () => {
       const tasks = await database("tasks");
-      const areas = await database("areas");
-      const work = await make("areas", { name: "Work" });
+      const companies = await database("companies");
+      const work = await make("companies", { name: "Work" });
       const launch = await make("projects", { name: "Launch" });
-      await link(launch, "area", work);
+      await link(launch, "company", work);
       await link(await make("tasks", { name: "Announce" }), "project", launch);
-      const path: [string, string] = ["project", "area"];
+      const path: [string, string] = ["project", "company"];
       const request = { databaseId: tasks.id, facets: [{ path }] };
       const [live] = await facets(request);
-      expect(live?.values.map((choice) => choice.count)).toEqual([1, 0, 0]);
+      expect(live?.values.map((choice) => choice.count)).toEqual([1, 0]);
 
+      // Raw SQL: archiving a system database is not a production write.
       const archived = await withTransaction(pool, (client) =>
-        client.query("UPDATE databases SET archived_at = now() WHERE id = $1", [areas.id]),
+        client.query("UPDATE databases SET archived_at = now() WHERE id = $1", [companies.id]),
       );
       expect(archived.rowCount).toBe(1);
 
       expect(await facets(request)).toEqual([{ path, all: 1, values: [{ value: null, count: 1 }] }]);
     }));
 
-  it("lists only occurring items for a relation of a system database that declares no area filter, without a color the target does not have", () =>
+  it("lists only occurring items for a relation of a system database, without a color the target does not have", () =>
     runInTenant(tenant, async () => {
       const people = await database("people");
       const acme = await make("companies", { name: "Acme" });
@@ -1072,30 +1015,6 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       expect(await facets({ databaseId: people.id, facets: ["companies"] })).toEqual([
         {
           property: "companies",
-          all: 2,
-          values: [
-            { value: acme.id, label: "Acme", count: 1 },
-            { value: null, count: 1 },
-          ],
-        },
-      ]);
-    }));
-
-  it("lists only occurring items for a path the declared area filter does not take the area through", () =>
-    runInTenant(tenant, async () => {
-      // Tasks declare the path through `project` to `area`; the path through `project` to `company` is another one.
-      const tasks = await database("tasks");
-      const acme = await make("companies", { name: "Acme" });
-      await make("companies", { name: "Unused" });
-      const launch = await make("projects", { name: "Launch" });
-      await link(launch, "company", acme);
-      await link(await make("tasks", { name: "Announce" }), "project", launch);
-      await make("tasks", { name: "Call" });
-      const path: [string, string] = ["project", "company"];
-
-      expect(await facets({ databaseId: tasks.id, facets: [{ path }] })).toEqual([
-        {
-          path,
           all: 2,
           values: [
             { value: acme.id, label: "Acme", count: 1 },
@@ -1274,7 +1193,7 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
       });
     };
     // A dedicated pool, so no instrumented client goes back into the pool the other tests use.
-    const observed = await createRuntimeRolePool(admin, "semprec_data");
+    const observed = await createRuntimeRolePool(admin, "alldots_data");
     try {
       await runInTenant(tenant, async () => {
         const tasks = await database("tasks");
@@ -1284,7 +1203,7 @@ describe("choke-point getDatabaseFacets (issue #1759)", () => {
         const requested: Array<string | { path: [string, string] }> = [
           "status",
           "project",
-          { path: ["project", "area"] },
+          { path: ["project", "company"] },
           "date",
           "flagged",
           "seriesId",

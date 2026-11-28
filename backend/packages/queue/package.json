@@ -1,5 +1,5 @@
 {
-  "name": "@semprec/queue",
+  "name": "@alldots/queue",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -17,7 +17,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@semprec/shared": "workspace:*",
+    "@alldots/shared": "workspace:*",
     "graphile-worker": "^0.17.3",
     "pg": "^8.23.0",
     "zod": "^4.1.11"

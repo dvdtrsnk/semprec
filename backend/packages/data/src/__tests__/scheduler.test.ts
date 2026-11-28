@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runOnce } from "@semprec/queue";
-import { getTraceContext, runInTenant } from "@semprec/shared";
+import { runOnce } from "@alldots/queue";
+import { getTraceContext, runInTenant } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -96,7 +96,7 @@ function poolWithConnect(connect: (target: Pool) => Promise<PoolClient>): Pool {
   });
 }
 
-async function getSemprecProjectId(): Promise<string> {
+async function getAlldotsProjectId(): Promise<string> {
   const { rows } = await pool.query<{ id: string }>(
     `SELECT i.id FROM items i JOIN databases d ON d.id = i.database_id WHERE d.owner_module_id = 'projects' LIMIT 1`,
   );
@@ -108,7 +108,7 @@ async function heartbeatWith(
   input: { rule: unknown; actionId?: string; name?: string; actionConfig?: Record<string, unknown> },
   moduleRuleKinds?: HeartbeatRuleKindRegistry,
 ) {
-  const projectItemId = await getSemprecProjectId();
+  const projectItemId = await getAlldotsProjectId();
   return withTransaction(pool, (client) =>
     createHeartbeat(
       client,
@@ -412,7 +412,7 @@ describe("scheduler", () => {
     const heartbeat = await agentHeartbeat({ kind: "interval", minutes: 5 });
     const before = await read(heartbeat.id);
     const invokingRun = await createAgentRun(pool, {
-      projectItemId: await getSemprecProjectId(),
+      projectItemId: await getAlldotsProjectId(),
       triggeredBy: "user",
       task: "trigger it",
     });
@@ -922,7 +922,7 @@ describe("scheduler", () => {
          SELECT $1, 'Bulk heartbeat ' || gs, $2::jsonb, 'noop', true, now() - interval '1 minute'
          FROM generate_series(1, $3) AS gs
          RETURNING id`,
-        [await getSemprecProjectId(), JSON.stringify(DAILY), count],
+        [await getAlldotsProjectId(), JSON.stringify(DAILY), count],
       );
       return rows.map((row) => row.id);
     }
@@ -1055,7 +1055,7 @@ describe("heartbeat_error recipient in a tenant", () => {
 
   beforeAll(async () => {
     adminPool = getTestPool();
-    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "semprec_data"));
+    runtimePool = await runInTenant(getTenantZeroId(), () => createRuntimeRolePool(adminPool, "alldots_data"));
   });
 
   beforeEach(async () => {

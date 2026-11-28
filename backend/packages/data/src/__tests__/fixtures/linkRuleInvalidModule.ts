@@ -1,4 +1,4 @@
-import type { ModuleManifest } from "@semprec/module-registry";
+import type { ModuleManifest } from "@alldots/module-registry";
 
 export const manifest: ModuleManifest = {
   id: "fixtureLinkRuleInvalid",
@@ -12,27 +12,27 @@ export const manifest: ModuleManifest = {
   linkRules: [
     {
       key: "fixtureInvalid.misspelledSource",
-      source: { databaseKey: "areas", propertyKey: "nme" },
+      source: { databaseKey: "healthRecords", propertyKey: "nme" },
       target: { databaseKey: "projects", propertyKey: "name" },
-      via: { databaseKey: "projects", relationKey: "area" },
+      via: { databaseKey: "projects", relationKey: "healthRecords" },
     },
     {
       key: "fixtureInvalid.misspelledVia",
-      source: { databaseKey: "areas", propertyKey: "name" },
+      source: { databaseKey: "healthRecords", propertyKey: "name" },
       target: { databaseKey: "projects", propertyKey: "name" },
-      via: { databaseKey: "projects", relationKey: "areaa" },
+      via: { databaseKey: "projects", relationKey: "healthRecordss" },
     },
     {
       key: "fixtureInvalid.viaNotRelation",
-      source: { databaseKey: "areas", propertyKey: "name" },
+      source: { databaseKey: "healthRecords", propertyKey: "name" },
       target: { databaseKey: "projects", propertyKey: "name" },
       via: { databaseKey: "projects", relationKey: "name" },
     },
     {
       key: "fixtureInvalid.wrongDirection",
-      source: { databaseKey: "areas", propertyKey: "name" },
+      source: { databaseKey: "healthRecords", propertyKey: "name" },
       target: { databaseKey: "projects", propertyKey: "name" },
-      via: { databaseKey: "areas", relationKey: "company" },
+      via: { databaseKey: "healthRecords", relationKey: "files" },
     },
   ],
 };

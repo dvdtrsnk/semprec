@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Screen-filling status of a screen without content: loading, nothing to show, or a failure the user can retry.
+/// Screen-filling status of a screen without content: loading, nothing to show, or a failure the user can retry. The
+/// loading spinner appears only after a short wait.
 public struct StatusView: View {
 
     // MARK: - Status
@@ -35,8 +36,7 @@ private extension StatusView {
     @ViewBuilder var content: some View {
         switch status {
         case .loading:
-            ProgressView { Text("state.loading", bundle: .module) }
-                .accessibilityIdentifier(StatusIdentifiers.loading)
+            StatusLoading()
         case .empty(let message, let systemImage):
             ContentUnavailableView { label(message, systemImage: systemImage) }
         case .failure(let message, let retry):
@@ -57,6 +57,25 @@ private extension StatusView {
             Image(systemName: systemImage).foregroundStyle(Theme.Colors.accent)
         }
     }
+}
+
+/// The wait, shown only once it has lasted a moment: what loads from the device in a few frames shows no spinner that
+/// flickers before it, as the system's own lists do.
+private struct StatusLoading: View {
+
+    @State private var isShown = false
+
+    var body: some View {
+        ProgressView { Text("state.loading", bundle: .module) }
+            .opacity(isShown ? 1 : 0)
+            .accessibilityIdentifier(StatusIdentifiers.loading)
+            .task {
+                try? await Task.sleep(for: Self.delay)
+                withAnimation(.easeIn(duration: 0.2)) { isShown = true }
+            }
+    }
+
+    private static var delay: Duration { .milliseconds(400) }
 }
 
 // MARK: - Preview

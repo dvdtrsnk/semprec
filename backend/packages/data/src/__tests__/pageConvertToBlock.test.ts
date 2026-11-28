@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import type * as Y from "yjs";
-import { BLOCK_TYPES, insertBlocks, readPageBlocks, setIndent, writeBlock } from "@semprec/block-model";
+import { BLOCK_TYPES, insertBlocks, readPageBlocks, setIndent, writeBlock } from "@alldots/block-model";
 import {
   PAGE_CONVERT_TARGET_TYPES,
   runInTenant,
   type PageConvertToBlockInput,
   type PageConvertToBlockOutput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import type { AgentDatabaseAccess } from "../agentGrants/agentDatabaseGrantsStore.js";
@@ -61,7 +61,7 @@ registerItemDeleteHook(async ({ client, item }) => {
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   chokePoint = createChokePoint(runtime);
 });
 beforeEach(async () => {

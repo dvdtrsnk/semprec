@@ -1,4 +1,4 @@
-// Announces a project's items after its area or company changed: they show those as derived values read through the
+// Announces a project's items after its company changed: they show it as a derived value read through the
 // project, and the change writes none of them. Read-only (no row locks); keyset pages, one transaction each, announced
 // after each commits.
 import type { Pool, PoolClient } from "pg";

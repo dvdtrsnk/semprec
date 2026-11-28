@@ -1,4 +1,4 @@
-import type { ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
+import type { ModuleDatabaseDescriptor, ModuleManifest } from "@alldots/module-registry";
 import { LIBRARY_GRID_VIEW_TYPE } from "../views/libraryGridViewType.js";
 import { BOOKS_MODULE_ID, MOVIES_MODULE_ID } from "../seed/libraryModuleKeys.js";
 

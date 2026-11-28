@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { runInTenant, type SempMessageRef } from "@semprec/shared";
+import { runInTenant, type SempMessageRef } from "@alldots/shared";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createSeriesOccurrence, startTaskSeries } from "../testSupport/taskSeriesFixtures.js";
 import {
@@ -96,7 +96,7 @@ describe("Semp task references (issue #1771)", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(runtime);
     a = await fixture();
     b = await fixture();
@@ -248,8 +248,6 @@ describe("Semp task references (issue #1771)", () => {
           },
         },
       });
-      // The legacy `persistent` flag of a stored template is never shown.
-      expect(JSON.stringify(context)).not.toContain("persistent");
     });
 
     it("gives a materialized occurrence's day the same series context", async () => {

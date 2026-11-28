@@ -19,7 +19,7 @@ struct SempProjectAgentScreen: View {
         content
             .navigationTitle(Text("semp.agent.title", bundle: .module))
             .inlineNavigationTitle()
-            .toolbar { ToolbarItem(placement: .primaryAction) { saveLabel } }
+            .toolbar { PlainToolbarItem(placement: .primaryAction) { saveLabel } }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(SempIdentifiers.projectAgent)
             .alert(
@@ -295,7 +295,7 @@ private extension SempProjectAgentScreen {
         switch run.display {
         case .error: Theme.Colors.destructive
         case .waitingApproval: Theme.Colors.sempWaiting
-        case .running, .done: run.trigger == .tick ? Theme.Colors.SempKind.area : Theme.Colors.brand
+        case .running, .done: run.trigger == .tick ? Theme.Colors.sempTick : Theme.Colors.brand
         }
     }
 
@@ -317,7 +317,7 @@ private extension SempProjectAgentScreen {
                 model: ScriptedSempProjectAgentScreenModel(
                     state: SempProjectAgentState(
                         phase: .ready,
-                        projectName: "Semprec iOS",
+                        projectName: "Alldots iOS",
                         sections: SempSections(
                             purpose: "Pomáhat s vývojem.",
                             allowed: "- číst úkoly",

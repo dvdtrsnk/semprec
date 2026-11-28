@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -40,8 +40,8 @@ interface AttachmentInput {
 describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-thread-detail-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-thread-detail-"));
     const role = await runAsSystem("verify mail detail test role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -117,6 +117,8 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
     }) =>
       withTransaction(runtime, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: db("emails"),
           filesDatabaseId: db("files"),
           folderRelationPropertyId: property("folder"),
@@ -214,8 +216,8 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
     });
 
   async function storedAttachments(emailItemId: string) {
-    const rows = await runtime.query<{ blob_id: string; filename: string; byte_size: number }>(
-      "SELECT blob_id, filename, byte_size::int AS byte_size FROM mail_attachments WHERE tenant_id = app_tenant_default() AND message_item_id = $1 ORDER BY filename",
+    const rows = await runtime.query<{ id: string; blob_id: string; filename: string; byte_size: number }>(
+      "SELECT id, blob_id, filename, byte_size::int AS byte_size FROM mail_attachments WHERE tenant_id = app_tenant_default() AND message_item_id = $1 ORDER BY filename",
       [emailItemId],
     );
     const files = await runtime.query<{ id: string; blob_id: string; name: string }>(
@@ -230,6 +232,8 @@ describe("GET /api/mail/threads/:threadId (issue #1632)", () => {
       const file = files.rows.find((candidate) => candidate.blob_id === row.blob_id && candidate.name === row.filename);
       if (!file) throw new Error(`No Files item for ${row.filename}`);
       return {
+        attachmentId: row.id,
+        stored: true,
         fileItemId: file.id,
         blobId: row.blob_id,
         filename: row.filename,

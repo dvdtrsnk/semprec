@@ -27,8 +27,9 @@ final class OverviewViewModelTests: XCTestCase {
         let viewModel = OverviewViewModel(model: model, router: RouterSpy())
         viewModel.retry()
         viewModel.open(.tasks)
-        viewModel.open(.area(id: "work"))
-        XCTAssertEqual(model.actions, [.retry, .open(.tasks), .open(.area(id: "work"))])
+        viewModel.open(.project(id: "p1"))
+        viewModel.reload()
+        XCTAssertEqual(model.actions, [.retry, .open(.tasks), .open(.project(id: "p1")), .refresh])
     }
 
     @MainActor
@@ -40,12 +41,12 @@ final class OverviewViewModelTests: XCTestCase {
         model.emit(.inbox)
         let observer = observing(viewModel)
         defer { observer.cancel() }
-        model.emit(.journal(itemId: "j1"))
+        model.emit(.mail)
         model.emit(.collection(ownerModuleId: "events", databaseId: "d1"))
         try await eventually { router.targets.count == 3 }
         XCTAssertEqual(
             router.targets,
-            [.inbox, .journal(itemId: "j1"), .collection(ownerModuleId: "events", databaseId: "d1")]
+            [.inbox, .mail, .collection(ownerModuleId: "events", databaseId: "d1")]
         )
     }
 

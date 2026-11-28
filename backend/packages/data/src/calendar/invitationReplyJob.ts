@@ -2,8 +2,8 @@
 // queues it in the answer's own transaction, so a rolled-back answer sends nothing.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { enqueueJob } from "@semprec/queue";
-import { resolveCatalogLabel } from "@semprec/module-registry";
+import { enqueueJob } from "@alldots/queue";
+import { resolveCatalogLabel } from "@alldots/module-registry";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
@@ -18,7 +18,8 @@ import {
   type SyncMode,
 } from "../mail/mailAccountSyncStateStore.js";
 import { getMailMessageMetaByItemId } from "../mail/mailMessageMetaStore.js";
-import type { MailTransport, MailTransportFactory } from "../mail/mailTransport.js";
+import type { MailTransport, MailTransportFactory, MailTransportResult } from "../mail/mailTransport.js";
+import { recordPendingSentCopyAfterSend } from "../mail/mailSentCopies.js";
 import { buildOutgoingMime, generateOutgoingMessageId } from "../mail/outgoingMime.js";
 import { MailRecipientRejectedError, MailTransportUnavailableError } from "../mail/providerTypes.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
@@ -212,6 +213,7 @@ export async function sendInvitationReply(
   const { mailboxId, plan } = planned;
   const { invitation } = plan;
 
+  const messageId = generateOutgoingMessageId(plan.mailboxAddress);
   let raw: Buffer;
   let envelope: { from: string; recipients: string[] };
   try {
@@ -223,7 +225,7 @@ export async function sendInvitationReply(
         to: [{ address: plan.organizerEmail }],
         subject,
         text,
-        messageId: generateOutgoingMessageId(plan.mailboxAddress),
+        messageId,
         calendar: {
           method: "REPLY",
           content: buildItipReply({
@@ -257,12 +259,14 @@ export async function sendInvitationReply(
     }
     throw error;
   }
+  let sent: MailTransportResult;
   try {
-    await transport.send({ raw, envelope });
+    sent = await transport.send({ raw, envelope });
   } catch (error) {
     if (error instanceof MailRecipientRejectedError) return endWithoutSending(payload, "recipientRejected");
     throw error;
   }
+  if (sent.needsSentCopy) await recordPendingSentCopyAfterSend(deps.pool, { mailboxItemId: mailboxId, messageId, raw });
 }
 
 /** Throws while nothing is bound, so the queue retries until a runtime that bound the delivery runs it. */

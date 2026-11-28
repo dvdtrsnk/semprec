@@ -71,8 +71,8 @@ const CASES: KeyCase[] = [
     constraint: "mail_message_meta_tenant_provider_msg_uq",
     insert: async (client) =>
       client.query(
-        `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id, provider_message_id)
-         VALUES ($1, $2, '{}'::jsonb, $3, 'shared-provider-id')`,
+        `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id, provider_message_id, arrival, content_state)
+         VALUES ($1, $2, '{}'::jsonb, $3, 'shared-provider-id', 'live', 'full')`,
         [await itemOf(client), `<${randomUUID()}@example.com>`, randomUUID()],
       ),
   },
@@ -128,7 +128,7 @@ async function countRows(table: string, tenant: Tenant): Promise<number> {
 describe("formerly global unique keys hold per tenant", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {

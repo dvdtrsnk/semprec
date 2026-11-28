@@ -51,7 +51,7 @@ on:
     label: agent:blocked
     exclude-labels: [agent:needs-human-action, relay:needs-human-action]
 steps:
-  - { id: capture-review, uses: github-review-inputs, access-id: semprec-relay-github-review }
+  - { id: capture-review, uses: github-review-inputs, access-id: alldots-relay-github-review }
   - id: pickup
     uses: comment
     body: "Relay picked up this pull request for automatic recovery on its existing branch `{{branch}}`."
@@ -60,8 +60,36 @@ steps:
     workspace: pr-branch                         # thread + BB worktree on the PR's existing branch
     prompt: "#recover"
   # a fresh BB worktree carries no node_modules, so each verify installs its own workspace first
-  - { id: verify, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: backend, on-failure: { goto: fix, max-rounds: 3 } }
-  - { id: verify-web, uses: command, run: "pnpm install --frozen-lockfile && pnpm run verify", cwd: web, on-failure: { goto: fix, max-rounds: 3 } }
+  # each verify runs its pipeline only when the branch changes its area (.github/scripts/changed-areas.mjs against a
+  # freshly fetched develop)
+  - id: verify
+    uses: command
+    run: |
+      set -eu
+      git fetch origin +refs/heads/develop:refs/remotes/origin/develop
+      needed=$(node ../.github/scripts/changed-areas.mjs --base refs/remotes/origin/develop --area backend)
+      if [ "$needed" = false ]; then
+        echo 'No backend change found; backend verification is not needed.'
+      else
+        pnpm install --frozen-lockfile
+        pnpm run verify
+      fi
+    cwd: backend
+    on-failure: { goto: fix, max-rounds: 3 }
+  - id: verify-web
+    uses: command
+    run: |
+      set -eu
+      git fetch origin +refs/heads/develop:refs/remotes/origin/develop
+      needed=$(node ../.github/scripts/changed-areas.mjs --base refs/remotes/origin/develop --area web)
+      if [ "$needed" = false ]; then
+        echo 'No web change found; web verification is not needed.'
+      else
+        pnpm install --frozen-lockfile
+        pnpm run verify
+      fi
+    cwd: web
+    on-failure: { goto: fix, max-rounds: 3 }
   - id: verify-mobile
     uses: command
     # Cold project builds on Mini: 4m23s (2026-10-25, shared download caches retained).
@@ -70,10 +98,14 @@ steps:
     run: |
       set -eu
       git fetch origin +refs/heads/develop:refs/remotes/origin/develop
-      base=$(git merge-base HEAD refs/remotes/origin/develop)
-      paths=$(git diff --name-only "$base" HEAD -- mobile/)
-      if [ -z "$paths" ]; then
-        echo 'No mobile/ change found; mobile verification is not needed.'
+      android=$(node .github/scripts/changed-areas.mjs --base refs/remotes/origin/develop --area android)
+      apple=$(node .github/scripts/changed-areas.mjs --base refs/remotes/origin/develop --area apple)
+      if [ "$android" = false ] && [ "$apple" = false ]; then
+        echo 'No Android or Apple change found; mobile verification is not needed.'
+      elif [ "$apple" = false ]; then
+        mobile/scripts/verify architecture android
+      elif [ "$android" = false ]; then
+        mobile/scripts/verify architecture shared apple
       else
         mobile/scripts/verify architecture shared android apple
       fi
@@ -116,7 +148,7 @@ You are Relay's recovery worker for pull request #{{prNumber}} in {{repo}} (base
 
 What is known about why it got stuck: read the pull request's Relay run log (the comment that starts with `Relay run log`) — its last entries name the step that blocked and the reason — and its review threads. Failing checks on the current head and inline review comments:{{reviewFeedbackLine}}
 
-For GitHub reads and review replies, discover and call only the explicit Access Hub grant `semprec-relay-github-review` for `{{repo}}`. Use the captured review input file first. Do not use raw `gh`, direct GitHub HTTP or restore global authentication. Summary replies use `review_summary_reply`; inline replies use `review_comment_reply`; review thread resolution uses `review_threads_list` and `review_thread_resolve` with the current remote PR head as `expectedSha`.
+For GitHub reads and review replies, discover and call only the explicit Access Hub grant `alldots-relay-github-review` for `{{repo}}`. Use the captured review input file first. Do not use raw `gh`, direct GitHub HTTP or restore global authentication. Summary replies use `review_summary_reply`; inline replies use `review_comment_reply`; review thread resolution uses `review_threads_list` and `review_thread_resolve` with the current remote PR head as `expectedSha`.
 
 Diagnose the actual blocker and fix it yourself: rebase onto `origin/{{baseBranch}}` and resolve conflicts (keep the intent of both sides, never take one side wholesale), address review feedback (reply to and resolve the threads you address), repair a broken check — whatever it takes, within your own permissions and this repository's tools. If a rebase or the `ci` check surfaces a duplicate migration ordinal under `backend/packages/data/src/db/migrations/`, renumber only this branch's migration to the next free ordinal — never renumber one that already merged into `{{baseBranch}}` (`.bb/skills/db-migrations/SKILL.md`, "Ordinal collisions between parallel issues"). Where a judgment call has more than one reasonable option, make the call yourself and say what you chose and why in your final answer — "I'm not sure which option is better" is never, on its own, a reason to stop. The ONLY thing that justifies stopping for a human is an action that cannot be performed with any credential available to you at all (e.g. a permission or access grant only a human holds, done through a UI you cannot reach). Never change anything under `.relay/` or `.github/workflows/` — those paths are protected and a change there blocks the run. Commit locally as you go; do not push — Relay's own steps run `pnpm run verify` in `backend/` and in `web/`, push this branch with force-with-lease and relabel the pull request after this turn. Run every command in the foreground and wait for its exit status; **never end your turn waiting to be notified that something finished**. Never expose credentials. Always answer in English — every message here is posted directly to GitHub as-is.
 

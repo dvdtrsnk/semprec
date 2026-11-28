@@ -1,4 +1,4 @@
-import type { CollectionMetadataResolver } from "@semprec/data";
+import type { CollectionMetadataResolver } from "@alldots/data";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
@@ -13,9 +13,9 @@ import {
   resetDatabase,
   registerRelationEdgeWriteHook,
   registerItemUpdateHook,
-} from "@semprec/data/testSupport";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
-import { countJobsByIdentifier } from "@semprec/queue/testSupport";
+} from "@alldots/data/testSupport";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
+import { countJobsByIdentifier } from "@alldots/queue/testSupport";
 import {
   ApprovalRequiredError,
   ApprovalResourceBusyError,
@@ -54,7 +54,7 @@ import {
   type ApprovalRequest,
   type ChokePoint,
   type GenericOperationApprovalRequestPayload,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   CAPABILITY_IDS,
   canonicalizeJson,
@@ -65,7 +65,7 @@ import {
   runAsSystem,
   type AuthenticatedActor,
   type GenericOperationName,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
 const testMetadataResolver: CollectionMetadataResolver = {
@@ -157,7 +157,7 @@ async function throwFailures(failure: { error: unknown } | undefined, pending: P
 }
 
 async function withRuntimePool(fn: (runtime: Pool) => Promise<void>): Promise<void> {
-  const runtime = await createRuntimeRolePool(pool, "semprec_data");
+  const runtime = await createRuntimeRolePool(pool, "alldots_data");
   let failure: { error: unknown } | undefined;
   try {
     await fn(runtime);
@@ -576,7 +576,7 @@ describe("createGenericOperationGateway", () => {
   it.each(["insert", "upsert", "metadata", "delete"] as const)(
     "reserves relation snapshots against ordinary inverse %s in both orders",
     async (kind) => {
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       const cp = createChokePoint(runtime);
       const foreignTenant = await createTestTenant(pool);
       const foreign = await runInTenant(foreignTenant, () => relationFixture(cp, { name: "Foreign" }));
@@ -801,8 +801,8 @@ describe("createGenericOperationGateway", () => {
   );
 
   it("releases relation projection reservations after a managed rollback", async () => {
-    const firstPool = await createRuntimeRolePool(pool, "semprec_data");
-    const secondPool = await createRuntimeRolePool(pool, "semprec_data");
+    const firstPool = await createRuntimeRolePool(pool, "alldots_data");
+    const secondPool = await createRuntimeRolePool(pool, "alldots_data");
     let failure: { error: unknown } | undefined;
     try {
       await inTenantZero(async () => {
@@ -938,7 +938,7 @@ describe("createGenericOperationGateway", () => {
     "reserves an item patch against archive in %s order",
     async (order) =>
       inTenantZero(async () => {
-        const scoped = await createRuntimeRolePool(pool, "semprec_data");
+        const scoped = await createRuntimeRolePool(pool, "alldots_data");
         const release = signal();
         const reached = signal();
         let approvalPid = 0;
@@ -1541,7 +1541,7 @@ describe("createGenericOperationGateway", () => {
 
   it("item.patch exposes previous values only inside the owning tenant on a runtime-role pool", async () => {
     const tenantB = await createTestTenant(pool);
-    const runtimePool = await inTenantZero(() => createRuntimeRolePool(pool, "semprec_data"));
+    const runtimePool = await inTenantZero(() => createRuntimeRolePool(pool, "alldots_data"));
     try {
       const fixture = await inTenantZero(async () => {
         const cp = createChokePoint(runtimePool);
@@ -1643,7 +1643,7 @@ describe("createGenericOperationGateway", () => {
       );
     });
 
-    it("refuses both REST-only option operations for a person and for an agent run like an unknown operation, writing nothing", async () => {
+    it("refuses every REST-only option operation for a person and for an agent run like an unknown operation, writing nothing", async () => {
       const gateway = gatewayFor();
       const database = await chokePoint.createDatabase({ name: "Gateway options" });
       const property = await chokePoint.createProperty({
@@ -1662,6 +1662,7 @@ describe("createGenericOperationGateway", () => {
             key: "herbs",
             label: "Fresh herbs",
           }),
+          gateway.invoke("property.option.remove", actor, ALL_CAPABILITIES, { propertyId: property.id, key: "herbs" }),
         ];
         for (const refusal of refusals) {
           await expect(refusal).rejects.toMatchObject({ name: "NotFoundError", code: "not_found", status: 404 });
@@ -2441,7 +2442,7 @@ describe("createGenericOperationGateway", () => {
 
     it("rejects replay after an edit from an earlier-started transaction", async () => {
       const page = await pageWithFirstBlock();
-      const runtime = await createRuntimeRolePool(pool, "semprec_data");
+      const runtime = await createRuntimeRolePool(pool, "alldots_data");
       const hold = signal();
       const started = signal<Date>();
       const restore = afterMatchingQuery(
@@ -2503,8 +2504,8 @@ describe("createGenericOperationGateway", () => {
           await pool.query<{ database_id: string }>("SELECT database_id FROM items WHERE id = $1", [page.itemId])
         ).rows[0]?.database_id;
         if (!databaseId) throw new Error("missing page database");
-        const replayPool = await createRuntimeRolePool(pool, "semprec_data");
-        const deletePool = await createRuntimeRolePool(pool, "semprec_data");
+        const replayPool = await createRuntimeRolePool(pool, "alldots_data");
+        const deletePool = await createRuntimeRolePool(pool, "alldots_data");
         const hold = signal();
         const ready = signal<number>();
         const holdAt = async (client: PoolClient) => {
@@ -2715,7 +2716,7 @@ describe("approval_pending recipient in a tenant", () => {
   // The first describe's `afterAll` ended the shared pool, so this block opens and closes its own.
   beforeAll(async () => {
     pool = getTestPool();
-    runtimePool = await inTenantZero(() => createRuntimeRolePool(pool, "semprec_data"));
+    runtimePool = await inTenantZero(() => createRuntimeRolePool(pool, "alldots_data"));
   });
 
   beforeEach(async () => {

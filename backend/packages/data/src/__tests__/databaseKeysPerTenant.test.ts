@@ -122,7 +122,7 @@ describe("databases.key is unique per tenant and module databases resolve unambi
       expect((error as Error).message).toContain("'files'");
       expect((error as Error).message).toContain("2");
 
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
       const found = await getDatabaseByModuleId(client, "files");
       expect(found?.id).toBe(inB.id);
     });

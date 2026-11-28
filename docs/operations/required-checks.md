@@ -41,8 +41,16 @@ Relay's `merge-pull-request` workflow waits for these same contexts before it me
 required context without adding it there makes Relay attempt the merge while that check is
 still running, and GitHub refuses it.
 
-The required jobs in `ci.yml` run on every pull-request update and on every push to
-`develop` and `main`, so every commit on either branch carries its required results.
+Every required job in `ci.yml` reports on every pull-request update and runs on every push to
+`develop` and `main`, so every commit on either branch carries its required results. On a pull
+request the `changes` job (`.github/scripts/changed-areas.mjs`) decides which areas the change
+touches: `unit`, the `integration-shard` matrix, `dependency-check`, `e2e`, `pi-agent-contract`
+and the backend steps of `ci` run when it touches `backend`, and the web steps of `ci` when it
+touches `web`. A job skipped this way reports success, and `integration` passes when its shards
+were skipped for a pull request without a backend change. `ci` always runs its repository scans
+and fails first when `changes` did not succeed or reported a value other than `true` or
+`false`, so a failed detection cannot turn into green skipped jobs; a comparison git cannot make
+counts as a change to every area.
 
 The release command checks those per-commit results before it tags a `main` commit
 ([releases](releases.md)); renaming a `ci.yml` job also updates its list of required jobs in
@@ -50,18 +58,22 @@ The release command checks those per-commit results before it tags a `main` comm
 
 ## Mobile checks (reported, not required)
 
-| Context          | Runs when `mobile/` changes                                           | Required on    |
-| ---------------- | --------------------------------------------------------------------- | -------------- |
-| `mobile-android` | `mobile/scripts/verify architecture android` on Ubuntu                | neither branch |
-| `mobile-apple`   | `mobile/scripts/verify shared apple` on an Apple-silicon macOS runner | neither branch |
+| Context          | Runs when `changes` reports | Runs                                                                               | Required on    |
+| ---------------- | --------------------------- | ---------------------------------------------------------------------------------- | -------------- |
+| `mobile-android` | `android`                   | `mobile/scripts/verify architecture android` on Ubuntu                             | neither branch |
+| `mobile-apple`   | `apple`                     | `mobile/scripts/verify architecture shared apple` on an Apple-silicon macOS runner | neither branch |
+
+A change under `mobile/android/` reports `android`, one under `mobile/apple/` reports `apple`, and
+any other change under `mobile/` (shared Kotlin, the Gradle build, scripts, docs) reports both,
+except a change to a `review-rules/` directory, which reports neither.
 
 Both jobs omit device flags: the shared iOS simulator tests, Android instrumented tests,
 Swift simulator tests and XCUITest execution report NOT RUN. Apple UI tests still compile.
-A failure uploads `mobile/build/verify/`. A `mobile-changes` job compares the pull request
-with its merge base, or a push with its `before` commit; an initial push compares with
-an empty tree. Without a mobile change the two build jobs are skipped. These jobs are
-not added to branch protection, Relay's `wait-checks` or the release command's required
-checks.
+A failure uploads `mobile/build/verify/`. The `changes` job decides both jobs on pull requests
+and pushes alike: it compares a pull request with its merge base and a push with its `before`
+commit; an initial push, which has no `before` commit to compare with, runs both. Both jobs restore the Gradle User Home with
+`gradle/actions/setup-gradle` and its `basic` cache provider. These jobs are not added to branch
+protection, Relay's `wait-checks` or the release command's required checks.
 
 ## Why there is no separate "is this head up to date" check
 

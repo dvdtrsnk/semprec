@@ -6,6 +6,7 @@ import type { PoolClient } from "pg";
 import { latestOccurrenceOnOrBefore, occurrenceDatesInRange } from "../tasks/nextDueDate.js";
 import { expandEventOccurrences } from "./eventOccurrences.js";
 import { readEventSeries } from "./eventSeries.js";
+import { createCalendarTimelineLookups } from "./timelineLookups.js";
 import type { StoredRow } from "./timelineRead.js";
 
 export const NEXT_OCCURRENCE_DATE_PROPERTY_KEY = "nextOccurrenceDate";
@@ -79,6 +80,7 @@ export async function computeNextOccurrenceDates(
           from: day,
           to: lookaheadEnd(day, lookaheadDays),
           timezone: timeZone,
+          lookups: createCalendarTimelineLookups(stored.client),
         });
   // An entry that began before today and spans it is not an occurrence on or after today.
   const upcoming = new Map<string, string>();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { PageBlock, TextRun } from "@semprec/block-model";
+import type { PageBlock, TextRun } from "@alldots/block-model";
 import { MAX_DIFF_CELLS, planBlockDiff, type DiffNewBlock } from "../docs/pageBlockDiff.js";
 
 const PAGE_ID = "11111111-1111-4111-8111-111111111111";
@@ -10,6 +10,7 @@ function current(id: string, text: string, extra: Partial<PageBlock> = {}): Page
     type: "text",
     indent: 0,
     done: false,
+    toggle: false,
     text: text === "" ? [] : [{ insert: text }],
     pageId: null,
     synthetic: false,
@@ -141,9 +142,35 @@ describe("planBlockDiff (issue #1765)", () => {
       current("a", "Text"),
       next("x", [{ insert: "Text", attributes: { bold: true } }] satisfies TextRun[]),
     ],
+    ...(
+      [
+        ["strike", { strike: true }],
+        ["underline", { underline: true }],
+        ["the text color", { color: "blue" }],
+        ["the highlight", { highlight: "yellow" }],
+      ] as const
+    ).map(([what, attributes]): [string, PageBlock, DiffNewBlock] => [
+      what,
+      current("a", "", { text: [{ insert: "Text", attributes: { color: "red" } }] }),
+      next("x", [{ insert: "Text", attributes: { color: "red", ...attributes } }] satisfies TextRun[]),
+    ]),
+    ["a text block into a toggle", current("a", "Text"), next("x", "Text", { type: "toggle" })],
+    [
+      "the toggle of a heading",
+      current("a", "Text", { type: "h2", toggle: false }),
+      next("x", "Text", { type: "h2", toggle: true }),
+    ],
   ])("treats a change of %s as a different block", (_what, before, after) => {
     const diff = planBlockDiff([before], [after]);
     expect(summary(diff)).toEqual({ insertions: [{ afterId: null, ids: ["x"] }], deleteIds: ["a"] });
+  });
+
+  it("keeps a toggle heading and a toggle block whose content is unchanged", () => {
+    const diff = planBlockDiff(
+      [current("a", "Section", { type: "h1", toggle: true }), current("b", "Item", { type: "toggle", indent: 1 })],
+      [next("x", "Section", { type: "h1", toggle: true }), next("y", "Item", { type: "toggle", indent: 1 })],
+    );
+    expect(summary(diff)).toEqual({ insertions: [], deleteIds: [] });
   });
 
   it("treats the same text in runs split differently, and a block of the same content under another id, as unchanged", () => {

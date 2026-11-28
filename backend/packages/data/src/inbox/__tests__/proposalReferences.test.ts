@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import * as itemsStore from "../../chokePoint/itemsStore.js";
 import { createItemWithClient, updateItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -17,7 +17,7 @@ import { seedSystem } from "../../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import type { ItemRow } from "../../types.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
-import { createSemprecTickAction } from "../inboxTickAction.js";
+import { createAlldotsTickAction } from "../inboxTickAction.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
 import {
   confirmProposalWithClient,
@@ -110,7 +110,7 @@ describe("the hooks that invalidate and restore the open proposals of an item (i
         type: taskTypeId,
       }),
     );
-    const tick = createSemprecTickAction(pool, async () => ({
+    const tick = createAlldotsTickAction(pool, async () => ({
       properties: { name: text },
       ...(project === null ? {} : { relations: { project: [project] } }),
     }));
@@ -619,7 +619,7 @@ describe("the hooks keep to the tenant of the write (issue #1916)", () => {
   it("never invalidates another tenant's proposal, and invalidates the tenant's own", async () => {
     pool ??= getTestPool();
     await resetDatabase(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const [tenantA, tenantB] = [await createTestTenant(pool), await createTestTenant(pool)];
       for (const tenant of [tenantA, tenantB]) {

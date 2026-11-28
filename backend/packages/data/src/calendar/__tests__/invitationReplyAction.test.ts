@@ -3,8 +3,8 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runOnce } from "@semprec/queue";
-import { runInTenant } from "@semprec/shared";
+import { runOnce } from "@alldots/queue";
+import { runInTenant } from "@alldots/shared";
 import "../../domainWriteHooks.js";
 import { withTransaction } from "../../db/pool.js";
 import { ChokePointError } from "../../errors.js";
@@ -107,6 +107,8 @@ async function receive(
   const result = await runInTenant(world.tenantId, () =>
     withTransaction(runtime, (client) =>
       ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: world.databases.emails!,
         filesDatabaseId: world.databases.files!,
         folderRelationPropertyId: world.properties.emailFolder,
@@ -225,7 +227,7 @@ describe("calendar.applyInvitationReply (issue gh-1950)", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -383,7 +385,7 @@ describe("calendar.applyInvitationReply (issue gh-1950)", () => {
 
     it("ignores an unknown UID", async () => {
       const { event } = await invitedPetr();
-      await expectUntouched(event, [ics({ uid: `${UID_PREFIX}-unknown@semprec` })]);
+      await expectUntouched(event, [ics({ uid: `${UID_PREFIX}-unknown@alldots` })]);
     });
 
     it("ignores a UID that belongs to a trashed Event", async () => {

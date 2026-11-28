@@ -5,6 +5,7 @@ import {
   MAX_INDENT,
   MIN_INDENT,
   isBlockType,
+  isColorKey,
   type BlockType,
   type InlineAttributes,
 } from "./blockTypes.js";
@@ -17,7 +18,7 @@ export function getOrderArray(doc: Y.Doc): Y.Array<string> {
   return doc.getArray<string>(ORDER_ARRAY_NAME);
 }
 
-/** The block map keyed by id; each value is a `Y.Map` with `sys:id`, `sys:flavour`, `indent`, `done`, `text`, `pageId`. */
+/** The block map keyed by id; each value is a `Y.Map` with `sys:id`, `sys:flavour`, `indent`, `done`, `toggle`, `text`, `pageId`. */
 export function getBlocksMap(doc: Y.Doc): Y.Map<Y.Map<unknown>> {
   return doc.getMap<Y.Map<unknown>>(BLOCKS_MAP_NAME);
 }
@@ -35,6 +36,8 @@ export interface PageBlock {
   type: BlockType;
   indent: number;
   done: boolean;
+  /** A toggle heading (`h1`-`h3` only); false on every other type. */
+  toggle: boolean;
   /** Plain text without attributes for `page` blocks, which carry their title here. */
   text: TextRun[];
   pageId: string | null;
@@ -48,6 +51,8 @@ export interface BlockInput {
   type: BlockType;
   indent?: number;
   done?: boolean;
+  /** Only on `h1`-`h3`. */
+  toggle?: boolean;
   /** Plain text, or runs carrying inline attributes. */
   text?: string | TextRun[];
   pageId?: string;
@@ -64,6 +69,8 @@ export interface BlockIssue {
     | "invalid_indent"
     | "invalid_done"
     | "done_not_allowed"
+    | "invalid_toggle"
+    | "toggle_not_allowed"
     | "invalid_text"
     | "invalid_page_id"
     | "page_id_not_allowed"
@@ -103,6 +110,10 @@ function validateRunAttributes(attributes: unknown, path: string, issues: BlockI
     } else if (name === "link") {
       if (!isRecord(value) || typeof value.href !== "string" || value.href === "") {
         issues.push({ path: attributePath, code: "invalid_text", message: "link must be { href: non-empty string }" });
+      }
+    } else if (name === "color" || name === "highlight") {
+      if (!isColorKey(value)) {
+        issues.push({ path: attributePath, code: "invalid_text", message: "color must be a key of INLINE_COLORS" });
       }
     } else if (value !== true) {
       issues.push({ path: attributePath, code: "invalid_text", message: "attribute must be true" });
@@ -171,6 +182,13 @@ export function validateBlockInput(input: unknown): BlockIssue[] {
       issues.push({ path: "done", code: "invalid_done", message: "done must be a boolean" });
     }
   }
+  if (input.toggle !== undefined) {
+    if (!rule.hasToggle) {
+      issues.push({ path: "toggle", code: "toggle_not_allowed", message: "toggle is only allowed on h1-h3 blocks" });
+    } else if (typeof input.toggle !== "boolean") {
+      issues.push({ path: "toggle", code: "invalid_toggle", message: "toggle must be a boolean" });
+    }
+  }
   if (input.text !== undefined) {
     validateText(input.text, !rule.hasInlineAttributes, issues);
   }
@@ -208,6 +226,11 @@ function readRuns(value: unknown): TextRun[] {
     if (sourceAttributes.bold === true) attributes.bold = true;
     if (sourceAttributes.italic === true) attributes.italic = true;
     if (sourceAttributes.code === true) attributes.code = true;
+    if (sourceAttributes.strike === true) attributes.strike = true;
+    if (sourceAttributes.underline === true) attributes.underline = true;
+    // An unknown color key is dropped, like any other unknown attribute value.
+    if (isColorKey(sourceAttributes.color)) attributes.color = sourceAttributes.color;
+    if (isColorKey(sourceAttributes.highlight)) attributes.highlight = sourceAttributes.highlight;
     const link = sourceAttributes.link;
     if (isRecord(link) && typeof link.href === "string" && link.href !== "") {
       attributes.link = { href: link.href };
@@ -237,6 +260,7 @@ function normalizeBlock(id: string, block: Y.Map<unknown>): PageBlock {
     indent:
       typeof indent === "number" && Number.isInteger(indent) ? Math.min(MAX_INDENT, Math.max(MIN_INDENT, indent)) : 0,
     done: rule.hasDone && block.get("done") === true,
+    toggle: rule.hasToggle && block.get("toggle") === true,
     text: rule.hasInlineAttributes ? readRuns(block.get("text")) : readPlainRuns(block.get("text")),
     pageId: rule.hasPageId && typeof pageId === "string" && pageId !== "" ? pageId : null,
     synthetic: false,
@@ -275,7 +299,7 @@ export function readPageBlocks(doc: Y.Doc): PageBlock[] {
     push(id);
   }
   if (result.length === 0) {
-    return [{ id: null, type: "text", indent: 0, done: false, text: [], pageId: null, synthetic: true }];
+    return [{ id: null, type: "text", indent: 0, done: false, toggle: false, text: [], pageId: null, synthetic: true }];
   }
   return result;
 }
@@ -325,6 +349,11 @@ export function writeBlock(doc: Y.Doc, input: BlockInput): void {
     block.set("done", input.done ?? false);
   } else {
     block.delete("done");
+  }
+  if (rule.hasToggle) {
+    block.set("toggle", input.toggle ?? false);
+  } else {
+    block.delete("toggle");
   }
   writeText(block, input.text);
   if (rule.hasPageId) {

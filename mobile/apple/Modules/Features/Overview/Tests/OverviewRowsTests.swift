@@ -7,56 +7,34 @@ final class OverviewRowsTests: XCTestCase {
 
     // MARK: - Main
     func testTheMainRowsLeadToTheirTargetsInOrder() {
-        let rows = OverviewRows.main(OverviewContent(journalTodayItemId: "j1"))
-        XCTAssertEqual(
-            rows.map(\.target),
-            [.inbox, .mail, .recordings, .journal(itemId: "j1"), .tasks, .finance]
-        )
+        let rows = OverviewRows.main(OverviewContent())
+        XCTAssertEqual(rows.map(\.target), [.inbox, .mail, .recordings, .tasks, .finance])
         XCTAssertEqual(Set(rows.map(\.identifier)).count, rows.count)
     }
 
-    func testTheInboxWaitsOnARedBadgeAndTheMailShowsItsCountOnlyWhenThereIsSomething() {
-        let busy = OverviewRows.main(OverviewContent(inboxPending: 9, mailUnread: 5, tasksToday: 4))
-        XCTAssertEqual(busy[0].trailing, .badge(9))
-        XCTAssertEqual(busy[1].trailing, .count(5))
-        XCTAssertEqual(busy[4].trailing, .count(4))
+    func testOnlyTheInboxAndTheMailCountAndOnlyWhenThereIsSomething() {
+        let busy = OverviewRows.main(OverviewContent(inboxPending: 9, mailUnread: 5))
+        XCTAssertEqual(busy.map(\.trailing), [.badge(9), .count(5), .none, .none, .none])
         let quiet = OverviewRows.main(OverviewContent())
-        XCTAssertEqual(quiet[0].trailing, .none)
-        XCTAssertEqual(quiet[1].trailing, .none)
-        XCTAssertEqual(quiet[4].trailing, .count(0), "Today's tasks are counted even when there are none")
+        XCTAssertEqual(quiet.map(\.trailing), [.none, .none, .none, .none, .none])
     }
 
-    func testTheJournalRowSaysTodayWhateverTheEntry() {
-        XCTAssertEqual(OverviewRows.main(OverviewContent())[3].trailing, .today)
-        XCTAssertEqual(OverviewRows.main(OverviewContent())[3].target, .journal(itemId: nil))
-    }
-
-    // MARK: - Areas, projects, collections
-    func testAreaRowsCountTheirActiveProjectsOnlyWhenThereAreAny() {
-        let rows = OverviewRows.areas(
-            OverviewContent(areas: [
-                OverviewArea(id: "a", name: "Work", color: "#5856D6", icon: "briefcase", activeProjectCount: 6),
-                OverviewArea(id: "b", name: "Home", color: nil, icon: nil, activeProjectCount: 0)
-            ])
-        )
-        XCTAssertEqual(rows.map(\.target), [.area(id: "a"), .area(id: "b")])
-        XCTAssertEqual(rows.map(\.trailing), [.count(6), .none])
-        XCTAssertEqual(rows.map(\.symbol), ["briefcase", OverviewSymbols.areaFallback])
-    }
-
-    func testProjectRowsNameTheirAreaAndStatus() {
+    // MARK: - Projects, collections
+    func testProjectRowsOpenTheirProjectAndNameItsStatus() {
         let content = OverviewContent(projects: [
-            OverviewProject(id: "p1", name: "Semprec", color: "#007AFF", areaName: "Work", status: "inProgress"),
-            OverviewProject(id: "p2", name: "Loose", color: nil, areaName: nil, status: nil),
-            OverviewProject(id: "p3", name: "Odd", color: nil, areaName: "Home", status: "unheard")
+            OverviewProject(id: "p1", name: "Alldots", color: "#007AFF", status: "inProgress"),
+            OverviewProject(id: "p2", name: "Loose", color: nil, status: nil),
+            OverviewProject(id: "p3", name: "Odd", color: nil, status: "unheard")
         ])
-        XCTAssertEqual(
-            OverviewRows.projects(content).map(\.target),
-            [.project(id: "p1"), .project(id: "p2"), .project(id: "p3")]
-        )
-        XCTAssertEqual(OverviewRows.subtitle(of: content.projects[0]), "Work \u{00B7} In progress")
-        XCTAssertNil(OverviewRows.subtitle(of: content.projects[1]))
-        XCTAssertEqual(OverviewRows.subtitle(of: content.projects[2]), "Home")
+        let rows = OverviewRows.projects(content)
+        XCTAssertEqual(rows.map(\.target), [.project(id: "p1"), .project(id: "p2"), .project(id: "p3")])
+        XCTAssertEqual(rows.map(\.trailing), [.none, .none, .none])
+        XCTAssertEqual(rows.map { $0.subtitle != nil }, [true, false, false])
+    }
+
+    func testAnOverviewWithoutProjectsOrCollectionsHasNoRowsForThem() {
+        XCTAssertTrue(OverviewRows.projects(OverviewContent()).isEmpty)
+        XCTAssertTrue(OverviewRows.collections(OverviewContent()).isEmpty)
     }
 
     func testEveryProjectStatusHasItsWords() {
@@ -67,16 +45,15 @@ final class OverviewRowsTests: XCTestCase {
         XCTAssertNil(OverviewRows.status(nil))
     }
 
-    func testCollectionRowsCountTheirItemsAndOpenTheirCollection() {
+    func testCollectionRowsOpenTheirCollectionAndCountNothing() {
         let rows = OverviewRows.collections(
             OverviewContent(collections: [
                 OverviewCollection(
-                    databaseId: "d1", ownerModuleId: "events", name: "Events",
-                    icon: "calendar", color: "#FF3B30", itemCount: 214
+                    databaseId: "d1", ownerModuleId: "events", name: "Events", icon: "calendar", color: "#FF3B30"
                 )
             ])
         )
-        XCTAssertEqual(rows.map(\.trailing), [.count(214)])
+        XCTAssertEqual(rows.map(\.trailing), [.none])
         XCTAssertEqual(rows.map(\.target), [.collection(ownerModuleId: "events", databaseId: "d1")])
         XCTAssertEqual(rows.map(\.identifier), [OverviewIdentifiers.collectionPrefix + "events"])
     }

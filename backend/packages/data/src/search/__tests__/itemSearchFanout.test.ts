@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import {
   assertSearchTaskIdentifiersRegistered,
   CORE_TASK_NAMES,
@@ -13,8 +13,8 @@ import {
   registerTask,
   runOnce,
   SearchTaskIdentifiersNotRegisteredError,
-} from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+} from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
@@ -474,13 +474,13 @@ async function withIndexWriteFault(itemId: string, run: () => Promise<void>): Pr
   const client = await admin.connect();
   let primary: { error: unknown } | undefined;
   try {
-    await client.query("SELECT set_config('semprec_test.fault_item', $1, false)", [itemId]);
+    await client.query("SELECT set_config('alldots_test.fault_item', $1, false)", [itemId]);
     await client.query(`CREATE FUNCTION fanout_index_fault_test() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'test index write failure'; END $$`);
     await client.query(`DO $$ BEGIN EXECUTE format(
       'CREATE TRIGGER fanout_index_fault_test BEFORE INSERT OR UPDATE ON item_search_index FOR EACH ROW '
       'WHEN (NEW.item_id = %L::uuid) EXECUTE FUNCTION fanout_index_fault_test()',
-      current_setting('semprec_test.fault_item')); END $$`);
+      current_setting('alldots_test.fault_item')); END $$`);
     await run();
   } catch (error) {
     primary = { error };
@@ -501,7 +501,7 @@ async function withIndexWriteFault(itemId: string, run: () => Promise<void>): Pr
 describe("search reindex fan-out (issue #1652)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
     const role = await runAsSystem("verify fanout role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
@@ -538,36 +538,21 @@ describe("search reindex fan-out (issue #1652)", () => {
     expect(await contains(task, "alfaprojekt")).toBe(false);
   });
 
-  it("puts a project's new area title into its tasks' documents after the project moves", async () => {
-    const oldArea = await item("areas", "Starooblast");
-    const newArea = await item("areas", "Novooblast");
-    const project = await item("projects", "Web");
-    const task = await item("tasks", "Nasazení");
-    await link("projects", "area", project, oldArea);
-    await link("tasks", "project", task, project);
-    await runQueued();
-    expect(await contains(task, "starooblast")).toBe(true);
-    await unlink("projects", "area", project, oldArea);
-    await link("projects", "area", project, newArea);
-    expect(await queued(REINDEX)).toContainEqual({ kind: "projectItems", projectItemId: project });
-    await runQueued();
-    expect(await contains(task, "novooblast")).toBe(true);
-    expect(await contains(task, "starooblast")).toBe(false);
-  });
-
-  it("reaches the items of an area's projects when the area is renamed, through its projects found at run time", async () => {
-    const area = await item("areas", "Zahrada");
+  it("reindexes only the two ends of a project's company edge, not the project's items", async () => {
+    const company = await item("companies", "Pekarna");
     const project = await item("projects", "Skleník");
     const task = await item("tasks", "Zalít");
-    await link("projects", "area", project, area);
     await link("tasks", "project", task, project);
     await runQueued();
-    await rename("areas", area, "Sad");
-    expect((await queued(REINDEX)).filter((payload) => payload.kind === "projectItems")).toEqual([]);
-    expect(await queued(REINDEX)).toContainEqual({ kind: "referrers", itemId: area });
+    await link("projects", "company", project, company);
+    const jobs = await queued(REINDEX);
+    expect(jobs).toContainEqual({ kind: "item", itemId: project });
+    expect(jobs).toContainEqual({ kind: "item", itemId: company });
+    expect(jobs).not.toContainEqual({ kind: "item", itemId: task });
+    expect(jobs.filter((payload) => payload.kind !== "item")).toEqual([]);
     await runQueued();
-    expect(await contains(task, "sad")).toBe(true);
-    expect(await contains(task, "zahrada")).toBe(false);
+    expect(await contains(project, "pekarna")).toBe(true);
+    expect(await contains(task, "pekarna")).toBe(false);
   });
 
   it("drops a removed person's name from the event's document", async () => {
@@ -709,21 +694,21 @@ describe("search reindex fan-out (issue #1652)", () => {
       cp.createItem({ databaseId: collection.id, properties: { name: "Exponát", stage: "draft" } }),
     );
     const backfills = async () => (await queued(BACKFILL)).filter((payload) => payload.databaseId === collection.id);
-    expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    expect(await backfills()).toEqual([{ databaseId: collection.id }]);
     await runQueued();
     expect(await backfills()).toEqual([]);
     expect(await contains(entry.id, "zelenomodrý")).toBe(true);
     await inTenant(() =>
       cp.updateProperty(property.id, { config: { options: [{ key: "draft", label: "Fialovočervený" }] } }),
     );
-    expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    expect(await backfills()).toEqual([{ databaseId: collection.id }]);
     expect(await contains(entry.id, "fialovočervený")).toBe(false);
     await runQueued();
     expect(await backfills()).toEqual([]);
     expect(await contains(entry.id, "fialovočervený")).toBe(true);
     expect(await contains(entry.id, "zelenomodrý")).toBe(false);
     await inTenant(() => cp.deleteProperty(property.id));
-    expect(await backfills()).toEqual([{ databaseId: collection.id, onlyMissing: false }]);
+    expect(await backfills()).toEqual([{ databaseId: collection.id }]);
     expect(await contains(entry.id, "fialovočervený")).toBe(true);
     await runQueued();
     expect(await backfills()).toEqual([]);
@@ -800,7 +785,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     );
     expect(await contains(entry.id, "mezopotámie")).toBe(false);
     await inTenant(() => cp.createProperty({ databaseId: collection.id, key: "origin", name: "Origin", type: "text" }));
-    expect(await queued(BACKFILL)).toContainEqual({ databaseId: collection.id, onlyMissing: false });
+    expect(await queued(BACKFILL)).toContainEqual({ databaseId: collection.id });
     await runQueued();
     expect(await contains(entry.id, "mezopotámie")).toBe(true);
   });
@@ -813,7 +798,7 @@ describe("search reindex fan-out (issue #1652)", () => {
     await inTenant(() => cp.updateProperty(property.id, { name: "Poznámka" }));
     await inTenant(() => cp.deleteProperty(property.id));
     expect((await queued(BACKFILL)).filter((payload) => payload.databaseId === collection.id)).toEqual([
-      { databaseId: collection.id, onlyMissing: false },
+      { databaseId: collection.id },
     ]);
   });
 
@@ -847,7 +832,7 @@ describe("search reindex fan-out (issue #1652)", () => {
 
   it("queues the tenant-wide backfill for a profile language change", async () => {
     await inTenant(() => withTransaction(pool, (client) => enqueueTenantSearchReindex(client)));
-    expect(await queued(BACKFILL)).toContainEqual({ onlyMissing: false });
+    expect(await queued(BACKFILL)).toContainEqual({});
   });
 
   it("never reaches another tenant's referrers", async () => {

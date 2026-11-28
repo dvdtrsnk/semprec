@@ -1,6 +1,6 @@
 ---
 name: kmp-shared
-description: "How the Kotlin Multiplatform layer under mobile/shared is shaped and changed - the module graph, what commonMain may import, the narrow SharedSDK framework Swift sees through SKIE, typed failures and cancellation across the Kotlin-Swift boundary, every native consumer changed together, and the JVM, native and framework checks. Load this BEFORE editing anything under mobile/shared/ or changing what the framework exports. Triggers on: mobile/shared/, commonMain, commonTest, semprec.kmp, :shared:core, :shared:domain, :shared:data, :shared:presentation, :shared:umbrella, export(project(, SharedSDK, @HiddenFromObjC, @Throws, SKIE, onEnum(of:, FailureKind, RepositoryResult, PlaceholderRepository, a use case, expect/actual, a public suspend fun or Flow, sharedJvmTest, sharedAppleTest, -Pmobile.iosSimulatorId, linkDebugFrameworkIosSimulatorArm64, kmp-framework, and networking or persistence in mobile code. Skip only when nothing under mobile/shared/ and nothing exported changes."
+description: "How the Kotlin Multiplatform layer under mobile/shared is shaped and changed - the module graph, what commonMain may import, the narrow SharedSDK framework Swift sees through SKIE, typed failures and cancellation across the Kotlin-Swift boundary, every native consumer changed together, and the JVM, native and framework checks. Load this BEFORE editing anything under mobile/shared/ or changing what the framework exports. Triggers on: mobile/shared/, commonMain, commonTest, alldots.kmp, :shared:core, :shared:domain, :shared:data, :shared:presentation, :shared:umbrella, export(project(, SharedSDK, @HiddenFromObjC, @Throws, SKIE, onEnum(of:, FailureKind, RepositoryResult, PlaceholderRepository, a use case, expect/actual, a public suspend fun or Flow, sharedJvmTest, sharedAppleTest, -Pmobile.iosSimulatorId, linkDebugFrameworkIosSimulatorArm64, kmp-framework, and networking or persistence in mobile code. Skip only when nothing under mobile/shared/ and nothing exported changes."
 ---
 
 # One Kotlin layer below both UIs. Swift sees only its narrow front.
@@ -16,7 +16,7 @@ the layer around it.
 
 Gradle root is `mobile/`. Each project directory matches its Gradle path
 (`:shared:core` lives in `mobile/shared/core`), and every shared module applies
-the `semprec.kmp` convention plugin from `mobile/build-logic/`.
+the `alldots.kmp` convention plugin from `mobile/build-logic/`.
 
 | Module | Holds today | Depends on |
 |---|---|---|
@@ -48,9 +48,9 @@ Each layer keeps its job:
 
 ## 2. commonMain compiles for five targets
 
-`semprec.kmp` declares `jvm()`, `androidTarget()`, `iosArm64()`,
+`alldots.kmp` declares `jvm()`, `androidTarget()`, `iosArm64()`,
 `iosSimulatorArm64()` and `macosArm64()`, and builds the Apple targets for the
-app's minimum OS versions (iOS 26.0, macOS 26.0 from
+app's minimum OS versions (iOS 27.0, macOS 26.0 from
 `mobile/gradle/project.properties`). An API used in `src/commonMain` must exist
 on all five. There are no x64 Apple targets, because the Apple app is arm64
 only.
@@ -65,8 +65,8 @@ shared layer to one UI.
 Pin every new library in `mobile/gradle/libs.versions.toml` and check that its
 artifact supports all five targets before you use it in commonMain.
 
-There is no networking and no persistence yet. Every backend call of a mobile
-app will be Kotlin code in `:shared:data` implementing a port that
+Every backend call of a mobile
+app is Kotlin code in `:shared:data` implementing a port that
 `:shared:domain` declares, reached only through use cases and shared
 ViewModels. No other mobile code talks to the backend, with `URLSession`,
 OkHttp, `HttpURLConnection`, Ktor or anything else: not an Android module, a
@@ -75,6 +75,14 @@ module. The issue that adds the first call chooses the HTTP client and the wire
 format, and adds the Android `INTERNET` permission and the macOS
 `com.apple.security.network.client` entitlement
 (`docs/adr/2026-10-24-mobile-backend-calls-through-shared-data-layer.md`).
+
+The one persistence of the shared layer is the mail thread list cache:
+`FileMailThreadListCache` in `:shared:data` behind the `MailThreadListCache`
+port, JSON files under the directory `HomeSDK(cacheDirectory:)` names, written
+through the `expect` file functions of `CacheFiles.kt`
+(`docs/adr/2026-11-22-mobile-keeps-mail-thread-lists-in-a-file-cache.md`).
+Other kept data adds its own port on those functions, never a file access in
+native code.
 
 ## 3. The exported framework stays narrow
 
@@ -163,8 +171,8 @@ From `mobile/`, with `eval "$(bb device-lab env)"` on this Mac (it exports
 
 | Command | Proves |
 |---|---|
-| `./gradlew sharedJvmTest` | every shared module's tests on the JVM, the fast loop |
-| `./gradlew sharedAppleTest` | the same tests natively, `macosArm64Test` of every shared module; fails on a host that is not an Apple silicon Mac |
+| `./gradlew sharedJvmTest` | every shared module's tests on the JVM, the fast loop run while iterating (`mobile-verify` §4) |
+| `./gradlew sharedAppleTest` | the same tests natively, `macosArm64Test` of every shared module; fails on a host that is not an Apple silicon Mac. Run once before the pull request (the `shared` step of `mobile/scripts/verify` runs it), not after every edit |
 | `./gradlew sharedAppleTest -Pmobile.iosSimulatorId=<UDID>` | adds `iosSimulatorArm64Test` on a simulator you reserved (`mobile-verify`) |
 | `./gradlew :shared:umbrella:linkDebugFrameworkIosSimulatorArm64 :shared:umbrella:linkDebugFrameworkMacosArm64` | the framework links for the iOS simulator and macOS; `linkDebugFrameworkIosArm64` adds the iPhone slice, which the `apple` step of `mobile/scripts/verify` builds through its `generic/platform=iOS` builds |
 | `./gradlew detektAll -PdetektAutoFix=false` | detekt over shared, Android and build-logic Kotlin |
@@ -196,5 +204,7 @@ after three runs that bring no new evidence.
       rethrown before any broad catch.
 - [ ] The CoreKit bridge, the Android screens, the scripted previews and the
       tests on both platforms changed with the exported type.
-- [ ] `sharedJvmTest`, `sharedAppleTest` and, for an export change, the
-      Android and Apple steps ran, and the report names what did not run.
+- [ ] `sharedJvmTest` ran while iterating; before the pull request,
+      `sharedAppleTest` and, for an export change, the Android and Apple
+      steps ran too (`mobile/scripts/verify`), and the report names what did
+      not run.

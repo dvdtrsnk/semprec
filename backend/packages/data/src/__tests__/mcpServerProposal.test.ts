@@ -5,7 +5,7 @@ import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/vie
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
-import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient, reviseProposalWithClient } from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import { getDecryptedCredential, hasCredential } from "../credentials/externalCredentialsStore.js";
@@ -68,7 +68,7 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
         text: "connect a server",
       }),
     );
-    const handler = createSemprecTickAction(pool, async () => {
+    const handler = createAlldotsTickAction(pool, async () => {
       return { properties: {}, candidates: [] };
     });
     await handler(
@@ -316,7 +316,7 @@ describe("MCP server database seed and proposal/confirm integration (issue #123)
         text: "no type",
       }),
     );
-    const handler = createSemprecTickAction(pool, async () => {
+    const handler = createAlldotsTickAction(pool, async () => {
       return { properties: {}, candidates: [] };
     });
     await handler(

@@ -12,7 +12,7 @@ Check for security vulnerabilities:
 5. Missing authentication/authorization on a network call that previously
    required it — critical.
 6. The App Sandbox entitlement removed from
-   `Projects/App/Entitlements/Semprec.entitlements`, or the entitlements no
+   `Projects/App/Entitlements/Alldots.entitlements`, or the entitlements no
    longer applied to the macOS build — critical; an entitlement added that the
    linked issue's Task does not call for — high: each one widens what the app,
    and every dependency in it, can reach.

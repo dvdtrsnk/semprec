@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import * as Y from "yjs";
-import { messageRefKey, type SempMessageRef } from "@semprec/shared";
+import { messageRefKey, type SempMessageRef } from "@alldots/shared";
 import { requireManagedTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import { getBlock } from "../docs/blocks.js";

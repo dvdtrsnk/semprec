@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { withTransaction } from "../../db/pool.js";
@@ -139,7 +139,7 @@ async function itemExists(itemId: string): Promise<boolean> {
 describe("GET /api/trash/items (issue gh-1851)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     chokePoint = createChokePoint(dataPool);
   });
 
@@ -527,7 +527,7 @@ const databaseIds = (body: DatabasesBody): string[] => body.databases.map((row) 
 describe("GET /api/trash/databases (issue gh-1873)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     chokePoint = createChokePoint(dataPool);
   });
 

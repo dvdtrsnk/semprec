@@ -1,7 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -50,7 +50,6 @@ const responseSchema = z
     timezone: z.string(),
     planCount: z.number(),
     goalMinutes: z.number(),
-    areaId: z.string().nullable(),
     nights: z.array(nightSchema),
   })
   .strict();
@@ -152,7 +151,7 @@ async function rawSql(t: SleepTenant, sql: string, parameters: unknown[]): Promi
 describe("GET /api/sleep/nights (issue gh-1809)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -177,7 +176,6 @@ describe("GET /api/sleep/nights (issue gh-1809)", () => {
       timezone: "Europe/Prague",
       planCount: 2,
       goalMinutes: 480,
-      areaId: null,
       nights: [
         {
           night: "2026-10-15",

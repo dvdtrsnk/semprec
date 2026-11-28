@@ -108,7 +108,7 @@ describe("id-only item lookups stay within the scoped tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       for (const [name, lookup] of Object.entries(lookups(fx))) {
         const rows = await lookup(client);
@@ -125,7 +125,7 @@ describe("id-only item lookups stay within the scoped tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       expect((await getItemsByIds(client, [fx.liveB, fx.liveZero])).map((row) => row.id)).toEqual([fx.liveB]);
       expect(
@@ -138,7 +138,7 @@ describe("id-only item lookups stay within the scoped tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantB);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       const all = await findItemsDeletedBefore(client, cutoff());
       expect(all.map((row) => row.id)).toEqual([...fx.trashedB].sort());
@@ -157,7 +157,7 @@ describe("id-only item lookups stay within the scoped tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const fx = await seed(client);
       await scopeTo(client, fx.tenantEmpty);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       for (const [name, lookup] of Object.entries(lookups(fx))) {
         expect(await lookup(client), name).toEqual([]);

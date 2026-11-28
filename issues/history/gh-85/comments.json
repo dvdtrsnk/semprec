@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5616980462",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5616980462",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5616980462",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5616980462",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5616980462,
     "node_id": "IC_kwDOUFuQ4c8AAAABTsxR7g",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5616980462/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5616980462/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5617590786",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5617590786",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5617590786",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5617590786",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5617590786,
     "node_id": "IC_kwDOUFuQ4c8AAAABTtWiAg",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-10T10:58:34Z",
     "updated_at": "2026-09-10T10:58:34Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #368\n\nTokens: 0 · Cost: $0.0000\n\nBranch `bb/relay-85-implementation-audit-fixes-09-23-detect-thr_ryckbmteqq` has been pushed to origin.\n\n## Summary\n\nImplements issue #85: detects drift between a project's hand-written agent guidance and its mechanically enforced permission manifest, and manages notifications for the resulting findings.\n\n- Registers heartbeat action `core.agentGuidanceDrift`, backed by a real `GuidanceHeartbeatStore` (replacing the #214 no-op) and a migration adding a partial unique index on `project_heartbeats` scoped to this action, which reconciles pre-existing duplicate rows and backfills missing heartbeats for qualifying projects.\n- Implements the action itself: loads guidance markdown, resolves the owner's locale, renders a fresh permission manifest, calls the AI gateway (fixed system instruction, temperature 0), and validates the schema-shaped response defensively at the application layer (the gateway already enforces the schema server-side).\n- Adds `agent_guidance_drift_findings` with a deterministic canonical-JSON + SHA-256 fingerprint (sorted `manifestFacts`, sorted object keys, no whitespace) for dedup, and precise upsert/resolve transition semantics so owners are notified only on genuine active/resolved transitions, not on every repeated observation.\n- Adds a `notifications.payload` column and two new notification kinds (`agent_guidance_drift`, `agent_guidance_drift_resolved`) with `cs`/`en` i18n titles.\n- Uses a two-transaction (`repeatable read`) protocol bracketing the non-transactional gateway call, with staleness detection via guidance-row and manifest byte-for-byte re-validation so output computed against now-stale state is discarded rather than applied.\n- Composed in `services/semprec-api` (not yet wired to a route/`ActionRegistry`, consistent with how other heartbeat actions in this codebase are currently left unwired).\n- Full unit and integration test coverage for the acceptance criteria: dedup, no notification spam, resolution, stale-output discarding, clean failure on missing guidance/gateway errors, and REPEATABLE READ isolation in both transaction phases.\n\nAll checks pass: build, lint, dependency-cruiser boundaries, unit suite (169/169), and integration suite (904/904, embedded Postgres).\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #368\n\nTokens: 0 · Cost: $0.0000\n\nBranch `bb/relay-85-implementation-audit-fixes-09-23-detect-thr_ryckbmteqq` has been pushed to origin.\n\n## Summary\n\nImplements issue #85: detects drift between a project's hand-written agent guidance and its mechanically enforced permission manifest, and manages notifications for the resulting findings.\n\n- Registers heartbeat action `core.agentGuidanceDrift`, backed by a real `GuidanceHeartbeatStore` (replacing the #214 no-op) and a migration adding a partial unique index on `project_heartbeats` scoped to this action, which reconciles pre-existing duplicate rows and backfills missing heartbeats for qualifying projects.\n- Implements the action itself: loads guidance markdown, resolves the owner's locale, renders a fresh permission manifest, calls the AI gateway (fixed system instruction, temperature 0), and validates the schema-shaped response defensively at the application layer (the gateway already enforces the schema server-side).\n- Adds `agent_guidance_drift_findings` with a deterministic canonical-JSON + SHA-256 fingerprint (sorted `manifestFacts`, sorted object keys, no whitespace) for dedup, and precise upsert/resolve transition semantics so owners are notified only on genuine active/resolved transitions, not on every repeated observation.\n- Adds a `notifications.payload` column and two new notification kinds (`agent_guidance_drift`, `agent_guidance_drift_resolved`) with `cs`/`en` i18n titles.\n- Uses a two-transaction (`repeatable read`) protocol bracketing the non-transactional gateway call, with staleness detection via guidance-row and manifest byte-for-byte re-validation so output computed against now-stale state is discarded rather than applied.\n- Composed in `services/alldots-api` (not yet wired to a route/`ActionRegistry`, consistent with how other heartbeat actions in this codebase are currently left unwired).\n- Full unit and integration test coverage for the acceptance criteria: dedup, no notification spam, resolution, stale-output discarding, clean failure on missing guidance/gateway errors, and REPEATABLE READ isolation in both transaction phases.\n\nAll checks pass: build, lint, dependency-cruiser boundaries, unit suite (169/169), and integration suite (904/904, embedded Postgres).\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5617590786/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5617590786/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5617731744",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5617731744",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5617731744",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5617731744",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5617731744,
     "node_id": "IC_kwDOUFuQ4c8AAAABTtfIoA",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5617731744/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5617731744/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618315894",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618315894",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618315894",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618315894",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618315894,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuCydg",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618315894/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618315894/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618602399",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618602399",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618602399",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618602399",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618602399,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuURnw",
     "user": {
@@ -384,7 +384,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618602399/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618602399/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -440,9 +440,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618609387",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618609387",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618609387",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618609387",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618609387,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuUs6w",
     "user": {
@@ -472,7 +472,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618609387/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618609387/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -528,9 +528,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618610833",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618610833",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618610833",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618610833",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618610833,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuUykQ",
     "user": {
@@ -560,7 +560,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618610833/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618610833/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -616,9 +616,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618621962",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618621962",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618621962",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618621962",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618621962,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuVeCg",
     "user": {
@@ -648,7 +648,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618621962/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618621962/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -704,9 +704,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618622946",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618622946",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618622946",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618622946",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618622946,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuVh4g",
     "user": {
@@ -736,7 +736,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618622946/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618622946/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -792,9 +792,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618634786",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618634786",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618634786",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618634786",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618634786,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuWQIg",
     "user": {
@@ -824,7 +824,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618634786/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618634786/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -880,9 +880,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618635838",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618635838",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618635838",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618635838",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618635838,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuWUPg",
     "user": {
@@ -912,7 +912,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618635838/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618635838/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -968,9 +968,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618647976",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618647976",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618647976",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618647976",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618647976,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuXDqA",
     "user": {
@@ -1000,7 +1000,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618647976/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618647976/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1056,9 +1056,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618648952",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618648952",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618648952",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618648952",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618648952,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuXHeA",
     "user": {
@@ -1088,7 +1088,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618648952/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618648952/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1144,9 +1144,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618661070",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618661070",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618661070",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618661070",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618661070,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuX2zg",
     "user": {
@@ -1176,7 +1176,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618661070/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618661070/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1232,9 +1232,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618662218",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618662218",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618662218",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618662218",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618662218,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuX7Sg",
     "user": {
@@ -1264,7 +1264,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618662218/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618662218/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1320,9 +1320,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618673909",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618673909",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618673909",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618673909",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618673909,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuYo9Q",
     "user": {
@@ -1352,7 +1352,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618673909/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618673909/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1408,9 +1408,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618674888",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618674888",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618674888",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618674888",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618674888,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuYsyA",
     "user": {
@@ -1440,7 +1440,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618674888/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618674888/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1496,9 +1496,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618687026",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618687026",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618687026",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618687026",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618687026,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuZcMg",
     "user": {
@@ -1528,7 +1528,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618687026/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618687026/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1584,9 +1584,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618974434",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5618974434",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618974434",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5618974434",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5618974434,
     "node_id": "IC_kwDOUFuQ4c8AAAABTuq-4g",
     "user": {
@@ -1612,11 +1612,11 @@
     },
     "created_at": "2026-09-10T12:52:17Z",
     "updated_at": "2026-09-10T12:52:17Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #369\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-85-implementation-audit-fixes-09-23-detect-thr_5ir8pfxn3k`.\n\n## Summary\n\nImplements issue #85: detects semantic drift between a project's hand-written agent guidance and its mechanically enforced permission manifest, and manages the notification lifecycle for the resulting findings.\n\n- Registers heartbeat action `core.agentGuidanceDrift`, backed by a real `GuidanceHeartbeatStore` (replacing #214's no-op) and a migration (0035) adding a partial unique index on `project_heartbeats`, which reconciles pre-existing duplicate rows and backfills missing heartbeats for every qualifying project.\n- Implements the drift action: loads guidance markdown, resolves the owner's locale, renders a fresh permission manifest, calls the AI gateway (fixed system instruction, temperature 0) via the #215 `AiGatewayClientPort`, and validates the schema-shaped response.\n- Adds `agent_guidance_drift_findings` with a deterministic canonical-JSON + SHA-256 fingerprint for dedup, and precise upsert/resolve transition semantics so owners are notified only on genuine active/resolved transitions.\n- Adds `notifications.payload`, two new notification kinds (`agent_guidance_drift`, `agent_guidance_drift_resolved`) with `cs`/`en` i18n titles, and `packages/notifications`' `createNotification` adapter.\n- Uses a two-transaction (`repeatable read`) protocol bracketing the non-transactional gateway call, with guidance-row and byte-for-byte manifest staleness checks so output computed against now-stale state is discarded.\n- Fixed an unchecked JSONB cast at the `agent_guidance_drift_findings.payload` boundary flagged by code review: moved the contradiction validator into `@semprec/shared` and reused it at both the AI-gateway response boundary and this data-layer boundary.\n- Two ADRs document the architectural decisions: that diagnostic notifications from unattended jobs are direct writes (not agent proposals, consistent with `agent_run_error`/`heartbeat_error` precedent), and the read-snapshot → external-call → re-validate-and-write bracket pattern.\n\nAll checks pass: build, lint, format check, dependency-boundary check, unit suite (169/169), integration suite (906/906, embedded Postgres), and e2e suite (5/5).\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #369\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-85-implementation-audit-fixes-09-23-detect-thr_5ir8pfxn3k`.\n\n## Summary\n\nImplements issue #85: detects semantic drift between a project's hand-written agent guidance and its mechanically enforced permission manifest, and manages the notification lifecycle for the resulting findings.\n\n- Registers heartbeat action `core.agentGuidanceDrift`, backed by a real `GuidanceHeartbeatStore` (replacing #214's no-op) and a migration (0035) adding a partial unique index on `project_heartbeats`, which reconciles pre-existing duplicate rows and backfills missing heartbeats for every qualifying project.\n- Implements the drift action: loads guidance markdown, resolves the owner's locale, renders a fresh permission manifest, calls the AI gateway (fixed system instruction, temperature 0) via the #215 `AiGatewayClientPort`, and validates the schema-shaped response.\n- Adds `agent_guidance_drift_findings` with a deterministic canonical-JSON + SHA-256 fingerprint for dedup, and precise upsert/resolve transition semantics so owners are notified only on genuine active/resolved transitions.\n- Adds `notifications.payload`, two new notification kinds (`agent_guidance_drift`, `agent_guidance_drift_resolved`) with `cs`/`en` i18n titles, and `packages/notifications`' `createNotification` adapter.\n- Uses a two-transaction (`repeatable read`) protocol bracketing the non-transactional gateway call, with guidance-row and byte-for-byte manifest staleness checks so output computed against now-stale state is discarded.\n- Fixed an unchecked JSONB cast at the `agent_guidance_drift_findings.payload` boundary flagged by code review: moved the contradiction validator into `@alldots/shared` and reused it at both the AI-gateway response boundary and this data-layer boundary.\n- Two ADRs document the architectural decisions: that diagnostic notifications from unattended jobs are direct writes (not agent proposals, consistent with `agent_run_error`/`heartbeat_error` precedent), and the read-snapshot → external-call → re-validate-and-write bracket pattern.\n\nAll checks pass: build, lint, format check, dependency-boundary check, unit suite (169/169), integration suite (906/906, embedded Postgres), and e2e suite (5/5).\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5618974434/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5618974434/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1672,9 +1672,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5619135382",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/85#issuecomment-5619135382",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/85",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5619135382",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/85#issuecomment-5619135382",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/85",
     "id": 5619135382,
     "node_id": "IC_kwDOUFuQ4c8AAAABTu0zlg",
     "user": {
@@ -1704,7 +1704,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5619135382/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5619135382/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

@@ -46,7 +46,7 @@ describe("readTranscriptionSourceFileItemId (issue #186)", () => {
     expect(readTranscriptionSourceFileItemId(transcriptionSourceLink(fileItemId))).toBe(fileItemId);
   });
 
-  it.each([undefined, null, 42, "", "https://example.test/x", "semprec://items/not-a-uuid"])(
+  it.each([undefined, null, 42, "", "https://example.test/x", "alldots://items/not-a-uuid"])(
     "returns null for %j",
     (link) => {
       expect(readTranscriptionSourceFileItemId(link)).toBeNull();
@@ -171,7 +171,7 @@ describe("transcription requeue sweep and rerun route (issue #186)", () => {
       return rows[0].project_item_id;
     }
 
-    it("is seeded as one daily heartbeat on the Semprec project, scheduled from now", async () => {
+    it("is seeded as one daily heartbeat on the Alldots project, scheduled from now", async () => {
       const { rows } = await pool.query<{ next_fire_at: Date | null }>(
         `SELECT next_fire_at FROM project_heartbeats WHERE action_id = $1`,
         [TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID],

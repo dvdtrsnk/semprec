@@ -1,4 +1,4 @@
-This is the `mobile/` platform of the Semprec monorepo (the repository root,
+This is the `mobile/` platform of the Alldots monorepo (the repository root,
 `backend/`, `web/`, `mobile/android/` and `mobile/apple/` are separate
 platforms with their own review-rules and are reviewed independently). The
 review bot assigns each file to the platform whose directory is the longest
@@ -20,26 +20,28 @@ of the CoreKit and app targets run. A change here therefore reaches both apps,
 whose code is reviewed by their own platforms; when a shared change needs a
 native consumer to change, read that consumer at the pull request's head under
 `mobile/android/` or `mobile/apple/Modules/Core/CoreKit/`. Every shared module
-applies `build-logic/src/main/kotlin/semprec.kmp.gradle.kts` (targets `jvm`,
+applies `build-logic/src/main/kotlin/alldots.kmp.gradle.kts` (targets `jvm`,
 `androidTarget`, `iosArm64`, `iosSimulatorArm64` and `macosArm64`, with the
 Apple minimum versions from `gradle/project.properties`); a module's tests are
 in its `src/commonTest` and run on the JVM and natively. The modules:
 
-- `:shared:core` (`cz.semprec.app.core`) — `FailureKind`, the typed expected
+- `:shared:core` (`cz.alldots.app.core`) — `FailureKind`, the typed expected
   failures. Depends on no module.
-- `:shared:domain` (`cz.semprec.app.domain`) — the `PlaceholderItem` entity,
+- `:shared:domain` (`cz.alldots.app.domain`) — the `PlaceholderItem` entity,
   the `PlaceholderRepository` port, `RepositoryResult`, and the use cases
   `LoadPlaceholderItems` and `LoadPlaceholderItem`, which make the decisions
   (identity checks, ordering). Depends on core.
-- `:shared:data` (`cz.semprec.app.data`) — `InMemoryPlaceholderRepository`, the
-  only implementation of the port. There is no networking and no persistence.
+- `:shared:data` (`cz.alldots.app.data`) — `InMemoryPlaceholderRepository`, the
+  only implementation of the port. Its one persistence is the mail thread list
+  file cache (`FileMailThreadListCache`, `CacheFiles.kt`), kept in the app's
+  cache directory.
   Depends on domain.
-- `:shared:presentation` (`cz.semprec.app.presentation`) — `ScreenViewModel`,
+- `:shared:presentation` (`cz.alldots.app.presentation`) — `ScreenViewModel`,
   the screen ViewModels `HomeViewModel`, `DetailViewModel` and
   `SettingsViewModel` (internal constructors) with their state, action and
   effect types, and `HomeViewModelFactory`, which creates them and is hidden
   from Objective-C and Swift. Depends on core and domain, never on data.
-- `:shared:umbrella` (`cz.semprec.app.sdk`) — `HomeSDK`, the composition root:
+- `:shared:umbrella` (`cz.alldots.app.sdk`) — `HomeSDK`, the composition root:
   it wires repository, use cases and factory by hand, with no DI library, and
   returns a new ViewModel on every call. It builds the dynamic `SharedSDK`
   framework for `iosArm64`, `iosSimulatorArm64` and `macosArm64`, exports only
@@ -93,9 +95,9 @@ macOS, and the simulator tests and UI tests with `--ios-simulator`), and the JDK
 configuration and the embed folder check of `scripts/kmp-framework`
 (`scripts/toolchain.test.mjs`). Its `shared` step runs the
 shared tests on the JVM and natively on macOS, and detekt with the formatting
-and Compose rules and no baseline. For changes under `mobile/`, CI reports the non-required `mobile-android`
-(architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
-Relay also runs `verify-mobile` after `verify-web`. These runs omit device
+and Compose rules and no baseline. CI reports the non-required `mobile-android`
+(architecture, Android and detekt) and `mobile-apple` (architecture, shared Kotlin and Apple) jobs for
+the app areas a change touches, and Relay runs the same steps in `verify-mobile` after `verify-web`. These runs omit device
 steps, which report NOT RUN; simulator and instrumented tests need a local
 run with reserved devices. The tasks here therefore do not re-derive across the tree
 what the checks enforce, but a violation the diff itself shows is still

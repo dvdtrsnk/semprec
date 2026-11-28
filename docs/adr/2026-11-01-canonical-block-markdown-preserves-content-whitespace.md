@@ -23,7 +23,7 @@ Removing all line trimming alone cannot distinguish a whitespace-only content bl
 - Preserve inline marks and hrefs on whitespace and adjacent text. Entities inside an inline-code span remain literal code, never decoded. Use the existing code-span/fence padding convention reversibly when code content has literal boundary spaces; do not substitute entities for code characters or strip meaningful spaces. Test all-whitespace code and code with both leading/trailing spaces as well as ordinary code.
 - Apply content preservation to text, quote and other text-bearing blocks, including headings/lists and preserved unknown types, without changing block type, list indentation or done state. Comment/withIds mode does not change text semantics. Actual empty-string blocks and the synthetic empty document keep their existing distinct contracts. `stripMarkdown` keeps its existing plain-text joining/truncation policy; this is not a requirement to retain its outer separator whitespace.
 
-Canonical inline `semprec://page/` links separately use the already supported angle destination form, while actual page blocks retain their unwrapped standalone syntax. Neither disambiguation requires changing the stored model or reinterpreting historical raw Markdown as if its original block kind were known. Accepted historical ADR bodies remain unchanged.
+Canonical inline `alldots://page/` links separately use the already supported angle destination form, while actual page blocks retain their unwrapped standalone syntax. Neither disambiguation requires changing the stored model or reinterpreting historical raw Markdown as if its original block kind were known. Accepted historical ADR bodies remain unchanged.
 
 ## Consequences and verification
 

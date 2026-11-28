@@ -1,6 +1,6 @@
 import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyWrites.js";
 import type { Pool, PoolClient } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import { withTransaction } from "../db/pool.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
@@ -84,7 +84,7 @@ export async function admitTenantInTransaction(client: PoolClient, caller: strin
 }
 
 /** Takes the per-tenant seed lock `(2331, hashtext(tenant id))`, then admits the tenant (seedSystem's order). */
-export async function lockTenantSeedInTransaction(client: PoolClient, caller: string): Promise<string> {
+async function lockTenantSeedInTransaction(client: PoolClient, caller: string): Promise<string> {
   const tenantId = await requireTenantId(client, caller);
   await client.query("SELECT pg_advisory_xact_lock($1, hashtext($2))", [SEED_ADVISORY_LOCK_KEY, tenantId]);
   await admitTenant(client, tenantId, caller);
@@ -103,6 +103,16 @@ export async function seedSystem(
   viewTypeRegistry: ViewTypeRegistry = createViewTypeRegistry(),
   computedKeyRegistry: ComputedKeyRegistry = createComputedKeyRegistry(),
 ): Promise<"created" | "already-seeded"> {
+  const moduleRegistry = await prepareSeedRegistries(viewTypeRegistry, computedKeyRegistry);
+  return withTransaction(pool, (client) =>
+    seedSystemInTransaction(client, viewTypeRegistry, computedKeyRegistry, moduleRegistry),
+  );
+}
+
+async function prepareSeedRegistries(
+  viewTypeRegistry: ViewTypeRegistry,
+  computedKeyRegistry: ComputedKeyRegistry,
+): Promise<ModuleRegistry> {
   // Registered before the idempotency guard: the registries are per-process, so every startup needs these
   // even though the one-time seed is skipped. Registration is idempotent.
   registerTemporalSwitcherViewType(viewTypeRegistry);
@@ -124,199 +134,203 @@ export async function seedSystem(
   computedKeyRegistry.add(TRANSCRIPTION_SUGGEST_SPEAKERS_COMPUTED_KEY);
   computedKeyRegistry.add(TRANSCRIPTION_EVENT_RECOMMENDATION_COMPUTED_KEY);
 
-  // The systemDatabases manifest describes the ten databases this seed creates;
+  // The systemDatabases manifest describes the core databases this seed creates;
   // `seedTenDatabasesInTransaction` reads its `defaultViewType` projection.
   const moduleRegistry = new ModuleRegistry(() => new Set(["systemDatabases"]));
   await moduleRegistry.loadModule(new URL("./systemDatabasesModuleManifest.js", import.meta.url).href);
+  return moduleRegistry;
+}
 
-  const outcome = await withTransaction(pool, async (client): Promise<"created" | "already-seeded"> => {
-    // Before the guard, so a concurrent seed waits here and then sees this one's rows.
-    await lockTenantSeedInTransaction(client, "seedSystem");
-    const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1 AND system`, [
-      SYSTEM_SETTINGS_MODULE_ID,
-    ]);
-    if ((existingSettings.rowCount ?? 0) > 0) return "already-seeded";
+async function seedSystemInTransaction(
+  client: PoolClient,
+  viewTypeRegistry: ViewTypeRegistry,
+  computedKeyRegistry: ComputedKeyRegistry,
+  moduleRegistry: ModuleRegistry,
+): Promise<"created" | "already-seeded"> {
+  // Before the guard, so a concurrent seed waits here and then sees this one's rows.
+  await lockTenantSeedInTransaction(client, "seedSystem");
+  const existingSettings = await client.query(`SELECT id FROM databases WHERE owner_module_id = $1 AND system`, [
+    SYSTEM_SETTINGS_MODULE_ID,
+  ]);
+  if ((existingSettings.rowCount ?? 0) > 0) return "already-seeded";
 
-    const tenDatabases = await seedTenDatabasesInTransaction(
-      client,
-      viewTypeRegistry,
-      computedKeyRegistry,
-      moduleRegistry,
-    );
-    const projectsDb = tenDatabases.projects;
+  const tenDatabases = await seedTenDatabasesInTransaction(
+    client,
+    viewTypeRegistry,
+    computedKeyRegistry,
+    moduleRegistry,
+  );
+  const projectsDb = tenDatabases.projects;
 
-    const semprecProject = await itemsStore.insertItem(client, {
-      databaseId: projectsDb.id,
-      properties: {
-        name: "Semprec",
-        systemActive: true,
-        agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[SYSTEM_SETTINGS_MODULE_ID],
-      },
-    });
-
-    // Created unlocked so propertiesStore.createProperty (which enforces schema_locked) accepts the writes
-    // below; locked with a raw UPDATE afterwards.
-    const settingsDb = await databasesStore.createDatabase(client, {
-      name: "System settings",
-      system: true,
-      ownerModuleId: SYSTEM_SETTINGS_MODULE_ID,
-      ownerProjectItemId: semprecProject.id,
-    });
-    await propertiesStore.createProperty(client, {
-      databaseId: settingsDb.id,
-      key: "name",
-      name: "Name",
-      type: "text",
-      locked: true,
-      owner: "user",
-    });
-    await propertiesStore.createProperty(client, {
-      databaseId: settingsDb.id,
-      key: "timezone",
-      name: "Timezone",
-      type: "text",
-      locked: true,
-      owner: "user",
-    });
-
-    // Defaults of the seeded Inbox item types; none yet.
-    await propertiesStore.createProperty(client, {
-      databaseId: settingsDb.id,
-      key: SEEDED_DEFAULT_INBOX_TYPES_KEY,
-      name: SEEDED_DEFAULT_INBOX_TYPES_NAME,
-      type: "json",
-      owner: "system",
-      ownerProcess: INBOX_MODULE_ID,
-    });
-
-    await itemsStore.insertItem(client, {
-      databaseId: settingsDb.id,
-      properties: {
-        name: "Semp",
-        timezone: DEFAULT_TIMEZONE,
-        [SEEDED_DEFAULT_INBOX_TYPES_KEY]: [],
-      },
-    });
-
-    const people = await databasesStore.getDatabaseByModuleId(client, "people");
-    if (!people) throw new Error("People database has not been seeded");
-    await createRelationPropertyWithClient(client, {
-      sourceDatabaseId: settingsDb.id,
-      key: "selfPerson",
-      name: null,
-      targetDatabaseId: people.id,
-      cardinality: "one_to_one",
-      owner: "user",
-      locked: true,
-    });
-
-    await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [settingsDb.id]);
-
-    // Daily manifest <-> text/owner_process drift check for the supervisor's project. Needs settingsDb:
-    // next_fire_at reads the system timezone.
-    await createHeartbeat(client, {
-      projectItemId: semprecProject.id,
-      name: "Manifest drift check",
-      rule: { kind: "dailyTime", at: "03:00" },
-      actionId: DRIFT_CHECK_ACTION_ID,
-    });
-
-    // Live mechanical drift check: catches manual DB edits made after startup, which load-time validation
-    // cannot see. Offset five minutes from the check above.
-    await createHeartbeat(client, {
-      projectItemId: semprecProject.id,
-      name: "Module registry drift check",
-      rule: { kind: "dailyTime", at: "03:05" },
-      actionId: MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID,
-    });
-
-    // Needs Projects/People and the system timezone.
-    await seedLibraryModuleInTransaction(
-      client,
-      projectsDb.id,
-      tenDatabases.people.id,
-      viewTypeRegistry,
-      computedKeyRegistry,
-    );
-
-    // Order relative to the library module does not matter.
-    const emailModuleResult = await seedEmailModuleInTransaction(
-      client,
-      projectsDb.id,
-      tenDatabases.people.id,
-      tenDatabases.files.id,
-      computedKeyRegistry,
-      viewTypeRegistry,
-    );
-
-    // Files transcription trigger: fires on every Files item creation but only transcribes a standalone
-    // `audio/*` file (see transcriptionActions.ts); needs the attachments property created just above.
-    const attachmentsProperty = await propertiesStore.getPropertyByKey(
-      client,
-      emailModuleResult.emails.id,
-      emailModuleResult.attachmentsRelationKey,
-    );
-    if (!attachmentsProperty) {
-      throw new Error("Emails.attachments property not found after seedEmailModuleInTransaction");
-    }
-    // The trigger also skips a file attached to an Event, so it needs the Files.events property id.
-    const eventsProperty = await propertiesStore.getPropertyByKey(client, tenDatabases.files.id, "events");
-    if (!eventsProperty) {
-      throw new Error("Files.events property not found after seedTenDatabasesInTransaction");
-    }
-    await createHeartbeat(client, {
-      projectItemId: semprecProject.id,
-      name: "Files transcription trigger",
-      rule: { kind: "onItemEvent", databaseId: tenDatabases.files.id, event: "create" },
-      actionId: FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
-      actionConfig: {
-        filesDatabaseId: tenDatabases.files.id,
-        attachmentsRelationPropertyId: attachmentsProperty.id,
-        eventsRelationPropertyId: eventsProperty.id,
-      },
-    });
-    // Daily: puts every failed Transcriptions row back into the pipeline as a fresh batch.
-    await createHeartbeat(client, {
-      projectItemId: semprecProject.id,
-      ...TRANSCRIPTION_REQUEUE_HEARTBEAT,
-      actionId: TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
-      actionConfig: { transcriptsDatabaseId: tenDatabases.transcripts.id },
-    });
-    // Midnight: moves unfinished one-off tasks to the new day.
-    await createHeartbeat(client, {
-      projectItemId: semprecProject.id,
-      ...TASKS_DAY_ROLLOVER_HEARTBEAT,
-      actionId: TASKS_DAY_ROLLOVER_ACTION_ID,
-      actionConfig: { tasksDatabaseId: tenDatabases.tasks.id },
-    });
-    // Sunday evening: asks the assistant to tidy the Journal.
-    await ensureJournalWeeklyCleanupHeartbeat(client, semprecProject.id);
-
-    // Needs Journal, Transcripts, Threads and the Semprec project item.
-    await seedInboxPipelineInTransaction(
-      client,
-      tenDatabases.journal.id,
-      tenDatabases.transcripts.id,
-      semprecProject.id,
-      computedKeyRegistry,
-      viewTypeRegistry,
-    );
-
-    // Non-secret MCP connection metadata only.
-    await seedMcpModuleInTransaction(client, projectsDb.id);
-
-    // Edits the Events database created above.
-    const { calendars } = await seedCalendarsInTransaction(client, projectsDb.id, tenDatabases.events.id);
-
-    // After Calendars (whose project owns it) and the email module (Emails, Mailboxes).
-    await seedInvitationsDatabaseInTransaction(client, calendars);
-
-    await seedRecipesModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
-
-    // Three databases, one settings item, two default plans; `sleepSettings.area` needs Areas.
-    await seedSleepModuleInTransaction(client, projectsDb.id, tenDatabases.areas.id, viewTypeRegistry);
-    return "created";
+  const alldotsProject = await itemsStore.insertItem(client, {
+    databaseId: projectsDb.id,
+    properties: {
+      name: "Alldots",
+      systemActive: true,
+      agents: SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS[SYSTEM_SETTINGS_MODULE_ID],
+    },
   });
 
-  return outcome;
+  // Created unlocked so propertiesStore.createProperty (which enforces schema_locked) accepts the writes
+  // below; locked with a raw UPDATE afterwards.
+  const settingsDb = await databasesStore.createDatabase(client, {
+    name: "System settings",
+    system: true,
+    ownerModuleId: SYSTEM_SETTINGS_MODULE_ID,
+    ownerProjectItemId: alldotsProject.id,
+  });
+  await propertiesStore.createProperty(client, {
+    databaseId: settingsDb.id,
+    key: "name",
+    name: "Name",
+    type: "text",
+    locked: true,
+    owner: "user",
+  });
+  await propertiesStore.createProperty(client, {
+    databaseId: settingsDb.id,
+    key: "timezone",
+    name: "Timezone",
+    type: "text",
+    locked: true,
+    owner: "user",
+  });
+
+  // Defaults of the seeded Inbox item types; none yet.
+  await propertiesStore.createProperty(client, {
+    databaseId: settingsDb.id,
+    key: SEEDED_DEFAULT_INBOX_TYPES_KEY,
+    name: SEEDED_DEFAULT_INBOX_TYPES_NAME,
+    type: "json",
+    owner: "system",
+    ownerProcess: INBOX_MODULE_ID,
+  });
+
+  await itemsStore.insertItem(client, {
+    databaseId: settingsDb.id,
+    properties: {
+      name: "Semp",
+      timezone: DEFAULT_TIMEZONE,
+      [SEEDED_DEFAULT_INBOX_TYPES_KEY]: [],
+    },
+  });
+
+  const people = await databasesStore.getDatabaseByModuleId(client, "people");
+  if (!people) throw new Error("People database has not been seeded");
+  await createRelationPropertyWithClient(client, {
+    sourceDatabaseId: settingsDb.id,
+    key: "selfPerson",
+    name: null,
+    targetDatabaseId: people.id,
+    cardinality: "one_to_one",
+    owner: "user",
+    locked: true,
+  });
+
+  await client.query(`UPDATE databases SET schema_locked = true WHERE id = $1`, [settingsDb.id]);
+
+  // Daily manifest <-> text/owner_process drift check for the supervisor's project. Needs settingsDb:
+  // next_fire_at reads the system timezone.
+  await createHeartbeat(client, {
+    projectItemId: alldotsProject.id,
+    name: "Manifest drift check",
+    rule: { kind: "dailyTime", at: "03:00" },
+    actionId: DRIFT_CHECK_ACTION_ID,
+  });
+
+  // Live mechanical drift check: catches manual DB edits made after startup, which load-time validation
+  // cannot see. Offset five minutes from the check above.
+  await createHeartbeat(client, {
+    projectItemId: alldotsProject.id,
+    name: "Module registry drift check",
+    rule: { kind: "dailyTime", at: "03:05" },
+    actionId: MODULE_REGISTRY_CHECK_DRIFT_ACTION_ID,
+  });
+
+  // Needs Projects/People and the system timezone.
+  await seedLibraryModuleInTransaction(
+    client,
+    projectsDb.id,
+    tenDatabases.people.id,
+    viewTypeRegistry,
+    computedKeyRegistry,
+  );
+
+  // Order relative to the library module does not matter.
+  const emailModuleResult = await seedEmailModuleInTransaction(
+    client,
+    projectsDb.id,
+    tenDatabases.people.id,
+    tenDatabases.files.id,
+    computedKeyRegistry,
+    viewTypeRegistry,
+  );
+
+  // Files transcription trigger: fires on every Files item creation but only transcribes a standalone
+  // `audio/*` file (see transcriptionActions.ts); needs the attachments property created just above.
+  const attachmentsProperty = await propertiesStore.getPropertyByKey(
+    client,
+    emailModuleResult.emails.id,
+    emailModuleResult.attachmentsRelationKey,
+  );
+  if (!attachmentsProperty) {
+    throw new Error("Emails.attachments property not found after seedEmailModuleInTransaction");
+  }
+  // The trigger also skips a file attached to an Event, so it needs the Files.events property id.
+  const eventsProperty = await propertiesStore.getPropertyByKey(client, tenDatabases.files.id, "events");
+  if (!eventsProperty) {
+    throw new Error("Files.events property not found after seedTenDatabasesInTransaction");
+  }
+  await createHeartbeat(client, {
+    projectItemId: alldotsProject.id,
+    name: "Files transcription trigger",
+    rule: { kind: "onItemEvent", databaseId: tenDatabases.files.id, event: "create" },
+    actionId: FILES_TRANSCRIPTION_TRIGGER_ACTION_ID,
+    actionConfig: {
+      filesDatabaseId: tenDatabases.files.id,
+      attachmentsRelationPropertyId: attachmentsProperty.id,
+      eventsRelationPropertyId: eventsProperty.id,
+    },
+  });
+  // Daily: puts every failed Transcriptions row back into the pipeline as a fresh batch.
+  await createHeartbeat(client, {
+    projectItemId: alldotsProject.id,
+    ...TRANSCRIPTION_REQUEUE_HEARTBEAT,
+    actionId: TRANSCRIPTION_REQUEUE_SWEEP_ACTION_ID,
+    actionConfig: { transcriptsDatabaseId: tenDatabases.transcripts.id },
+  });
+  // Midnight: moves unfinished one-off tasks to the new day.
+  await createHeartbeat(client, {
+    projectItemId: alldotsProject.id,
+    ...TASKS_DAY_ROLLOVER_HEARTBEAT,
+    actionId: TASKS_DAY_ROLLOVER_ACTION_ID,
+    actionConfig: { tasksDatabaseId: tenDatabases.tasks.id },
+  });
+  // Sunday evening: asks the assistant to tidy the Journal.
+  await ensureJournalWeeklyCleanupHeartbeat(client, alldotsProject.id);
+
+  // Needs Journal, Transcripts, Threads and the Alldots project item.
+  await seedInboxPipelineInTransaction(
+    client,
+    tenDatabases.journal.id,
+    tenDatabases.transcripts.id,
+    alldotsProject.id,
+    computedKeyRegistry,
+    viewTypeRegistry,
+  );
+
+  // Non-secret MCP connection metadata only.
+  await seedMcpModuleInTransaction(client, projectsDb.id);
+
+  // Edits the Events database created above.
+  const { calendars } = await seedCalendarsInTransaction(client, projectsDb.id, tenDatabases.events.id);
+
+  // After Calendars (whose project owns it) and the email module (Emails, Mailboxes).
+  await seedInvitationsDatabaseInTransaction(client, calendars);
+
+  await seedRecipesModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
+
+  // Three databases, one settings item, two default plans.
+  await seedSleepModuleInTransaction(client, projectsDb.id, viewTypeRegistry);
+  return "created";
 }

@@ -76,6 +76,7 @@ extension SharedSempStatusScreenModel {
         case .openChat(let open): .openChat(threadId: open.threadId, messageId: open.messageId)
         case .openThread(let open): .openThread(threadId: open.threadId)
         case .openProject(let open): .openProject(projectId: open.projectId)
+        case .openMailbox(let open): .openMailbox(mailboxId: open.mailboxId)
         }
     }
 }
@@ -120,6 +121,7 @@ extension SempIssueLink {
         case .chat: self = .chat
         case .thread: self = .thread
         case .project: self = .project
+        case .mailbox: self = .mailbox
         }
     }
 }

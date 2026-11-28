@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Alldots daily backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=alldots-backup.service
+
+[Install]
+WantedBy=timers.target

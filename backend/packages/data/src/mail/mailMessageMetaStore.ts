@@ -11,12 +11,18 @@ import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { getItemsByIdsIncludingDeleted, lockItemById } from "../chokePoint/itemsStore.js";
-import { transferMailThreadRelationsWithClient } from "../chokePoint/relationOps.js";
+import { createRelationWithClient, transferMailThreadRelationsWithClient } from "../chokePoint/relationOps.js";
+import { getRelationDefinitionByPropertyId, listRelationsForItem, otherSide } from "../chokePoint/relationsStore.js";
+import { EMAILS_RELATION_CONTEXT } from "./emailsRelationContext.js";
 import { finishThreadValueMerge, planThreadValueMerge } from "./threadMergePrecedence.js";
 import { SYSTEM_WRITER } from "../chokePoint/writerKind.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { THREADS_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { propagateThreadAttachmentLinks, repointThreadAttachmentLinks } from "./threadAttachmentLinks.js";
+import { assertKnownValue } from "../dbRowValidation.js";
+import { MAIL_ARRIVALS, type MailArrival } from "./mailArrival.js";
+import { MAIL_CONTENT_STATES, type MailContentState } from "./mailContentState.js";
+import { touchMailThreads } from "./mailThreadChanges.js";
 
 export interface MailEnvelopeAddress {
   name?: string;
@@ -32,7 +38,6 @@ export interface MailEnvelope {
 }
 
 export type MailMessageKind = "message" | "dsn";
-export type MailMessageMigrationStatus = "stable" | "partial" | "done";
 
 export interface MailMessageMetaRow {
   itemId: string;
@@ -51,13 +56,15 @@ export interface MailMessageMetaRow {
   messageKind: MailMessageKind;
   /** For a DSN only: the Message-ID (from References/In-Reply-To) of the outgoing message it reports on. */
   dsnOriginalMessageId: string | null;
-  /** 'stable' for every row a current writer produces; the column also admits 'partial' and 'done'. */
-  migrationStatus: MailMessageMigrationStatus;
   /** At most 200 characters; `null` until ingest or send sets it. */
   previewText: string | null;
   ingestedAt: Date | null;
   /** Decided once at ingest (mail/bulkMail.ts). */
   isBulk: boolean;
+  /** Decided once at ingest (mail/mailArrival.ts); a send claim is `live`. */
+  arrival: MailArrival;
+  /** Decided once at ingest (mail/mailContentState.ts); a send claim is `full`. */
+  contentState: MailContentState;
 }
 
 type MailMessageMetaDbRow = {
@@ -73,10 +80,11 @@ type MailMessageMetaDbRow = {
   delivered_to_address: string | null;
   message_kind: MailMessageKind;
   dsn_original_message_id: string | null;
-  migration_status: MailMessageMigrationStatus;
   preview_text: string | null;
   ingested_at: Date | null;
   is_bulk: boolean;
+  arrival: string;
+  content_state: string;
 };
 
 function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
@@ -93,16 +101,17 @@ function mapRow(row: MailMessageMetaDbRow): MailMessageMetaRow {
     deliveredToAddress: row.delivered_to_address,
     messageKind: row.message_kind,
     dsnOriginalMessageId: row.dsn_original_message_id,
-    migrationStatus: row.migration_status,
     previewText: row.preview_text,
     ingestedAt: row.ingested_at,
     isBulk: row.is_bulk,
+    arrival: assertKnownValue(MAIL_ARRIVALS, row.arrival, "mail arrival"),
+    contentState: assertKnownValue(MAIL_CONTENT_STATES, row.content_state, "mail content state"),
   };
 }
 
 const COLUMNS =
   'item_id, mailbox_item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope, ' +
-  "delivered_to_address, message_kind, dsn_original_message_id, migration_status, preview_text, ingested_at, is_bulk";
+  "delivered_to_address, message_kind, dsn_original_message_id, preview_text, ingested_at, is_bulk, arrival, content_state";
 
 export interface UpsertMailMessageMetaInput {
   itemId: string;
@@ -118,11 +127,14 @@ export interface UpsertMailMessageMetaInput {
   deliveredToAddress?: string | null;
   messageKind?: MailMessageKind;
   dsnOriginalMessageId?: string | null;
-  migrationStatus?: MailMessageMigrationStatus;
   previewText?: string | null;
   ingestedAt?: Date | null;
   /** Written on insert only; a conflicting upsert keeps the stored value. Defaults to `false`. */
   isBulk?: boolean;
+  /** Written on insert only; a conflicting upsert keeps the stored value. */
+  arrival: MailArrival;
+  /** Written on insert only; a conflicting upsert keeps the stored value. */
+  contentState: MailContentState;
 }
 
 /**
@@ -148,8 +160,9 @@ export async function upsertMailMessageMeta(
   }
   const { rows } = await client.query<MailMessageMetaDbRow>(
     `INSERT INTO mail_message_meta (item_id, message_id, in_reply_to, "references", thread_id, provider_thread_id, provider_message_id, envelope,
-                                     delivered_to_address, message_kind, dsn_original_message_id, migration_status, mailbox_item_id, preview_text, ingested_at, is_bulk)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16)
+                                     delivered_to_address, message_kind, dsn_original_message_id, mailbox_item_id, preview_text, ingested_at, is_bulk,
+                                     arrival, content_state)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      ON CONFLICT (mailbox_item_id, message_id) DO UPDATE SET
        thread_id = COALESCE(EXCLUDED.thread_id, mail_message_meta.thread_id),
        provider_thread_id = COALESCE(EXCLUDED.provider_thread_id, mail_message_meta.provider_thread_id),
@@ -171,11 +184,12 @@ export async function upsertMailMessageMeta(
       input.deliveredToAddress ?? null,
       input.messageKind ?? "message",
       input.dsnOriginalMessageId ?? null,
-      input.migrationStatus ?? "stable",
       input.mailboxItemId,
       input.previewText ?? null,
       input.ingestedAt ?? null,
       input.isBulk ?? false,
+      input.arrival,
+      input.contentState,
     ],
   );
   return mapRow(requireSingleRow(rows, "mail_message_meta row"));
@@ -202,6 +216,35 @@ export async function getMailMessageMetaByMailboxAndMessageId(
     [mailboxItemId, messageId],
   );
   return rows[0] ? mapRow(rows[0]) : null;
+}
+
+/** Which of `messageIds` the mailbox already holds a message for. */
+export async function listKnownMailMessageIds(
+  client: Queryable,
+  mailboxItemId: string,
+  messageIds: readonly string[],
+): Promise<Set<string>> {
+  if (messageIds.length === 0) return new Set();
+  const { rows } = await client.query<{ message_id: string }>(
+    "SELECT message_id FROM mail_message_meta WHERE mailbox_item_id = $1 AND message_id = ANY($2::text[])",
+    [mailboxItemId, [...messageIds]],
+  );
+  return new Set(rows.map((row) => row.message_id));
+}
+
+/** Which of `providerMessageIds` the mailbox already holds a message for. */
+export async function listKnownProviderMessageIds(
+  client: Queryable,
+  mailboxItemId: string,
+  providerMessageIds: readonly string[],
+): Promise<Set<string>> {
+  if (providerMessageIds.length === 0) return new Set();
+  const { rows } = await client.query<{ provider_message_id: string }>(
+    `SELECT provider_message_id FROM mail_message_meta
+      WHERE mailbox_item_id = $1 AND provider_message_id = ANY($2::text[])`,
+    [mailboxItemId, [...providerMessageIds]],
+  );
+  return new Set(rows.map((row) => row.provider_message_id));
 }
 
 export async function getMailMessageMetaByProviderMessageId(
@@ -264,14 +307,50 @@ export async function deleteMailMessageMetaByItemId(client: PoolClient, itemId: 
 }
 
 /**
- * Deletes the meta row of a permanently deleted Emails item, in the purge's transaction. When no other row names its
- * thread (trashed messages count), the thread goes too: its Threads item is trashed through the choke point as the
- * system writer (unless already trashed), then the `mail_threads` row is deleted with its aliases by foreign key.
- * Unlike `deleteMailMessageMetaByItemId`, an already purged or unbound Threads item does not fail it.
+ * Marks that an IMAP pass removed one of the Email's folder edges, in the transaction that removed it, so the decision
+ * whether the Email still has a folder copy survives a pass that ends before its final transaction. `false` for an
+ * Email without a meta row, which only the removing pass itself decides.
+ */
+export async function markMailMessageFolderCopyRemoved(client: PoolClient, itemId: string): Promise<boolean> {
+  const result = await client.query("UPDATE mail_message_meta SET folder_copy_removed_at = now() WHERE item_id = $1", [
+    itemId,
+  ]);
+  return result.rowCount === 1;
+}
+
+/** The Emails of `mailboxItemId` marked by `markMailMessageFolderCopyRemoved` and not yet decided. */
+export async function listMailMessagesWithFolderCopyRemoved(
+  client: Queryable,
+  mailboxItemId: string,
+): Promise<string[]> {
+  const { rows } = await client.query<{ item_id: string }>(
+    `SELECT item_id FROM mail_message_meta
+      WHERE tenant_id = app_tenant_default() AND mailbox_item_id = $1 AND folder_copy_removed_at IS NOT NULL
+      ORDER BY item_id`,
+    [mailboxItemId],
+  );
+  return rows.map((row) => row.item_id);
+}
+
+/** Clears the mark of an Email found to keep a folder copy; `false` for an Email without a meta row. */
+export async function clearMailMessageFolderCopyRemoved(client: PoolClient, itemId: string): Promise<boolean> {
+  const result = await client.query("UPDATE mail_message_meta SET folder_copy_removed_at = NULL WHERE item_id = $1", [
+    itemId,
+  ]);
+  return result.rowCount === 1;
+}
+
+/**
+ * Deletes the meta row of an Emails item that leaves the mail for good: one permanently deleted (in the purge's
+ * transaction) or one trashed because its account's Mail was switched off. When no other row names its thread
+ * (trashed messages count), the thread goes too: its Threads item is trashed through the choke point as the system
+ * writer (unless already trashed), then the `mail_threads` row is deleted with its aliases by foreign key. Unlike
+ * `deleteMailMessageMetaByItemId`, an item without a meta row and an already purged or unbound Threads item do not
+ * fail it.
  *
  * Takes the tenant's mail-thread mutation guard before its first statement on a mail table.
  */
-export async function deleteMailMessageMetaOfPurgedItem(client: PoolClient, itemId: string): Promise<void> {
+export async function deleteMailMessageMetaOfRemovedItem(client: PoolClient, itemId: string): Promise<void> {
   await lockMailThreadMutation(client);
   const deleted = await client.query<{ thread_id: string | null }>(
     `DELETE FROM mail_message_meta WHERE item_id = $1 RETURNING thread_id`,
@@ -280,6 +359,7 @@ export async function deleteMailMessageMetaOfPurgedItem(client: PoolClient, item
   if (deleted.rowCount === 0) return;
   const threadId = deleted.rows[0]?.thread_id;
   if (!threadId) return;
+  touchMailThreads(client, [threadId]);
   const emptied = await client.query<{ item_id: string | null }>(
     `SELECT item_id FROM mail_threads t WHERE t.id = $1 AND NOT EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.thread_id = t.id) FOR UPDATE`,
     [threadId],
@@ -298,6 +378,81 @@ export async function deleteMailMessageMetaOfPurgedItem(client: PoolClient, item
   requireAffectedRows(
     await client.query(`DELETE FROM mail_threads WHERE id = $1`, [threadId]),
     "delete of an emptied mail thread",
+  );
+}
+
+/**
+ * Gives a just-sent message the identity its provider filed it under (`messageId`, the provider message and thread
+ * ids), so the synced copy converges onto it instead of being ingested beside it, and replies naming the provider's
+ * Message-ID thread onto it. A copy of the same message already ingested in the mailbox (its sync won the race with
+ * the send's finalization) is removed as `deleteMailMessageMetaOfRemovedItem` removes a message: its Email is trashed
+ * as the system writer and its meta row deleted, after the sent message took over its folders (a message to oneself
+ * is in the Inbox too), except `sentFolderItemId`, which the send links itself. Runs under the tenant's mail-thread
+ * guard, which every ingest takes.
+ */
+export async function adoptProviderSentIdentity(
+  client: PoolClient,
+  input: {
+    itemId: string;
+    mailboxItemId: string;
+    messageId?: string;
+    providerMessageId?: string;
+    providerThreadId?: string;
+    folderRelationPropertyId: string;
+    sentFolderItemId: string;
+  },
+): Promise<void> {
+  await lockMailThreadMutation(client);
+  const { rows: copies } = await client.query<{ item_id: string }>(
+    `SELECT item_id FROM mail_message_meta
+      WHERE mailbox_item_id = $1 AND item_id <> $2 AND (message_id = $3 OR provider_message_id = $4)
+      ORDER BY item_id`,
+    [input.mailboxItemId, input.itemId, input.messageId ?? null, input.providerMessageId ?? null],
+  );
+  const folderDefinition =
+    copies.length === 0 ? null : await getRelationDefinitionByPropertyId(client, input.folderRelationPropertyId);
+  if (copies.length > 0 && !folderDefinition) throw new Error("The Emails folder relation has no definition");
+  for (const copy of copies) {
+    if (folderDefinition) {
+      const linked = new Set(
+        (await listRelationsForItem(client, folderDefinition.id, input.itemId)).map((edge) =>
+          otherSide(edge, input.itemId),
+        ),
+      );
+      for (const edge of await listRelationsForItem(client, folderDefinition.id, copy.item_id)) {
+        const folderItemId = otherSide(edge, copy.item_id);
+        if (folderItemId === input.sentFolderItemId || linked.has(folderItemId)) continue;
+        await createRelationWithClient(
+          client,
+          {
+            relationPropertyId: input.folderRelationPropertyId,
+            callerItemId: input.itemId,
+            targetItemId: folderItemId,
+          },
+          EMAILS_RELATION_CONTEXT,
+        );
+        linked.add(folderItemId);
+      }
+    }
+    const [item] = await getItemsByIdsIncludingDeleted(client, [copy.item_id]);
+    if (item && item.deletedAt === null) {
+      await itemDeleteWithClient(client, item.databaseId, item.id, {
+        queueAffinity: createActionQueueAffinity(),
+        writer: SYSTEM_WRITER,
+      });
+    }
+    await deleteMailMessageMetaOfRemovedItem(client, copy.item_id);
+  }
+  requireAffectedRows(
+    await client.query(
+      `UPDATE mail_message_meta
+          SET message_id = COALESCE($2, message_id),
+              provider_message_id = COALESCE($3, provider_message_id),
+              provider_thread_id = COALESCE($4, provider_thread_id)
+        WHERE item_id = $1`,
+      [input.itemId, input.messageId ?? null, input.providerMessageId ?? null, input.providerThreadId ?? null],
+    ),
+    "update of a sent message's provider identity",
   );
 }
 
@@ -348,6 +503,7 @@ export async function reassignThread(client: PoolClient, fromThreadId: string, t
   try {
     await lockMailThreadMutation(client);
     if (fromThreadId === toThreadId) return;
+    touchMailThreads(client, [fromThreadId, toThreadId]);
     const database = await getDatabaseByModuleId(client, THREADS_MODULE_ID);
     if (!database?.system) throw new Error("Threads database is missing");
     const bindings = await client.query<{ id: string; item_id: string | null }>(

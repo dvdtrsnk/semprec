@@ -62,7 +62,7 @@ private extension MailSempDraftCard {
                 .accessibilityLabel(Text("mail.draft.text", bundle: .module))
                 .accessibilityIdentifier(MailIdentifiers.draftEditor)
             if state.sendPhase == .failed {
-                Text(FailureKind.sendMessage(for: state.sendFailure))
+                Text(FailureKind.sendMessage(for: state.sendFailure, refusal: state.sendRefusal))
                     .font(.footnote)
                     .foregroundStyle(Theme.Colors.destructive)
             }

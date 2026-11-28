@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// The Journal router opens Podrobnosti over the Journal stack and pushes subpages and the Inbox onto it.
 final class JournalNavigationTests: XCTestCase {
@@ -15,10 +15,13 @@ final class JournalNavigationTests: XCTestCase {
     }
 
     @MainActor
-    func testASubpageIsPushedWithItsTitle() {
+    func testASubpageOpensInTheNoteEditorUnderTheJournal() {
         let (router, stack) = makeRouter()
         router.showPage(itemId: "p1", title: "Notes")
-        XCTAssertEqual(stack.pushed, [.journalPage(itemId: "p1", title: "Notes")])
+        XCTAssertEqual(
+            stack.pushed,
+            [.notes(itemId: "p1", tab: .journal, trail: [String(localized: "tab.journal")], focusTitle: false)]
+        )
         XCTAssertTrue(stack.sheets.isEmpty)
     }
 

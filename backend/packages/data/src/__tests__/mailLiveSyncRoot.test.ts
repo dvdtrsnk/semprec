@@ -7,7 +7,7 @@ import {
   withTraceContext,
   type TenantScope,
   type TraceContext,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -19,7 +19,12 @@ import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { withTransaction } from "../db/pool.js";
-import { getMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
+import {
+  clearMailSyncFailure,
+  getMailAccountSyncState,
+  recordSyncError,
+  type MailSyncFailureKind,
+} from "../mail/mailAccountSyncStateStore.js";
 import { resolveMailModuleIds } from "../mail/mailModuleIds.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
 import { removeMailbox } from "../mail/mailboxRemoval.js";
@@ -44,7 +49,7 @@ beforeEach(async () => {
   pool ??= getTestPool();
   await resetDatabase(pool);
   await seedSystem(pool);
-  dataPool = await createRuntimeRolePool(pool, "semprec_data");
+  dataPool = await createRuntimeRolePool(pool, "alldots_data");
 });
 
 afterEach(async () => {
@@ -364,6 +369,31 @@ describe("mail live-sync composition root", () => {
     await root.reconcileOnce();
     expect(byAccount.get(a)).not.toBe(first);
     expect(byAccount.get(a)?.starts).toBe(1);
+    await root.stop();
+  });
+
+  it.each<[MailSyncFailureKind, string, boolean]>([
+    ["reauthorization", "stops hosting the account until a sign-in clears the failure", false],
+    ["connectionLimit", "keeps hosting the account", true],
+    ["other", "keeps hosting the account", true],
+  ])("after a sync failure of kind %s, %s", async (failureKind, _outcome, hosted) => {
+    const a = await addMailbox();
+    const b = await addMailbox();
+    const { factory, byAccount } = recordingFactory();
+    const root = createMailLiveSyncRoot(pool, factory);
+    await root.reconcileOnce();
+    const first = byAccount.get(a);
+
+    await runInTenant(tenantZero(), () =>
+      withTransaction(dataPool, (client) => recordSyncError(client, a, "failure", failureKind)),
+    );
+    await root.reconcileOnce();
+    expect([first?.stops, byAccount.get(b)?.stops]).toEqual([hosted ? 0 : 1, 0]);
+
+    await runInTenant(tenantZero(), () => withTransaction(dataPool, (client) => clearMailSyncFailure(client, a)));
+    await root.reconcileOnce();
+    expect(byAccount.get(a) === first).toBe(hosted);
+    expect(byAccount.get(a)?.stops).toBe(0);
     await root.stop();
   });
 
@@ -1216,7 +1246,7 @@ describe("mail live-sync root: seeding under a share lock on the live mailbox", 
   let removalPool: Pool;
 
   beforeEach(async () => {
-    removalPool = await createRuntimeRolePool(pool, "semprec_data");
+    removalPool = await createRuntimeRolePool(pool, "alldots_data");
   });
 
   afterEach(async () => {

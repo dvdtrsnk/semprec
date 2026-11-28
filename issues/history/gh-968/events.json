@@ -2,7 +2,7 @@
   {
     "id": 32384707385,
     "node_id": "PIAE_lADOUFuQ4c8AAAABUvunxs8AAAAHikdrOQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32384707385",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32384707385",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -36,8 +36,8 @@
       "repository": {
         "id": 1348178145,
         "node_id": "R_kgDOUFuQ4Q",
-        "name": "semprec",
-        "full_name": "dvdtrsnk/semprec",
+        "name": "alldots",
+        "full_name": "dvdtrsnk/alldots",
         "private": false,
         "owner": {
           "login": "dvdtrsnk",
@@ -60,46 +60,46 @@
           "user_view_type": "public",
           "site_admin": false
         },
-        "html_url": "https://github.com/dvdtrsnk/semprec",
-        "description": "Semprec backend implementation",
+        "html_url": "https://github.com/dvdtrsnk/alldots",
+        "description": "Alldots backend implementation",
         "fork": false,
-        "url": "https://api.github.com/repos/dvdtrsnk/semprec",
-        "forks_url": "https://api.github.com/repos/dvdtrsnk/semprec/forks",
-        "keys_url": "https://api.github.com/repos/dvdtrsnk/semprec/keys{/key_id}",
-        "collaborators_url": "https://api.github.com/repos/dvdtrsnk/semprec/collaborators{/collaborator}",
-        "teams_url": "https://api.github.com/repos/dvdtrsnk/semprec/teams",
-        "hooks_url": "https://api.github.com/repos/dvdtrsnk/semprec/hooks",
-        "issue_events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events{/number}",
-        "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/events",
-        "assignees_url": "https://api.github.com/repos/dvdtrsnk/semprec/assignees{/user}",
-        "branches_url": "https://api.github.com/repos/dvdtrsnk/semprec/branches{/branch}",
-        "tags_url": "https://api.github.com/repos/dvdtrsnk/semprec/tags",
-        "blobs_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/blobs{/sha}",
-        "git_tags_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/tags{/sha}",
-        "git_refs_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/refs{/sha}",
-        "trees_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/trees{/sha}",
-        "statuses_url": "https://api.github.com/repos/dvdtrsnk/semprec/statuses/{sha}",
-        "languages_url": "https://api.github.com/repos/dvdtrsnk/semprec/languages",
-        "stargazers_url": "https://api.github.com/repos/dvdtrsnk/semprec/stargazers",
-        "contributors_url": "https://api.github.com/repos/dvdtrsnk/semprec/contributors",
-        "subscribers_url": "https://api.github.com/repos/dvdtrsnk/semprec/subscribers",
-        "subscription_url": "https://api.github.com/repos/dvdtrsnk/semprec/subscription",
-        "commits_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits{/sha}",
-        "git_commits_url": "https://api.github.com/repos/dvdtrsnk/semprec/git/commits{/sha}",
-        "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/comments{/number}",
-        "issue_comment_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments{/number}",
-        "contents_url": "https://api.github.com/repos/dvdtrsnk/semprec/contents/{+path}",
-        "compare_url": "https://api.github.com/repos/dvdtrsnk/semprec/compare/{base}...{head}",
-        "merges_url": "https://api.github.com/repos/dvdtrsnk/semprec/merges",
-        "archive_url": "https://api.github.com/repos/dvdtrsnk/semprec/{archive_format}{/ref}",
-        "downloads_url": "https://api.github.com/repos/dvdtrsnk/semprec/downloads",
-        "issues_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues{/number}",
-        "pulls_url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls{/number}",
-        "milestones_url": "https://api.github.com/repos/dvdtrsnk/semprec/milestones{/number}",
-        "notifications_url": "https://api.github.com/repos/dvdtrsnk/semprec/notifications{?since,all,participating}",
-        "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/labels{/name}",
-        "releases_url": "https://api.github.com/repos/dvdtrsnk/semprec/releases{/id}",
-        "deployments_url": "https://api.github.com/repos/dvdtrsnk/semprec/deployments"
+        "url": "https://api.github.com/repos/dvdtrsnk/alldots",
+        "forks_url": "https://api.github.com/repos/dvdtrsnk/alldots/forks",
+        "keys_url": "https://api.github.com/repos/dvdtrsnk/alldots/keys{/key_id}",
+        "collaborators_url": "https://api.github.com/repos/dvdtrsnk/alldots/collaborators{/collaborator}",
+        "teams_url": "https://api.github.com/repos/dvdtrsnk/alldots/teams",
+        "hooks_url": "https://api.github.com/repos/dvdtrsnk/alldots/hooks",
+        "issue_events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events{/number}",
+        "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/events",
+        "assignees_url": "https://api.github.com/repos/dvdtrsnk/alldots/assignees{/user}",
+        "branches_url": "https://api.github.com/repos/dvdtrsnk/alldots/branches{/branch}",
+        "tags_url": "https://api.github.com/repos/dvdtrsnk/alldots/tags",
+        "blobs_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/blobs{/sha}",
+        "git_tags_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/tags{/sha}",
+        "git_refs_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/refs{/sha}",
+        "trees_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/trees{/sha}",
+        "statuses_url": "https://api.github.com/repos/dvdtrsnk/alldots/statuses/{sha}",
+        "languages_url": "https://api.github.com/repos/dvdtrsnk/alldots/languages",
+        "stargazers_url": "https://api.github.com/repos/dvdtrsnk/alldots/stargazers",
+        "contributors_url": "https://api.github.com/repos/dvdtrsnk/alldots/contributors",
+        "subscribers_url": "https://api.github.com/repos/dvdtrsnk/alldots/subscribers",
+        "subscription_url": "https://api.github.com/repos/dvdtrsnk/alldots/subscription",
+        "commits_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits{/sha}",
+        "git_commits_url": "https://api.github.com/repos/dvdtrsnk/alldots/git/commits{/sha}",
+        "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/comments{/number}",
+        "issue_comment_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments{/number}",
+        "contents_url": "https://api.github.com/repos/dvdtrsnk/alldots/contents/{+path}",
+        "compare_url": "https://api.github.com/repos/dvdtrsnk/alldots/compare/{base}...{head}",
+        "merges_url": "https://api.github.com/repos/dvdtrsnk/alldots/merges",
+        "archive_url": "https://api.github.com/repos/dvdtrsnk/alldots/{archive_format}{/ref}",
+        "downloads_url": "https://api.github.com/repos/dvdtrsnk/alldots/downloads",
+        "issues_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues{/number}",
+        "pulls_url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls{/number}",
+        "milestones_url": "https://api.github.com/repos/dvdtrsnk/alldots/milestones{/number}",
+        "notifications_url": "https://api.github.com/repos/dvdtrsnk/alldots/notifications{?since,all,participating}",
+        "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/labels{/name}",
+        "releases_url": "https://api.github.com/repos/dvdtrsnk/alldots/releases{/id}",
+        "deployments_url": "https://api.github.com/repos/dvdtrsnk/alldots/deployments"
       },
       "issue_type": null
     },
@@ -137,8 +137,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvuqNA",
         "number": 969,
         "title": "[mt-foundation 08/16] Replace the single-user tenancy exemption in the backend review rules with tenant-isolation rules",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/969",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/969",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "0271353a55e2a132c2234829397473c92d74b2e9b83b78466d42c177c1da13ce"
       }
@@ -176,8 +176,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvusuQ",
         "number": 970,
         "title": "[mt-foundation 09/16] Teach the convention skills and AGENTS.md the tenancy rules",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/970",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/970",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "167ee2658bf6e6605137717460fd06849f83afc22e0acda1a3e4b5779bf0e55b"
       }
@@ -215,8 +215,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvuvQA",
         "number": 971,
         "title": "[mt-foundation 10/16] Classify every table with a tenancy comment and fail CI on an unclassified table",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/971",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/971",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "887b2f48edc2ac33b8f0a92e0c1613ecae7565103aaffdbc1814f89aeadf3b5d"
       }
@@ -254,8 +254,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvux7A",
         "number": 972,
         "title": "[mt-foundation 11/16] Add a defaulted tenant_id to every tenant-owned table",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/972",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/972",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "c6fbcb53d4ff582af2c2c8073735398f847985032b33900f4c56a9178c2ef0af"
       }
@@ -293,8 +293,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvu0AQ",
         "number": 973,
         "title": "[mt-foundation 12/16] Enable row-level security with the transitional restrictive tenant policy on every tenant table",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/973",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/973",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "0d982232e1f505c12c87f88385e5342f66d3e5b08d7623a12d74abf86bb8c970"
       }
@@ -332,8 +332,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvu2aQ",
         "number": 974,
         "title": "[mt-foundation 13/16] Add tenant-leading unique indexes beside every global uniqueness on tenant tables (expand)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/974",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/974",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "f1011e2cc150b213a2b2cb0fb4e537fe5ef83c544dbf8ebc8c17ee64ebf6275e"
       }
@@ -371,8 +371,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvu44A",
         "number": 975,
         "title": "[mt-foundation 14/16] Build the two-tenant runtime-role integration harness",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/975",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/975",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "c8d1160d564e04920122fb11e695528c136a7e2e17f74f564c12829744e38074"
       }
@@ -409,9 +409,9 @@
         "id": 5687196379,
         "node_id": "I_kwDOUFuQ4c8AAAABUvu62w",
         "number": 976,
-        "title": "[mt-foundation 15/16] Restrict DML on the identity tables to semprec_data",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/976",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "title": "[mt-foundation 15/16] Restrict DML on the identity tables to alldots_data",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/976",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "799b6f86e1f2df6d06cc32b0a4be2f3fd33171dfb7c27e0f9184b7eaec2e3458"
       }
@@ -449,8 +449,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvu-yw",
         "number": 978,
         "title": "[mt-context 01/21] Add the tenant scope primitive and apply it to every transaction and pool checkout",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/978",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/978",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "248c97dd22ee8b781ec728530936f9523820fe87a2fb8969e7ac87029aba80f6"
       }
@@ -488,8 +488,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvvDHw",
         "number": 980,
         "title": "[mt-context 03/21] Resolve the tenant at authentication and run adapter routes in its scope",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/980",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/980",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "4a15515e5e0d0576ea0a6ada37708edc102559d669232333879356d2174bbc5f"
       }
@@ -527,8 +527,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvvIkQ",
         "number": 982,
         "title": "[mt-context 05/21] Stamp the tenant into the queue job envelope and restore it in the task runner",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/982",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/982",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "bc75340355b52c3d1b12ad05adc6af1665592320b7cc9a7053f526a7bca0f103"
       }
@@ -566,8 +566,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvvK0Q",
         "number": 983,
         "title": "[mt-context 06/21] Add the per-tenant fan-out helper for system work",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/983",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/983",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "25b600f9b41c30629e672c716ac53ceb0b2c48567ed146c6c8d9341740deeebb"
       }
@@ -605,8 +605,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvv8BA",
         "number": 1004,
         "title": "[mt-ai-budgets 01/04] Add admin-owned per-tenant AI budgets seeded from the current settings",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1004",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1004",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "62439ce17a7ebcf7a28582dee610f43565ebecdede0d6baf785219c893560a1f"
       }
@@ -644,8 +644,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvwTEg",
         "number": 1012,
         "title": "[mt-scope 11/23] Deduplicate notifications per recipient",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1012",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1012",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "0cfae494080c7c78d988204a51018f79fcc26379734a66ccc7690cb1382d3d85"
       }
@@ -683,8 +683,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvwcLg",
         "number": 1015,
         "title": "[mt-scope 14/23] Keep one Semp conversation per tenant",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1015",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1015",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "7b0dec64df672539080b41c8cb3fd6832b42fd0bf23ca005f5742533cef706e6"
       }
@@ -722,8 +722,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvwmAQ",
         "number": 1018,
         "title": "[mt-scope 17/23] Address tenant events and agent runs to the tenant's user",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1018",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1018",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "46a2d918b67ea4f272184057eb8ebd780117c276f3abc3aca3fe30589049de42"
       }
@@ -761,8 +761,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvwpCw",
         "number": 1019,
         "title": "[mt-scope 18/23] Send operator alerts to every admin without tenant content",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1019",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1019",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "7432ef3414339583149d4e1fcd05eb73e0b2f91942445c4e59cbeb6c2c90abf6"
       }
@@ -800,8 +800,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvxE4Q",
         "number": 1030,
         "title": "[mt-agents 03/08] Confine the stdio transport to a human writer in an admin's tenant",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1030",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1030",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "93b188bfdba1c34f171ff53045bdc2cfdfe82086bcc1d1a08d2c40d7ceecc46c"
       }
@@ -839,8 +839,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvxHrQ",
         "number": 1031,
         "title": "[mt-secrets 01/06] Give each tenant a wrapped data key and AEAD sealing primitives",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1031",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1031",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "b22c0ed01007acdf176f26166d927e84c277136c483c0f7f53ec245c58555106"
       }
@@ -878,8 +878,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvxNPg",
         "number": 1033,
         "title": "[mt-agents 04/08] Re-check the transport at spawn and give stdio children an allowlisted environment",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1033",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1033",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "16c592e0b65a55ed58075c931be60bc95e014e90f556c7f5fa0a9f0d4c78475c"
       }
@@ -917,8 +917,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvxupQ",
         "number": 1046,
         "title": "[mt-agents 07/08] Bind project agent guidance ownership to the tenant's user",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1046",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1046",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "7f0213702ceabf7cca0bd254d18e2294521a8541377bf93bebdaba67b0611b05"
       }
@@ -956,8 +956,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvx5vg",
         "number": 1051,
         "title": "[mt-enforcement 01/12] Refuse to start a service under a superuser, BYPASSRLS or table-owner database role",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1051",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1051",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "500187088f2c472ef5f9a6208a8f8b3137619de78e5f3eeaa5e5f276a4a4b445"
       }
@@ -995,8 +995,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvyX6g",
         "number": 1065,
         "title": "[mt-enforcement 08/12] Drop the legacy global unique keys and the dormant resource_grants table (contract)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1065",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1065",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "4796d6f1c4ff8538313dee6279f3bb377d5be1b607f1d3d6de500d1c6d22605e"
       }
@@ -1034,8 +1034,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvyaEg",
         "number": 1066,
         "title": "[mt-enforcement 09/12] Add tenant-consistent composite foreign keys between tenant tables",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1066",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1066",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "46a949de54813ebdf85812c348cb0104d38b976ab24cb9433813489d0c062988"
       }
@@ -1073,8 +1073,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvycGQ",
         "number": 1067,
         "title": "[mt-enforcement 10/12] Switch to strict tenant enforcement in the database and in every process",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1067",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1067",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "bbe94c431d216b42b223d05a87975c25f711f5a8889e27f5e8bd6cbbd1fe0521"
       }
@@ -1112,8 +1112,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvy2cQ",
         "number": 1079,
         "title": "[mt-web 03/08] Expose the session role and add the admin accounts page",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1079",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1079",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "b24da53cd82c9303cc8f5808cc946bb6159ed02644acf43e8075da5d73caa687"
       }
@@ -1151,8 +1151,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvzDxQ",
         "number": 1085,
         "title": "[mt-enforcement 12/12] Verify the tenancy invariants at every deploy before activating a release",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1085",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1085",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "7e9dcdc20d853fda36275ecdf78bfc5dcfbdfa3dcc096c384db5ad598ee63202"
       }
@@ -1190,8 +1190,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvzF8Q",
         "number": 1086,
         "title": "[mt-go-live 01/03] Security gate sign-off — verify strict isolation in production and record an external review before go-live",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1086",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1086",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "cad57ed10db721906125de47f007a5f3d640cded4c407303eaa7e5029c5227bd"
       }
@@ -1229,8 +1229,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvzILA",
         "number": 1087,
         "title": "[mt-go-live 02/03] Accept invitations — drop the single-tenant guard, then create and provision the invited account",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1087",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1087",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "open",
         "bodySha256": "8f183d1468ccc13176cbb661e0a0e31b462a929f18f3f6dbade9a8df8ad973a5"
       }
@@ -1268,8 +1268,8 @@
         "node_id": "I_kwDOUFuQ4c8AAAABUvuavw",
         "number": 962,
         "title": "[mt-foundation 01/16] Grant the runtime roles access to the two tables created after the least-privilege migration",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/962",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/962",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "e1d8929cfe26ad19151efb2559b0bf969ab32341348b13e602b7168b1b69c63d"
       }
@@ -1278,7 +1278,7 @@
   {
     "id": 32386118628,
     "node_id": "LE_lADOUFuQ4c8AAAABUvunxs8AAAAHilzz5A",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32386118628",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32386118628",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -1314,7 +1314,7 @@
   {
     "id": 32386118654,
     "node_id": "LE_lADOUFuQ4c8AAAABUvunxs8AAAAHilzz_g",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32386118654",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32386118654",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -1348,9 +1348,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5967394769",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/968#issuecomment-5967394769",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/968",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5967394769",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/968#issuecomment-5967394769",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/968",
     "id": 5967394769,
     "node_id": "IC_kwDOUFuQ4c8AAAABY6830Q",
     "user": {
@@ -1380,7 +1380,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5967394769/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5967394769/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1489,14 +1489,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGapGtg",
         "number": 1095,
         "title": "[mt-foundation 07/16] Create the tenant entity, tenant zero, the user binding and role, the tenancy SQL functions and the single-tenant guard (#968)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1095",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1095",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1095",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1095",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1095.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1095.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1095",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1095",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1095.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1095.patch",
           "merged_at": "2026-10-03T09:52:21Z"
         },
         "bodySha256": "563eb4709ead0363bf1e39e966ce4b88b8c1826bd91bd73c8b9bfee427d86abe"
@@ -1506,7 +1506,7 @@
   {
     "id": 32390892988,
     "node_id": "UNLE_lADOUFuQ4c8AAAABUvunxs8AAAAHiqXNvA",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32390892988",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32390892988",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -1542,7 +1542,7 @@
   {
     "id": 32390893037,
     "node_id": "CE_lADOUFuQ4c8AAAABUvunxs8AAAAHiqXN7Q",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32390893037",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32390893037",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -1604,14 +1604,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABG25C_g",
         "number": 1121,
         "title": "[mt-context 03/21] Resolve the tenant at authentication and run adapter routes in its scope (#980)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1121",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1121",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1121",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1121",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1121.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1121.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1121",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1121",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1121.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1121.patch",
           "merged_at": "2026-10-06T16:09:41Z"
         },
         "bodySha256": "02134d3c7ba5000cc3381f1f9d92c6329fb33d2388ccc1b4b67069270592f70e"
@@ -1650,14 +1650,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABI7yP8Q",
         "number": 1181,
         "title": "[mt-agents 04/08] Re-check the transport at spawn and give stdio children an allowlisted environment (#1033)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1181",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1181",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1181",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1181",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1181.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1181.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1181",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1181",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1181.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1181.patch",
           "merged_at": "2026-10-16T22:47:44Z"
         },
         "bodySha256": "8a8729da462da1f5ae3118c367e9dd1e73822d5287496a291864e02667222b9f"
@@ -1696,14 +1696,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABKMZ8vQ",
         "number": 1283,
         "title": "[mt-enforcement 10/12] Switch to strict tenant enforcement in the database and in every process (#1067)",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/1283",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/1283",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/1283",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/1283",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/1283.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/1283.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/1283",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/1283",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/1283.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/1283.patch",
           "merged_at": "2026-10-23T07:21:57Z"
         },
         "bodySha256": "19d2bfd3d02de9cb34822fef4feef1d887fdf39c5b8d288085f7bbd852ccda01"

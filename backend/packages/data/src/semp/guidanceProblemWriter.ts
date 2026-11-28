@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { GuidanceProblemWriter } from "@semprec/shared";
+import type { GuidanceProblemWriter } from "@alldots/shared";
 import { raiseProblem, resolveProblem } from "./sempProblemsStore.js";
 import { guidanceProblemKey } from "./sourceProblemKeys.js";
 

@@ -30,10 +30,6 @@ extension JournalPageRef {
     init(_ ref: SharedSDK.JournalPageRef) {
         self.init(kind: JournalPeriodKind(ref.kind), period: ref.period)
     }
-
-    var shared: SharedSDK.JournalPageRef {
-        SharedSDK.JournalPageRef(kind: kind.shared, period: period)
-    }
 }
 
 // MARK: - JournalBlockKind
@@ -50,20 +46,6 @@ extension JournalBlockKind {
         case .todo: self = .todo
         case .quote: self = .quote
         case .page: self = .page
-        }
-    }
-
-    var shared: SharedSDK.JournalBlockKind {
-        switch self {
-        case .text: .text
-        case .heading1: .h1
-        case .heading2: .h2
-        case .heading3: .h3
-        case .bullet: .bullet
-        case .number: .number
-        case .todo: .todo
-        case .quote: .quote
-        case .page: .page
         }
     }
 }
@@ -97,19 +79,6 @@ extension JournalPage {
 
     init(_ page: SharedSDK.JournalPageState) {
         self.init(ref: JournalPageRef(page.ref), blocks: page.blocks.map(JournalBlock.init))
-    }
-}
-
-// MARK: - JournalEditProblem
-extension JournalEditProblem {
-
-    /// `nil` when the last change went through.
-    init?(_ problem: SharedSDK.JournalEditProblem?, failure: SharedSDK.FailureKind?) {
-        switch problem {
-        case .none: return nil
-        case .some(.stale): self = .stale
-        case .some(.failed): self = .failed(failure.map(FailureKind.init))
-        }
     }
 }
 
@@ -170,6 +139,16 @@ extension JournalWeek {
     }
 }
 
+// MARK: - JournalQuarter
+extension JournalQuarter {
+
+    init(_ quarter: SharedSDK.JournalQuarterState) {
+        self.init(
+            number: Int(quarter.number), firstDay: quarter.from, lastDay: quarter.to, page: JournalPage(quarter.page)
+        )
+    }
+}
+
 // MARK: - JournalEvent
 extension JournalEvent {
 
@@ -202,6 +181,7 @@ extension JournalInboxStatus {
     init(_ status: SharedSDK.JournalInboxStatus) {
         switch status {
         case .none: self = .none
+        case .waiting: self = .waiting
         case .pending: self = .pending
         case .failed: self = .failed
         case .needsClarification: self = .needsClarification
@@ -223,8 +203,23 @@ extension JournalInboxItem {
             text: item.text,
             emoji: item.emoji,
             status: JournalInboxStatus(item.status),
-            attachmentName: item.attachmentName,
-            attachmentCount: Int(item.attachmentCount)
+            attachments: item.attachments.map(InboxAttachment.init)
+        )
+    }
+}
+
+// MARK: - JournalPeriodContent
+extension JournalPeriodContent {
+
+    init(_ content: SharedSDK.JournalPeriodContent) {
+        self.init(
+            shown: JournalSelection(content.shown),
+            page: content.page.map(JournalPage.init),
+            weeks: content.weeks.map(JournalWeek.init),
+            quarters: content.quarters.map(JournalQuarter.init),
+            events: content.events.map(JournalEvent.init),
+            birthdays: content.birthdays.map(JournalBirthday.init),
+            inbox: content.inbox.map(JournalInboxItem.init)
         )
     }
 }

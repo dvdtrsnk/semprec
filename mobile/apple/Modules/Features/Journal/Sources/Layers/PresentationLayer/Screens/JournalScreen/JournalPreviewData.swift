@@ -17,10 +17,6 @@ extension Array where Element == JournalAxisRow {
             axisCell(.year, "2026-01-01", year: 2026, onPath: true),
             axisCell(.year, "2027-01-01", year: 2027, onPath: false)
         ]),
-        JournalAxisRow(kind: .quarter, cells: [
-            axisCell(.quarter, "2026-07-01", quarter: 3, month: 7, onPath: false),
-            axisCell(.quarter, "2026-10-01", quarter: 4, month: 10, onPath: true)
-        ]),
         JournalAxisRow(kind: .month, cells: [
             axisCell(.month, "2026-09-01", quarter: 3, month: 9, onPath: false),
             axisCell(.month, "2026-10-01", quarter: 4, month: 10, onPath: true),
@@ -84,7 +80,7 @@ extension JournalState {
         events: [
             JournalEvent(
                 id: "e1", title: "Standup", startMinutes: 540, endMinutes: 570,
-                projectName: "Semprec iOS", projectColor: "#007AFF"
+                projectName: "Alldots iOS", projectColor: "#007AFF"
             ),
             JournalEvent(
                 id: "e2", title: "Schůzka s klientem", startMinutes: 600, endMinutes: 690, place: "Kancelář, Karlín",
@@ -96,7 +92,7 @@ extension JournalState {
             JournalInboxItem(id: "i1", time: "08:15", text: "Nápad: šablona nabídky pro klienty", emoji: "💡"),
             JournalInboxItem(
                 id: "i2", time: "18:02", text: "Faktura za obklady", emoji: "💸", status: .proposed,
-                attachmentName: "Fotka 18:02", attachmentCount: 1
+                attachments: [InboxAttachment(id: "a1", name: "Fotka 18:02.jpg", mediaType: "image/jpeg")]
             )
         ]
     )

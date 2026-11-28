@@ -142,7 +142,7 @@ describe("loadBlobMetadataForItems", () => {
     const item = await chokePoint.createItem({ databaseId, properties: { file: { blobId: ownBlob.id } } });
     // Raw object: production writes never store another tenant's blob id, so this state is built by hand.
     const foreignItem = { ...item, id: randomUUID(), properties: { file: { blobId: foreignBlob.id.toUpperCase() } } };
-    runtimePool ??= await createRuntimeRolePool(pool, "semprec_data");
+    runtimePool ??= await createRuntimeRolePool(pool, "alldots_data");
 
     const map = await withTenantTransaction(runtimePool, tenantA, (client) =>
       loadBlobMetadataForItems(client, [item, foreignItem]),

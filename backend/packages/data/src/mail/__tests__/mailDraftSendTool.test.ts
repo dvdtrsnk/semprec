@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { resolveModuleAgentToolsForRun, type ResolvedModuleAgentTool } from "../../agentTools/moduleAgentTools.js";
@@ -213,7 +213,7 @@ async function approveAndDeliver(t: MailTenant, requestId: string, transport: Re
 describe("the mail.draft.send agent tool (issue gh-1949)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     registry = await loadFullModuleRegistry();
   });
 
@@ -243,7 +243,7 @@ describe("the mail.draft.send agent tool (issue gh-1949)", () => {
       const inbox = await inTenant(tenant, () =>
         withTransaction(runtime, (client) => databasesStore.getDatabaseByModuleId(client, "inbox")),
       );
-      if (!inbox?.ownerProjectItemId) throw new Error("Missing Semprec project");
+      if (!inbox?.ownerProjectItemId) throw new Error("Missing Alldots project");
       const inboxRun = await newRun(tenant, inbox.ownerProjectItemId);
       const names = (tools: ResolvedModuleAgentTool[]) =>
         tools
@@ -254,7 +254,7 @@ describe("the mail.draft.send agent tool (issue gh-1949)", () => {
       expect(names(await toolsFor(tenant, inboxRun, inbox.ownerProjectItemId))).toEqual([]);
       expect(
         names(await toolsFor(tenant, mailRun, tenant.mailProjectId, new Set(["mail.read", "mail.draft"]))),
-      ).toEqual(["mail.draft.create", "mail.draft.update", "mail.thread.get"]);
+      ).toEqual(["mail.draft.create", "mail.draft.update", "mail.search", "mail.thread.get"]);
       expect(names(await toolsFor(tenant, mailRun, tenant.mailProjectId, new Set(["mail.send"])))).toEqual([
         "mail.draft.send",
       ]);

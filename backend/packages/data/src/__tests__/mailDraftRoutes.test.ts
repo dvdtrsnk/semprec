@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
@@ -65,8 +65,8 @@ interface Fixture {
 describe("the mail draft routes (issue gh-1867)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-draft-routes-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-draft-routes-"));
   });
 
   beforeEach(async () => {
@@ -131,6 +131,8 @@ describe("the mail draft routes (issue gh-1867)", () => {
       const draftsFolderId = await folder(mailboxId, "drafts");
       const inboxId = await folder(mailboxId, "inbox");
       const received = await ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property(emailProperties, "folder"),
@@ -191,6 +193,25 @@ describe("the mail draft routes (issue gh-1867)", () => {
     setInvalidationHook((event) => {
       if (event.scope === "mailThread") events.push(event);
     });
+  }
+
+  /**
+   * Runs `work` and answers the rejections no handler claimed by the end of their microtask turn, letting one more
+   * turn pass after `work` so a rejection from its last request is reported too.
+   */
+  async function unhandledRejectionsDuring(work: () => Promise<void>): Promise<unknown[]> {
+    const reasons: unknown[] = [];
+    const listener = (reason: unknown) => {
+      reasons.push(reason);
+    };
+    process.on("unhandledRejection", listener);
+    try {
+      await work();
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+    return reasons;
   }
 
   async function count(table: "mail_drafts" | "emails"): Promise<number> {
@@ -363,14 +384,16 @@ describe("the mail draft routes (issue gh-1867)", () => {
     });
   });
 
-  it("answers 400 for a mailbox that has no Drafts folder yet, and creates nothing", async () => {
+  it("answers 409 mail_drafts_folder_missing for a mailbox that has no Drafts folder, and creates nothing", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const emailsBefore = await count("emails");
 
-      await expect(createDraft(newDraft(f, { mailboxId: f.mailboxWithoutDraftsId }))).rejects.toBeInstanceOf(
-        ValidationError,
-      );
+      await expect(createDraft(newDraft(f, { mailboxId: f.mailboxWithoutDraftsId }))).rejects.toMatchObject({
+        status: 409,
+        code: "mail_drafts_folder_missing",
+        details: { mailboxId: f.mailboxWithoutDraftsId },
+      });
 
       expect(await count("emails")).toBe(emailsBefore);
     });
@@ -498,18 +521,20 @@ describe("the mail draft routes (issue gh-1867)", () => {
       });
       const before = await itemRow(providerDraft.id);
 
-      const attempts = [
-        updateDraft(providerDraft.id, { ifVersion: providerDraft.version, subject: "Změna" }),
-        discardDraft(providerDraft.id),
-      ];
-      for (const attempt of attempts) {
-        const refusal = await attempt.catch((error: unknown) => error);
-        if (!(refusal instanceof MailDraftNotEditableError)) throw new Error("Expected a MailDraftNotEditableError");
-        expect({ status: refusal.status, code: refusal.code }).toEqual({
-          status: 409,
-          code: "mail_draft_not_editable",
-        });
-      }
+      const escaped = await unhandledRejectionsDuring(async () => {
+        for (const attempt of [
+          () => updateDraft(providerDraft.id, { ifVersion: providerDraft.version, subject: "Změna" }),
+          () => discardDraft(providerDraft.id),
+        ]) {
+          const refusal = await attempt().catch((error: unknown) => error);
+          if (!(refusal instanceof MailDraftNotEditableError)) throw new Error("Expected a MailDraftNotEditableError");
+          expect({ status: refusal.status, code: refusal.code }).toEqual({
+            status: 409,
+            code: "mail_draft_not_editable",
+          });
+        }
+      });
+      expect(escaped, "each refusal rejects only the request that answers it").toEqual([]);
 
       expect(await itemRow(providerDraft.id)).toEqual(before);
       await expect(readDraft(providerDraft.id)).rejects.toBeInstanceOf(NotFoundError);

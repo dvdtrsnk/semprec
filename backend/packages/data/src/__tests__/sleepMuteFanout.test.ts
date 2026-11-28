@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
-import { runInTenant } from "@semprec/shared";
+import { CORE_TASK_NAMES, enqueueJob, registerTask, runOnce } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
@@ -29,8 +29,8 @@ vi.mock("../sleep/sleepMuteWindow.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../sleep/sleepMuteWindow.js")>();
   return { ...actual, findSleepMuteUntil: vi.fn(actual.findSleepMuteUntil) };
 });
-vi.mock("@semprec/queue", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@semprec/queue")>();
+vi.mock("@alldots/queue", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alldots/queue")>();
   return { ...actual, enqueueJob: vi.fn(actual.enqueueJob) };
 });
 
@@ -263,7 +263,7 @@ async function notificationCount(tenant: SleepTenant, notificationId: string): P
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+  dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   const role = await dataPool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
     "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
   );

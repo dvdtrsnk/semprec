@@ -81,21 +81,33 @@ public struct MailAccountNotice: Equatable, Sendable, Identifiable {
     }
 }
 
-/// An area or a project of the filter sheet with the number of threads it holds.
+/// A project of the filter sheet with the number of threads it holds.
 public struct MailFilterOption: Equatable, Sendable, Identifiable {
 
     public let id: String
     public let name: String
     public let color: String?
     public let count: Int
-    public let areaId: String?
 
-    public init(id: String, name: String, color: String?, count: Int, areaId: String? = nil) {
+    public init(id: String, name: String, color: String?, count: Int) {
         self.id = id
         self.name = name
         self.color = color
         self.count = count
-        self.areaId = areaId
+    }
+}
+
+/// What the provider search added to a search: `unindexed` hits the mail providers hold that the local index does not
+/// have yet, and the mailboxes whose provider search failed (a chip's `name` is empty for a mailbox the list does not
+/// know).
+public struct MailRemoteSearchSummary: Equatable, Sendable {
+
+    public let unindexed: Int
+    public let failedAccounts: [MailMailboxChip]
+
+    public init(unindexed: Int, failedAccounts: [MailMailboxChip] = []) {
+        self.unindexed = unindexed
+        self.failedAccounts = failedAccounts
     }
 }
 
@@ -110,22 +122,12 @@ public enum MailFacetsPhase: Equatable, Sendable {
 public struct MailFacetsState: Equatable, Sendable {
 
     public var phase: MailFacetsPhase
-    public var areaTotal: Int
     public var projectTotal: Int
-    public var areas: [MailFilterOption]
     public var projects: [MailFilterOption]
 
-    public init(
-        phase: MailFacetsPhase = .idle,
-        areaTotal: Int = 0,
-        projectTotal: Int = 0,
-        areas: [MailFilterOption] = [],
-        projects: [MailFilterOption] = []
-    ) {
+    public init(phase: MailFacetsPhase = .idle, projectTotal: Int = 0, projects: [MailFilterOption] = []) {
         self.phase = phase
-        self.areaTotal = areaTotal
         self.projectTotal = projectTotal
-        self.areas = areas
         self.projects = projects
     }
 }
@@ -146,6 +148,8 @@ public enum MailThreadsPhase: Equatable, Sendable {
 }
 
 /// The thread list. `actionFailed` says a refresh, a page or a read mark did not go through; the list stays.
+/// `actionRefusal` names the reason the server gave for refusing a read mark. While `search` is not empty the list is
+/// the answer of the mail search, and `remoteSearch` says what the provider search added; it is `nil` otherwise.
 public struct MailThreadsState: Equatable, Sendable {
 
     public var phase: MailThreadsPhase
@@ -158,14 +162,14 @@ public struct MailThreadsState: Equatable, Sendable {
     public var filter: MailListFilter
     public var mailboxId: String?
     public var folderId: String?
-    public var areaId: String?
     public var projectId: String?
-    public var areaName: String?
     public var projectName: String?
     public var mailboxes: [MailMailboxChip]
     public var reauthorization: [MailAccountNotice]
     public var facets: MailFacetsState
+    public var remoteSearch: MailRemoteSearchSummary?
     public var actionFailed: Bool
+    public var actionRefusal: MailRefusal?
 
     public init(
         phase: MailThreadsPhase = .loading,
@@ -178,14 +182,14 @@ public struct MailThreadsState: Equatable, Sendable {
         filter: MailListFilter = .all,
         mailboxId: String? = nil,
         folderId: String? = nil,
-        areaId: String? = nil,
         projectId: String? = nil,
-        areaName: String? = nil,
         projectName: String? = nil,
         mailboxes: [MailMailboxChip] = [],
         reauthorization: [MailAccountNotice] = [],
         facets: MailFacetsState = MailFacetsState(),
-        actionFailed: Bool = false
+        remoteSearch: MailRemoteSearchSummary? = nil,
+        actionFailed: Bool = false,
+        actionRefusal: MailRefusal? = nil
     ) {
         self.phase = phase
         self.refreshing = refreshing
@@ -197,14 +201,14 @@ public struct MailThreadsState: Equatable, Sendable {
         self.filter = filter
         self.mailboxId = mailboxId
         self.folderId = folderId
-        self.areaId = areaId
         self.projectId = projectId
-        self.areaName = areaName
         self.projectName = projectName
         self.mailboxes = mailboxes
         self.reauthorization = reauthorization
         self.facets = facets
+        self.remoteSearch = remoteSearch
         self.actionFailed = actionFailed
+        self.actionRefusal = actionRefusal
     }
 }
 
@@ -226,8 +230,6 @@ public enum MailThreadsAction: Equatable, Sendable {
     case selectFilter(MailListFilter)
     /// Chooses a mailbox, or clears it when it is the chosen one.
     case selectMailbox(String)
-    /// `nil` is every area.
-    case setArea(String?)
     /// `nil` is every project.
     case setProject(String?)
     case clearContext

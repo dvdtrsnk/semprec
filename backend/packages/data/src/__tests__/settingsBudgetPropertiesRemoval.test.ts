@@ -36,7 +36,7 @@ async function readSettingsState(tenantId: string): Promise<SettingsState> {
 describe("settings database without budget properties", () => {
   beforeAll(() => {
     adminPool = getTestPool();
-    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    dataPool = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
   });
 
   beforeEach(async () => {

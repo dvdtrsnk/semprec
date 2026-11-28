@@ -13,7 +13,7 @@ extension NavigationContext {
             showDetails(kind: .task, id: itemId, from: tab)
         case "events":
             push(.meeting(eventId: itemId, tab: tab), in: tab)
-        case nil, "projects", "people", "journal", "areas":
+        case nil, "projects", "people", "journal":
             push(.collectionItem(itemId: itemId, databaseKey: databaseKey), in: tab)
         default:
             presentSheet(.itemSheet(itemId: itemId, databaseKey: databaseKey, tab: tab), from: tab)

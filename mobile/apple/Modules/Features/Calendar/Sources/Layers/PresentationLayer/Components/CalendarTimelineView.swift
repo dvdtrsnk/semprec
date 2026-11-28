@@ -8,17 +8,26 @@ struct CalendarTimelineView: View {
 
     // MARK: - Dependencies
     let day: CalendarDayState
+    let geometry: CalendarGeometry
     let isToday: Bool
     let nowMinutes: Int
     let selectedItemId: String?
     let drag: CalendarDrag?
+    /// Where the finger would put the held block, in minutes of the day and not snapped: the block follows it smoothly.
+    let dragFollower: CalendarDragFollower
+    /// The item a finger holds, wherever it started: it is drawn here too when the day was turned to under it.
+    let heldItem: CalendarItem?
     let handlers: CalendarItemHandlers
-    let onResize: (_ item: CalendarItem, _ edge: CalendarEdge, _ location: CGPoint) -> Void
+    /// The finger has travelled `travel` points since it touched the handle.
+    let onResize: (_ item: CalendarItem, _ edge: CalendarEdge, _ travel: CGFloat) -> Void
     let onResizeEnd: () -> Void
-    let onMenu: (CalendarEditAction, CalendarItem) -> Void
-    let onDeselect: () -> Void
-    let onOpenSleep: (String) -> Void
+    /// The night held on this day, its moves, and the times a finger is moving one to.
+    let selectedNight: String?
+    let sleepDrag: CalendarSleepDrag?
+    let sleepHandlers: CalendarSleepHandlers
     let onPaste: ((CGPoint) -> Void)?
+    /// A tap on the day where there is no item.
+    let onTapBackground: () -> Void
 
     // MARK: - Body
     var body: some View {
@@ -26,40 +35,55 @@ struct CalendarTimelineView: View {
             let width = max(proxy.size.width - CalendarGeometry.gutter - 8, 0)
             ZStack(alignment: .topLeading) {
                 hours(width: width)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onTapBackground() }
+                    .gesture(pasteGesture)
                 sleepBands(width: width)
                 ForEach(timedItems, id: \.identity) { item in
                     block(item, width: width)
                 }
-                if let preview = previewItem {
-                    block(preview, width: width)
+                ghost(width: width)
+                snapLabel
+                if let carried = carriedItem {
+                    block(carried, width: width, interactive: false)
                 }
                 if isToday {
                     nowLine(width: width)
                 }
             }
-            .frame(width: proxy.size.width, height: CalendarGeometry.height, alignment: .topLeading)
+            .frame(width: proxy.size.width, height: geometry.height, alignment: .topLeading)
+            .animation(.snappy(duration: 0.28), value: timedItems.map(\.identity))
             .contentShape(Rectangle())
-            .gesture(pasteGesture)
-            .reportsFrame(CalendarContentFrameKey.self)
         }
-        .frame(height: CalendarGeometry.height)
+        .frame(height: geometry.height)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(CalendarIdentifiers.timeline)
     }
 }
 
 // MARK: - Items
+extension CalendarTimelineView {
+
+    /// How far each step of a cascade is drawn in from the left edge of its column, as the system Calendar does.
+    static let cascadeStep: CGFloat = 11
+}
+
 private extension CalendarTimelineView {
 
-    /// The timed items, except the one that is being dragged, which is drawn at its previewed place.
+    /// The timed items. The one that is being dragged stays among them, drawn at the place the drag would put it: the
+    /// view that owns the finger's gesture must not leave the screen while the finger is down, or the gesture is
+    /// cancelled and the drop never happens.
     var timedItems: [CalendarItem] {
-        day.items.filter { $0.startMinutes != nil && !$0.allDay && $0.id != drag?.itemId }
+        day.items.filter { $0.startMinutes != nil && !$0.allDay }
     }
 
-    /// The item being dragged, shown at the place the drag would put it, when that is a time of this day.
-    var previewItem: CalendarItem? {
-        guard let drag, !drag.allDay, drag.date == day.date, drag.intoEventId == nil else { return nil }
-        return day.items.first { $0.id == drag.itemId }
+    /// The held item where the drag would put it on this day's timeline, when none of the day's own blocks is it: an
+    /// item carried in from another day, or one without a time taken out of the all-day row, which the timeline then
+    /// shows as a block, as the all-day row shows a block taken into it as a chip.
+    var carriedItem: CalendarItem? {
+        guard let drag, let heldItem, drag.date == day.date, !drag.allDay, drag.intoEventId == nil,
+            !timedItems.contains(where: { $0.id == heldItem.id }) else { return nil }
+        return heldItem.alone(on: day.date)
     }
 
     func place(_ item: CalendarItem) -> (start: Int, end: Int) {
@@ -70,44 +94,87 @@ private extension CalendarTimelineView {
     }
 
     @ViewBuilder
-    func block(_ item: CalendarItem, width: CGFloat) -> some View {
+    func block(_ item: CalendarItem, width: CGFloat, interactive: Bool = true) -> some View {
         let range = place(item)
         let columns = max(item.columns, 1)
         let columnWidth = width / CGFloat(columns)
-        let height = CalendarGeometry.blockHeight(start: range.start, end: range.end)
+        let stepIn = CGFloat(item.depth) * Self.cascadeStep
+        let height = geometry.blockHeight(start: range.start, end: range.end)
         let selected = selectedItemId == item.id
         let dragging = drag?.itemId == item.id
         let target = drag?.intoEventId == item.id
         let raised = dragging || selected
+        // Held over the all-day row the block gives way to the chip there, held over an event it is on its way into
+        // it; either way it stays in place so that the finger's gesture goes on.
+        let away = interactive && dragging
+            && (drag?.allDay == true || drag?.intoEventId != nil || drag?.date != day.date)
+        // A held block comes out over its neighbours at the full width of the day, as in the system Calendar.
+        let blockWidth = selected ? width : columnWidth - stepIn
+        let blockX = selected ? 0 : CGFloat(item.column) * columnWidth + stepIn
+        let follows = dragging && !away
         CalendarTimedItemView(
             item: item,
             selected: selected,
             dropTarget: target,
             dragging: dragging,
             range: range,
+            height: height,
             onToggle: handlers.toggle,
             onOpenTask: handlers.openTask
         )
-        .frame(width: max(columnWidth - 2, 0), height: height)
-        .calendarItemGestures(
-            enabled: item.editable,
-            onTap: { handlers.tap(item) },
-            onSelect: { handlers.select(item) },
-            onMove: { handlers.move(item, $0, $1) },
-            onEnd: { handlers.end(item, $0) }
-        )
-        .calendarItemMenu(
-            isPresented: selected && drag == nil,
-            onAction: { onMenu($0, item) },
-            onDismiss: onDeselect
-        )
-        .overlay { handles(item, height: height, selected: selected) }
-        .background(item.kind == .event ? AnyView(EventFrameReporter(id: item.id)) : AnyView(EmptyView()))
-        .offset(
-            x: CalendarGeometry.gutter + CGFloat(item.column) * columnWidth,
-            y: CalendarGeometry.y(minutes: range.start)
-        )
-        .zIndex(raised ? 2 : 1)
+        .frame(width: max(blockWidth - 2, 0), height: height)
+        .calendarItemGestures(item, enabled: item.editable, selected: selected, handlers: handlers)
+        .overlay { if interactive { handles(item, height: height, selected: selected) } }
+        // The picture of an item carried in from another day takes no touches.
+        .allowsHitTesting(interactive)
+        .background(CalendarItemFrameReporter(id: item.id, isEvent: item.kind == .event))
+        .background(selected ? AnyView(SelectedFrameReporter()) : AnyView(EmptyView()))
+        // Placed by padding rather than by an offset: the system's drag finds the item where its layout puts it.
+        .padding(.leading, CalendarGeometry.gutter + blockX)
+        .padding(.top, geometry.y(minutes: range.start))
+        // The held block follows the finger between the quarter hours the shared layer snaps it to.
+        .modifier(CalendarFollowedBlock(
+            follower: follows ? dragFollower : nil,
+            start: range.start,
+            geometry: geometry
+        ))
+        .animation(.snappy(duration: 0.2), value: dragging)
+        .opacity(away ? (drag?.allDay == true ? 0 : 0.3) : 1)
+        .animation(.snappy(duration: 0.24), value: selected)
+        .animation(.snappy(duration: 0.18), value: away)
+        // A block that appears or goes away does so as the system Calendar's does, and the ones around it make room.
+        .transition(.opacity.combined(with: .scale(scale: 0.92)))
+        // A block that starts later than the one it overlaps lies over it; a held block lies over everything.
+        .zIndex(raised ? 100 : Double(1 + item.depth))
+    }
+
+    /// Where the held item came from, faint, while it is carried about the day.
+    @ViewBuilder
+    func ghost(width: CGFloat) -> some View {
+        if let drag, drag.date == day.date, !drag.allDay, drag.intoEventId == nil,
+            let item = day.items.first(where: { $0.id == drag.itemId }),
+            let start = item.startMinutes, let end = item.endMinutes {
+            let height = geometry.blockHeight(start: start, end: end)
+            RoundedRectangle(cornerRadius: 6)
+                .fill(item.tint.opacity(0.25))
+                .frame(width: max(width / CGFloat(max(item.columns, 1)) - 2, 0), height: height)
+                .offset(x: CalendarGeometry.gutter + CGFloat(item.column) * width / CGFloat(max(item.columns, 1)),
+                        y: geometry.y(minutes: start))
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// The quarter hour the held block will snap to, in the gutter at its place, as the system Calendar shows it.
+    @ViewBuilder var snapLabel: some View {
+        if let drag, drag.date == day.date, !drag.allDay, drag.intoEventId == nil, let start = drag.startMinutes,
+            start % 60 != 0 {
+            Text(CalendarDates.clock(minutes: start))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.tint)
+                .frame(width: CalendarGeometry.gutter - 6, alignment: .trailing)
+                .offset(y: geometry.y(minutes: start) - 7)
+                .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder
@@ -129,7 +196,7 @@ private extension CalendarTimelineView {
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .calendarDay)
-                    .onChanged { onResize(item, edge, $0.location) }
+                    .onChanged { onResize(item, edge, $0.location.y - $0.startLocation.y) }
                     .onEnded { _ in onResizeEnd() }
             )
             .frame(maxWidth: .infinity, alignment: edge == .start ? .trailing : .leading)
@@ -148,18 +215,6 @@ private extension CalendarTimelineView {
     }
 }
 
-/// Reports the frame of an event block under its id.
-private struct EventFrameReporter: View {
-
-    let id: String
-
-    var body: some View {
-        GeometryReader { proxy in
-            Color.clear.preference(key: CalendarEventFramesKey.self, value: [id: proxy.frame(in: .calendarDay)])
-        }
-    }
-}
-
 // MARK: - Grid
 private extension CalendarTimelineView {
 
@@ -168,31 +223,45 @@ private extension CalendarTimelineView {
         VStack(spacing: 0) {
             ForEach(0..<24, id: \.self) { hour in
                 HStack(alignment: .top, spacing: 6) {
-                    Text(CalendarDates.clock(minutes: hour * 60))
+                    Text(CalendarDates.hourLabel(hour))
                         .font(.caption2)
+                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
                         .foregroundStyle(.secondary)
                         .frame(width: CalendarGeometry.gutter - 6, alignment: .trailing)
                         .offset(y: -7)
+                        .opacity(isCoveredByNow(hour) ? 0 : 1)
                     Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 0.5)
                 }
-                .frame(height: CalendarGeometry.hourHeight, alignment: .top)
-                .id(CalendarGeometry.hourId(hour))
+                .frame(height: geometry.hourHeight, alignment: .top)
+                .id(CalendarGeometry.hourId(hour, day: day.date))
             }
         }
     }
 
+    /// Whether the current time's capsule sits over this hour's label, which then gives way to it.
+    func isCoveredByNow(_ hour: Int) -> Bool {
+        isToday && abs(hour * 60 - nowMinutes) < 20
+    }
+
+    /// The current time in a capsule over the hour labels, and the line from it across the day, in the gold that marks
+    /// today wherever the app shows dates.
     func nowLine(width: CGFloat) -> some View {
         HStack(spacing: 0) {
             Text(CalendarDates.clock(minutes: nowMinutes))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.red)
-                .frame(width: CalendarGeometry.gutter - 6, alignment: .trailing)
-                .padding(.trailing, 6)
-            Circle().fill(Color.red).frame(width: 8, height: 8).offset(x: -4)
-            Rectangle().fill(Color.red).frame(height: 1)
+                .font(.caption2.weight(.bold).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Theme.Colors.today))
+                .frame(width: CalendarGeometry.gutter, alignment: .trailing)
+            Rectangle().fill(Theme.Colors.today).frame(height: 1)
         }
-        .frame(height: 12)
-        .offset(y: CalendarGeometry.y(minutes: nowMinutes) - 6)
+        .frame(height: 18)
+        .offset(y: geometry.y(minutes: nowMinutes) - 9)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
@@ -201,40 +270,40 @@ private extension CalendarTimelineView {
 // MARK: - Sleep
 private extension CalendarTimelineView {
 
+    /// The bands and the bedtime reminders of the sleep on this day, as the shared layer cut them; a night a finger
+    /// moves is drawn at the times it is moving to.
     @ViewBuilder
     func sleepBands(width: CGFloat) -> some View {
-        if let evening = day.sleepEvening {
-            sleepBand(evening, from: evening.bedMinutes, to: CalendarGeometry.minutesPerDay, width: width)
-            if let prep = evening.prepMinutes {
-                prepMarker(evening, minutes: prep, width: width)
+        ForEach(Array(day.sleepParts(dragging: sleepDrag).enumerated()), id: \.offset) { _, part in
+            switch part {
+            case .band(let sleep, let band, let isEvening):
+                sleepBand(sleep, band: band, evening: isEvening, width: width)
+            case .reminder(let sleep, let minutes):
+                prepMarker(sleep, minutes: minutes, width: width)
             }
-        }
-        if let morning = day.sleepMorning {
-            sleepBand(morning, from: 0, to: morning.wakeMinutes, width: width)
         }
     }
 
-    func sleepBand(_ sleep: CalendarSleep, from start: Int, to end: Int, width: CGFloat) -> some View {
-        let evening = start == sleep.bedMinutes
-        return Button { onOpenSleep(sleep.night) } label: {
-            HStack(spacing: 4) {
-                Image(systemName: evening ? "moon.fill" : "alarm").font(.caption2)
-                Text(CalendarDates.clock(minutes: evening ? sleep.bedMinutes : sleep.wakeMinutes))
-                    .font(.caption2.weight(.semibold))
-            }
-            .foregroundStyle(sleepTint)
-            .padding(6)
-            .frame(width: width, height: max(CalendarGeometry.y(minutes: end) - CalendarGeometry.y(minutes: start), 0),
-                alignment: evening ? .topLeading : .bottomLeading)
-            .background(sleepTint.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .offset(x: CalendarGeometry.gutter, y: CalendarGeometry.y(minutes: start))
-        .accessibilityLabel(Text("calendar.sleep.title", bundle: .module))
+    /// An evening band is labelled with its bedtime at the top, a morning band with its wake time at the bottom.
+    func sleepBand(_ sleep: CalendarSleep, band: Range<Int>, evening: Bool, width: CGFloat) -> some View {
+        let labelTop = evening
+            ? geometry.y(minutes: band.lowerBound)
+            : geometry.y(minutes: band.upperBound) - Self.labelHeight
+        return CalendarSleepBand(
+            sleep: sleep,
+            evening: evening,
+            startMinutes: band.lowerBound,
+            endMinutes: band.upperBound,
+            geometry: geometry,
+            width: width,
+            selected: selectedNight == sleep.night || sleepDrag?.night == sleep.night,
+            labelHidden: isLabelCovered(top: labelTop, width: width),
+            handlers: sleepHandlers
+        )
     }
 
     func prepMarker(_ sleep: CalendarSleep, minutes: Int, width: CGFloat) -> some View {
-        Button { onOpenSleep(sleep.night) } label: {
+        Button { sleepHandlers.open(sleep.night) } label: {
             HStack(spacing: 4) {
                 Image(systemName: "bell").font(.caption2)
                 Text(
@@ -246,12 +315,30 @@ private extension CalendarTimelineView {
                 .font(.caption2)
             }
             .foregroundStyle(sleepTint)
+            .opacity(isLabelCovered(top: geometry.y(minutes: minutes) - 9, width: width) ? 0 : 1)
             .padding(.horizontal, 6)
             .frame(width: width, height: 18, alignment: .leading)
         }
         .buttonStyle(.plain)
-        .offset(x: CalendarGeometry.gutter, y: CalendarGeometry.y(minutes: minutes) - 9)
+        .offset(x: CalendarGeometry.gutter, y: geometry.y(minutes: minutes) - 9)
     }
+
+    /// Whether a block of an item lies where a label at the leading edge of the sleep band would be written, so the
+    /// label gives way to it rather than being drawn over its words.
+    func isLabelCovered(top: CGFloat, width: CGFloat) -> Bool {
+        let labelWidth: CGFloat = 190
+        return timedItems.contains { item in
+            let range = place(item)
+            let columnWidth = width / CGFloat(max(item.columns, 1))
+            let left = CGFloat(item.column) * columnWidth + CGFloat(item.depth) * Self.cascadeStep
+            let blockTop = geometry.y(minutes: range.start)
+            let blockBottom = blockTop + geometry.blockHeight(start: range.start, end: range.end)
+            return left < labelWidth && blockTop < top + Self.labelHeight && blockBottom > top
+        }
+    }
+
+    /// How tall the label of a sleep band is.
+    static var labelHeight: CGFloat { 18 }
 
     var sleepTint: Color { Theme.Colors.sleep }
 }

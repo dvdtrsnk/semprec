@@ -1,5 +1,5 @@
 plugins {
-    id("semprec.kmp")
+    id("alldots.kmp")
     alias(libs.plugins.skie)
 }
 kotlin {

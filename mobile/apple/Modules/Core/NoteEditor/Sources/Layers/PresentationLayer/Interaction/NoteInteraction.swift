@@ -1,0 +1,370 @@
+import Combine
+import CoreGraphics
+import CoreKit
+
+/// A swipe under way on one block: how far it went and the step it reached. It is `frozen` while the finger is off
+/// the block choosing from the step's menu; the swipe then stays as it was.
+struct NoteSwipeState: Equatable {
+
+    let blockId: String
+    var translation: CGFloat
+    var step: NoteSwipeStep?
+    var frozen = false
+    /// The least indent the block may be outdented to (`NoteFolding.indentFloor`).
+    var indentFloor = 0
+
+    /// Whether the step reached can apply to `block`.
+    func isValid(for block: NoteEditorBlock) -> Bool {
+        step?.isValid(for: block, indentFloor: indentFloor) ?? false
+    }
+}
+
+/// A swipe menu next to the block `row`: `below` it or above it, its first option nearest the block, or, where it fits
+/// on neither side, in the middle of the screen at `centeredTop`. While the finger is down the option as far from the
+/// block as the finger is (or, in the middle, the option under the finger) gets highlighted; a menu left open after
+/// the finger lifted (`pinned`) waits for a tap.
+struct NoteMenuState: Equatable {
+
+    let blockId: String
+    let kind: NoteMenuKind
+    let row: CGRect
+    /// Where across the space the finger was when the menu opened.
+    let left: CGFloat
+    let below: Bool
+    var centeredTop: CGFloat?
+    var highlighted: Int?
+    var pinned = false
+}
+
+/// Blocks being moved: the blocks, where the finger is, and the index in the note they would go to.
+struct NoteDragState: Equatable {
+
+    let blockIds: [String]
+    var location: CGPoint
+    var target: Int
+    /// The level the first dragged block takes where it is dropped; the others keep their levels under it.
+    var indent: Int
+    /// Whether that place is inside a toggle, which the drop line shows.
+    var insideToggle = false
+    /// Where along the row the drag started; moving the finger sideways from there picks a level where more fit.
+    let startX: CGFloat
+}
+
+/// What the person does with whole blocks by touch: swipes with their thresholds and menus, holding a block (to select
+/// it, or to move it by dragging), selecting by tap or by dragging sideways over a range, and moving by the handle.
+/// Locations are in the coordinate space of the blocks (`NoteEditorMetrics.space`), where `rowFrames` and `visible`
+/// are measured.
+@MainActor
+final class NoteInteraction: ObservableObject {
+
+    // MARK: - Published Properties
+    @Published private(set) var swipe: NoteSwipeState?
+    @Published private(set) var menu: NoteMenuState?
+    @Published private(set) var selecting = false
+    @Published private(set) var selected: Set<String> = []
+    @Published private(set) var drag: NoteDragState?
+    /// The block a finger holds, before it lifts or moves it.
+    @Published private(set) var held: String?
+    /// Counted up each time a hold begins, for its haptic.
+    @Published private(set) var holds = 0
+
+    /// Where each block is laid out.
+    var rowFrames: [String: CGRect] = [:]
+    /// The part of the blocks' space on the screen.
+    var visible = CGRect.infinite
+
+    /// The height of one menu option.
+    static let optionHeight: CGFloat = 36
+    /// How far off its block a finger goes before the swipe stops and its menu opens.
+    static let offRow: CGFloat = 16
+
+    /// The selection a range drag started from, and the block it started on.
+    private var rangeStart: (base: Set<String>, blockId: String)?
+    /// Where the finger of a hold was when it began.
+    private var holdStart: CGPoint?
+    /// Where along the page a swipe went sideways; the menu opens when the finger leaves the band around it.
+    private var swipeY: CGFloat?
+
+    /// How far above and below the place a swipe started the finger stays on the block.
+    static let band: CGFloat = 22
+
+    // MARK: - Methods
+    var isActive: Bool {
+        swipe != nil || drag != nil || held != nil || rangeStart != nil || (menu.map { !$0.pinned } ?? false)
+    }
+
+    /// A sideways drag on `block` moved by `translation` to `location`; the gesture that reports it has decided it
+    /// is sideways.
+    func dragged(
+        _ block: NoteEditorBlock,
+        by translation: CGSize,
+        at location: CGPoint,
+        editing: Bool = false,
+        indentFloor: Int = 0
+    ) {
+        guard held == nil else { return }
+        if selecting {
+            selectRange(from: block.id, to: location)
+            return
+        }
+        let blockFrame = rowFrames[block.id] ?? .zero
+        if swipeY == nil { swipeY = location.y }
+        // A long block is left along the page near where the swipe started, not at its far edges.
+        let center = swipeY ?? location.y
+        let row = CGRect(
+            x: blockFrame.minX,
+            y: max(center - Self.band, blockFrame.minY),
+            width: blockFrame.width,
+            height: min(center + Self.band, blockFrame.maxY) - max(center - Self.band, blockFrame.minY)
+        )
+        let offRow = location.y > row.maxY + Self.offRow || location.y < row.minY - Self.offRow
+        if offRow, let swipe, let kind = swipe.step?.menu, swipe.isValid(for: block) {
+            choose(from: kind, for: block.id, row: row, at: location)
+        } else {
+            menu = menu?.pinned == true ? menu : nil
+            let step = NoteSwipeStep.reached(translation.width, editing: editing)
+            swipe = NoteSwipeState(
+                blockId: block.id,
+                translation: translation.width,
+                step: step,
+                indentFloor: indentFloor
+            )
+        }
+    }
+
+    /// The finger lifted from a drag on `block`; the edits it asks for. Nothing is changed unless the tray under the
+    /// block showed what would be.
+    func released(_ block: NoteEditorBlock) -> [NoteEditorBlockEdit] {
+        defer {
+            rangeStart = nil
+            swipe = nil
+            swipeY = nil
+        }
+        guard held == nil else { return [] }
+        if let open = menu, !open.pinned {
+            menu = nil
+            let option = open.kind.options.first { $0.id == open.highlighted }
+            return option?.edits(for: block) ?? []
+        }
+        guard let swipe, let step = swipe.step, swipe.isValid(for: block) else { return [] }
+        switch step {
+        case .outdent: return [.shiftIndent(blockIds: [block.id], delta: -1)]
+        case .indent: return [.shiftIndent(blockIds: [block.id], delta: 1)]
+        case .todo: return [.toggleType(blockIds: [block.id], type: .todo)]
+        case .select:
+            startSelecting(with: block.id)
+            return []
+        case .listMenu, .styleMenu:
+            let row = rowFrames[block.id] ?? .zero
+            menu = step.menu.map { kind in
+                let place = placement(of: kind, row: row, preferringBelow: true)
+                return NoteMenuState(
+                    blockId: block.id,
+                    kind: kind,
+                    row: row,
+                    left: row.minX,
+                    below: place.below,
+                    centeredTop: place.centeredTop,
+                    pinned: true
+                )
+            }
+            return []
+        }
+    }
+
+    /// The edits a tapped option of the open menu asks for.
+    func pick(_ option: NoteMenuOption, for block: NoteEditorBlock) -> [NoteEditorBlockEdit] {
+        menu = nil
+        return option.edits(for: block)
+    }
+
+    func closeMenu() {
+        menu = nil
+    }
+
+    /// A gesture on a block ended without the finger lifting from it (the system took it over): whatever it was
+    /// doing stops, and nothing is changed. A menu left open for a tap stays.
+    func cancelled() {
+        rangeStart = nil
+        swipe = nil
+        swipeY = nil
+        held = nil
+        holdStart = nil
+        drag = nil
+        if menu?.pinned == false { menu = nil }
+    }
+
+    // MARK: - Holding
+    /// A finger held `block` long enough: it is lifted, to be selected or moved.
+    func hold(_ block: NoteEditorBlock) {
+        guard held != block.id else { return }
+        held = block.id
+        holdStart = nil
+        holds += 1
+    }
+
+    /// The finger holding `block` is at `location`; once it moves along the page, the block moves with it.
+    func holdMoved(_ block: NoteEditorBlock, to location: CGPoint, in blocks: [NoteEditorBlock]) {
+        guard held == block.id else { return }
+        guard let start = holdStart else {
+            holdStart = location
+            return
+        }
+        if drag != nil || abs(location.y - start.y) > 8 { moved(block, to: location, in: blocks) }
+    }
+
+    /// The finger holding a block lifted: a block that did not move is selected, one that moved goes where the finger
+    /// left it.
+    func holdEnded(in blocks: [NoteEditorBlock]) -> [NoteEditorBlockEdit] {
+        defer {
+            held = nil
+            holdStart = nil
+        }
+        guard let blockId = held else { return [] }
+        if drag != nil { return dropped(in: blocks) }
+        if selecting { selected.insert(blockId) } else { startSelecting(with: blockId) }
+        return []
+    }
+
+    // MARK: - Selection
+    func startSelecting(with blockId: String? = nil) {
+        selecting = true
+        selected = blockId.map { [$0] } ?? []
+    }
+
+    func stopSelecting() {
+        selecting = false
+        selected = []
+    }
+
+    func toggle(_ blockId: String) {
+        if selected.contains(blockId) { selected.remove(blockId) } else { selected.insert(blockId) }
+    }
+
+    func selectAll(_ blocks: [NoteEditorBlock]) {
+        selected = selected.count == blocks.count ? [] : Set(blocks.map(\.id))
+    }
+
+    /// The selected blocks in the order of the note.
+    func selectedIds(in blocks: [NoteEditorBlock]) -> [String] {
+        blocks.map(\.id).filter(selected.contains)
+    }
+
+    // MARK: - Moving
+    /// `block` is dragged to `location`: it moves, with the selection when it is in it, and a toggle with its
+    /// children.
+    func moved(_ block: NoteEditorBlock, to location: CGPoint, in blocks: [NoteEditorBlock]) {
+        let ids = drag?.blockIds ?? NoteFolding.withChildren(
+            selected.contains(block.id) ? selectedIds(in: blocks) : [block.id],
+            in: blocks
+        )
+        let target = target(at: location, moving: ids, in: blocks)
+        let start = blocks.first { ids.contains($0.id) }
+        let startX = drag?.startX ?? holdStart?.x ?? location.x
+        let preferred = (start?.indent ?? 0) + Int(((location.x - startX) / NoteBlockStyle.indentWidth).rounded())
+        let indent = level(preferred, at: target, moving: ids, in: blocks)
+        drag = NoteDragState(
+            blockIds: ids,
+            location: location,
+            target: target,
+            indent: indent,
+            insideToggle: NoteFolding.isInsideToggle(level: indent, before: target, in: blocks, skipping: ids),
+            startX: startX
+        )
+    }
+
+    /// The level blocks dropped before `target` take: as deep as the block above them and one more, and no shallower
+    /// than the block below them, so a block stays where a toggle's children are. Right under an open toggle they go
+    /// inside it. Between those bounds `preferred` decides.
+    func level(_ preferred: Int, at target: Int, moving ids: [String], in blocks: [NoteEditorBlock]) -> Int {
+        guard let above = blocks[..<min(target, blocks.count)].last(where: {
+            !ids.contains($0.id) && rowFrames[$0.id] != nil
+        }) else { return 0 }
+        let deepest = above.indent + 1
+        let below = blocks.indices.contains(target) ? blocks[target].indent : 0
+        let shallowest = NoteFolding.folds(above) && isOpen(above, in: blocks) ? deepest : min(below, deepest)
+        return min(max(preferred, shallowest), deepest)
+    }
+
+    /// The dragged blocks were let go: the one move it asks for, unless the blocks stay where and as deep as they were.
+    func dropped(in blocks: [NoteEditorBlock]) -> [NoteEditorBlockEdit] {
+        defer { drag = nil }
+        let indices = blocks.indices.filter { drag?.blockIds.contains(blocks[$0].id) == true }
+        guard let drag, let first = indices.first, let last = indices.last else { return [] }
+        // Blocks that lie together and are dropped among themselves stay where they are.
+        let staysPut = indices.count == last - first + 1 && (first...(last + 1)).contains(drag.target)
+        let delta = drag.indent - blocks[first].indent
+        if staysPut && delta == 0 { return [] }
+        return [.move(blockIds: drag.blockIds, targetIndex: drag.target, indentDelta: delta)]
+    }
+
+    /// Whether the toggle `block` shows its children: it has none, or the first is on screen.
+    private func isOpen(_ block: NoteEditorBlock, in blocks: [NoteEditorBlock]) -> Bool {
+        guard let index = blocks.firstIndex(where: { $0.id == block.id }), blocks.indices.contains(index + 1),
+              blocks[index + 1].indent > block.indent else { return true }
+        return rowFrames[blocks[index + 1].id] != nil
+    }
+
+    /// The index in the note before which blocks dropped at `location` go: before the first other block whose middle
+    /// is below the finger, or at the end.
+    func target(at location: CGPoint, moving ids: [String], in blocks: [NoteEditorBlock]) -> Int {
+        for (index, block) in blocks.enumerated() where !ids.contains(block.id) {
+            if let frame = rowFrames[block.id], frame.midY > location.y { return index }
+        }
+        return blocks.count
+    }
+}
+
+// MARK: - Private
+private extension NoteInteraction {
+
+    /// The finger left the block along the page: the swipe stays as it is and the menu opens on the side the finger
+    /// went, or on the other side when it has no room there; the option as far from the block as the finger is gets
+    /// highlighted on either side.
+    func choose(from kind: NoteMenuKind, for blockId: String, row: CGRect, at location: CGPoint) {
+        swipe?.frozen = true
+        let downward = location.y > row.maxY
+        let open = menu?.pinned == false ? menu : nil
+        let place = open.map { (below: $0.below, centeredTop: $0.centeredTop) }
+            ?? placement(of: kind, row: row, preferringBelow: downward)
+        let distance = if let top = place.centeredTop {
+            location.y - top
+        } else {
+            downward ? location.y - row.maxY : row.minY - location.y
+        }
+        let index = Int((distance / Self.optionHeight).rounded(.down))
+        menu = NoteMenuState(
+            blockId: blockId,
+            kind: kind,
+            row: row,
+            left: open?.left ?? location.x,
+            below: place.below,
+            centeredTop: place.centeredTop,
+            highlighted: kind.options.indices.contains(index) ? kind.options[index].id : nil
+        )
+    }
+
+    /// Where a menu next to `row` goes: on the preferred side, on the other one when it does not fit there, and in
+    /// the middle of the screen, its options top down, when it fits on neither.
+    func placement(of kind: NoteMenuKind, row: CGRect, preferringBelow: Bool) -> (below: Bool, centeredTop: CGFloat?) {
+        if fits(kind, below: preferringBelow, row: row) { return (preferringBelow, nil) }
+        if fits(kind, below: !preferringBelow, row: row) { return (!preferringBelow, nil) }
+        let height = CGFloat(kind.options.count) * Self.optionHeight
+        return (true, max(visible.minY, visible.midY - height / 2))
+    }
+
+    func fits(_ kind: NoteMenuKind, below: Bool, row: CGRect) -> Bool {
+        let height = CGFloat(kind.options.count) * Self.optionHeight
+        return below ? row.maxY + height <= visible.maxY : row.minY - height >= visible.minY
+    }
+
+    /// Selects every block between the one a range drag started on and the one under the finger.
+    func selectRange(from blockId: String, to location: CGPoint) {
+        if rangeStart == nil { rangeStart = (selected, blockId) }
+        guard let start = rangeStart, let startFrame = rowFrames[start.blockId] else { return }
+        let low = min(startFrame.minY, location.y)
+        let high = max(startFrame.maxY, location.y)
+        let covered = rowFrames.filter { $0.value.maxY > low && $0.value.minY < high }.keys
+        selected = start.base.union(covered)
+    }
+}

@@ -31,14 +31,14 @@
         "node_id": "PR_kwDOUFuQ4c8AAAABGHOcrQ",
         "number": 916,
         "title": "Cache ffmpeg packages and give integration-shard steps their own timeouts",
-        "html_url": "https://github.com/dvdtrsnk/semprec/pull/916",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/pull/916",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "pull_request": {
-          "url": "https://api.github.com/repos/dvdtrsnk/semprec/pulls/916",
-          "html_url": "https://github.com/dvdtrsnk/semprec/pull/916",
-          "diff_url": "https://github.com/dvdtrsnk/semprec/pull/916.diff",
-          "patch_url": "https://github.com/dvdtrsnk/semprec/pull/916.patch",
+          "url": "https://api.github.com/repos/dvdtrsnk/alldots/pulls/916",
+          "html_url": "https://github.com/dvdtrsnk/alldots/pull/916",
+          "diff_url": "https://github.com/dvdtrsnk/alldots/pull/916.diff",
+          "patch_url": "https://github.com/dvdtrsnk/alldots/pull/916.patch",
           "merged_at": "2026-10-01T15:10:48Z"
         },
         "bodySha256": "e01923ba3f9e3e77e6d671507690bfdf43abd019bcee9897ecaf3c8f9393b7e3"
@@ -48,7 +48,7 @@
   {
     "id": 32263080755,
     "node_id": "REFE_lADOUFuQ4c8AAAABUZh43M8AAAAHgweLMw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32263080755",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32263080755",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,
@@ -72,14 +72,14 @@
     },
     "event": "referenced",
     "commit_id": "cde84a021b6354a8cc9b8c1c4852b0e52453ab60",
-    "commit_url": "https://api.github.com/repos/dvdtrsnk/semprec/commits/cde84a021b6354a8cc9b8c1c4852b0e52453ab60",
+    "commit_url": "https://api.github.com/repos/dvdtrsnk/alldots/commits/cde84a021b6354a8cc9b8c1c4852b0e52453ab60",
     "created_at": "2026-10-01T15:05:04Z",
     "performed_via_github_app": null
   },
   {
     "id": 32263524697,
     "node_id": "CE_lADOUFuQ4c8AAAABUZh43M8AAAAHgw5RWQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/32263524697",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/32263524697",
     "actor": {
       "login": "dvdtrsnk",
       "id": 122625462,

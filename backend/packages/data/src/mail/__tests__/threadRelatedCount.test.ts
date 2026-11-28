@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import type { RelatedCollectionRow } from "../../chokePoint/relatedContributors.js";
@@ -101,6 +101,8 @@ async function fixture(): Promise<Fixture> {
     message: async (input) => {
       const { itemId } = await withTransaction(runtime, async (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emails,
           filesDatabaseId: await database("files"),
           folderRelationPropertyId: property("folder"),
@@ -145,10 +147,10 @@ function threadsRow(threadsDatabaseId: string, count: number): RelatedCollection
 describe("the mail threads of a person in the related collections (issue gh-1874)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(runtime);
     resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-person-threads-"));
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-person-threads-"));
   });
 
   beforeEach(async () => {

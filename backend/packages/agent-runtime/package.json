@@ -1,5 +1,5 @@
 {
-  "name": "@semprec/agent-runtime",
+  "name": "@alldots/agent-runtime",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -17,15 +17,15 @@
     "check-pi-import-paths": "node scripts/check-pi-import-paths.mjs"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.85.1",
-    "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-coding-agent": "0.85.1",
-    "@semprec/application": "workspace:*",
-    "@semprec/block-model": "workspace:*",
-    "@semprec/data": "workspace:*",
-    "@semprec/module-registry": "workspace:*",
-    "@semprec/realtime": "workspace:*",
-    "@semprec/shared": "workspace:*",
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.2",
+    "@alldots/application": "workspace:*",
+    "@alldots/block-model": "workspace:*",
+    "@alldots/data": "workspace:*",
+    "@alldots/module-registry": "workspace:*",
+    "@alldots/realtime": "workspace:*",
+    "@alldots/shared": "workspace:*",
     "ajv": "^8.20.0",
     "pg": "^8.23.0"
   },

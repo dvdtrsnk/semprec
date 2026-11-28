@@ -1,7 +1,7 @@
 import { DateTime } from "luxon";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import type { ModuleCatalogs } from "@semprec/module-registry";
+import type { ModuleCatalogs } from "@alldots/module-registry";
 import { getCalendarClock, type CalendarClock } from "../calendarTime.js";
 import { requireSingleRow, withSavepoint, withTransaction, type Queryable } from "../db/pool.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";

@@ -1,9 +1,8 @@
 import { loadModuleCatalogs, type ModuleCatalogs } from "./catalog.js";
 import { z } from "zod";
-import { CAPABILITY_IDS, type RiskClass } from "@semprec/shared";
+import { CAPABILITY_IDS, type RiskClass } from "@alldots/shared";
 import {
   moduleManifestSchema,
-  type AreaFilterTemplate,
   type CustomRouteMethod,
   type EditorSchemaDescriptor,
   type ModuleDatabaseDescriptor,
@@ -52,12 +51,12 @@ export interface ModuleDatabaseProjection {
   switcherOrder?: number | null;
   clientVisible?: boolean;
   overviewHideable?: boolean;
-  areaFilter?: AreaFilterTemplate;
   quickFilters?: ModuleDatabaseDescriptor["quickFilters"];
   defaultSort?: ModuleDatabaseDescriptor["defaultSort"];
   dateLabels?: ModuleDatabaseDescriptor["dateLabels"];
   collectionFilter?: ModuleDatabaseDescriptor["collectionFilter"];
   pickerFilter?: ModuleDatabaseDescriptor["pickerFilter"];
+  facetBarProperty?: ModuleDatabaseDescriptor["facetBarProperty"];
 }
 
 export interface ModuleAgentToolProjection {
@@ -99,7 +98,7 @@ export interface ModuleWorkerProjection {
 }
 
 /**
- * A custom route with its `handlerExport` resolved, left `unknown`: `semprec-api` casts it to its
+ * A custom route with its `handlerExport` resolved, left `unknown`: `alldots-api` casts it to its
  * own handler-factory shape, so this package does not depend on its HTTP types.
  */
 export interface ModuleCustomRouteDefinition {
@@ -108,6 +107,7 @@ export interface ModuleCustomRouteDefinition {
   method: CustomRouteMethod;
   path: string;
   handler: unknown;
+  maxBodyBytes?: number;
 }
 
 export interface ModuleMigrationProjection {
@@ -470,12 +470,12 @@ export class ModuleRegistry {
         ...(db.switcherOrder !== undefined ? { switcherOrder: db.switcherOrder } : {}),
         ...(db.clientVisible !== undefined ? { clientVisible: db.clientVisible } : {}),
         ...(db.overviewHideable !== undefined ? { overviewHideable: db.overviewHideable } : {}),
-        ...(db.areaFilter !== undefined ? { areaFilter: structuredClone(db.areaFilter) } : {}),
         ...(db.quickFilters !== undefined ? { quickFilters: structuredClone(db.quickFilters) } : {}),
         ...(db.defaultSort !== undefined ? { defaultSort: structuredClone(db.defaultSort) } : {}),
         ...(db.dateLabels !== undefined ? { dateLabels: structuredClone(db.dateLabels) } : {}),
         ...(db.collectionFilter !== undefined ? { collectionFilter: structuredClone(db.collectionFilter) } : {}),
         ...(db.pickerFilter !== undefined ? { pickerFilter: structuredClone(db.pickerFilter) } : {}),
+        ...(db.facetBarProperty !== undefined ? { facetBarProperty: db.facetBarProperty } : {}),
       })),
     );
   }
@@ -527,7 +527,7 @@ export class ModuleRegistry {
    * the source's nor the target's, or a cycle in the property graph (node per
    * `databaseKey.propertyKey`, edge per via rule). A resolver rule is checked for its target only.
    * `valueFilter` keys name a singleton system database no manifest declares, so only the manifest
-   * schema and `@semprec/data`'s seeded-schema drift check cover them.
+   * schema and `@alldots/data`'s seeded-schema drift check cover them.
    */
   validateLinkRules(): void {
     const allRules = [...this.modulesById.values()].flatMap((loaded) => loaded.manifest.linkRules ?? []);
@@ -730,6 +730,7 @@ export class ModuleRegistry {
         method: route.method,
         path: route.path,
         handler: loaded.exports[route.handlerExport],
+        ...(route.maxBodyBytes !== undefined ? { maxBodyBytes: route.maxBodyBytes } : {}),
       })),
     );
   }

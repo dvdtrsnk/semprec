@@ -27,15 +27,17 @@ enum JournalKotlin {
     static func state(
         _ phase: SharedSDK.JournalPhase,
         failure: SharedSDK.FailureKind? = nil,
-        saving: Bool = false,
         page: SharedSDK.JournalPageState? = nil,
         weeks: [SharedSDK.JournalWeekState] = [],
+        quarters: [SharedSDK.JournalQuarterState] = [],
         events: [SharedSDK.JournalEventState] = [],
         birthdays: [SharedSDK.JournalBirthdayState] = [],
         inbox: [SharedSDK.JournalInboxState] = [],
         axis: [SharedSDK.JournalAxisRowState] = [],
-        editProblem: SharedSDK.JournalEditProblem? = nil,
-        editFailure: SharedSDK.FailureKind? = nil
+        shown: SharedSDK.JournalSelection? = nil,
+        before: SharedSDK.JournalPeriodContent? = nil,
+        after: SharedSDK.JournalPeriodContent? = nil,
+        attachment: SharedSDK.AttachmentPreviewState? = nil
     ) -> SharedSDK.JournalState {
         SharedSDK.JournalState(
             phase: phase,
@@ -45,26 +47,14 @@ enum JournalKotlin {
             failure: failure,
             page: page,
             weeks: weeks,
+            quarters: quarters,
             events: events,
             birthdays: birthdays,
             inbox: inbox,
-            saving: saving,
-            editProblem: editProblem,
-            editFailure: editFailure
-        )
-    }
-
-    static func subpageState(
-        _ phase: SharedSDK.JournalPhase,
-        failure: SharedSDK.FailureKind? = nil,
-        blocks: [SharedSDK.JournalBlock] = [],
-        saving: Bool = false,
-        editProblem: SharedSDK.JournalEditProblem? = nil,
-        editFailure: SharedSDK.FailureKind? = nil
-    ) -> SharedSDK.JournalSubpageState {
-        SharedSDK.JournalSubpageState(
-            phase: phase, failure: failure, blocks: blocks, saving: saving,
-            editProblem: editProblem, editFailure: editFailure
+            shown: shown,
+            before: before,
+            after: after,
+            attachment: attachment
         )
     }
 
@@ -76,7 +66,7 @@ enum JournalKotlin {
         SharedSDK.JournalEventState(
             id: "e1", title: "Standup", startMinutes: start.map { KotlinInt(int: $0) },
             endMinutes: end.map { KotlinInt(int: $0) }, allDay: allDay, place: "Office",
-            projectName: "Semprec", projectColor: "#007AFF", hasTranscript: true
+            projectName: "Alldots", projectColor: "#007AFF", hasTranscript: true
         )
     }
 

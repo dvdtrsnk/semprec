@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { enqueueMailAccountSync } from "./mailSyncJob.js";
 import { recordGmailWatchRegistration, routeGmailAddress, type GmailRouteTarget } from "./mailAccountSyncStateStore.js";
@@ -7,7 +7,6 @@ import { normalizeEmailAddress } from "./personEmailIndexStore.js";
 import type { MailAccountLifecycle, MailLiveSyncAccount, MailLiveSyncLifecycleFactory } from "./mailLiveSyncRoot.js";
 
 export interface GmailWatchRegistration {
-  historyId: string;
   expiresAt: Date;
 }
 

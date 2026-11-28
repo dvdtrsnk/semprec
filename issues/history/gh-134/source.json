@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/134",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/134/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/134/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/134/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/134",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/134",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/134/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/134/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/134/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/134",
   "id": 5289605396,
   "node_id": "I_kwDOUFuQ4c8AAAABO0j5FA",
   "number": 134,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/133",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/133",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #132\n\n## Context\n\nAgent runtime behavior depends on external pi packages whose upgrades must be explicit and detectable.\n\n## Task\n\nAdd `pi-ai`, `pi-agent-core`, and `pi-coding-agent` as exact versions without range prefixes and lock them. Add CI-running contract tests against the installed version proving: tool execution defaults to parallel; constructing Agent/AgentSession spawns no subprocess; `estimateContextTokens` and `shouldCompact` accept a bare message array without a running session; and low-level `compact()` requires a prepared compaction rather than a bare array. Production code may use only documented public exports such as `createAgentSession`, `resourceLoader.systemPromptOverride`, tool execution config, and compaction exports. Rewrite useful example patterns locally; never import example or internal paths.\n\n## Scope\n\n### In scope\n\n- Exact dependencies, lockfile, named contract suite, and CI invocation.\n\n### Out of scope\n\n- Upgrading pi, AgentHarness, and tests of Semprec business logic.\n\n## Acceptance criteria\n\n- Routine install cannot silently change a pi version.\n- Breaking any relied-upon behavior fails with a pi-contract-specific message.\n- Source import lint finds no internal/example pi paths.\n",
+  "body": "**Blocked by:** #132\n\n## Context\n\nAgent runtime behavior depends on external pi packages whose upgrades must be explicit and detectable.\n\n## Task\n\nAdd `pi-ai`, `pi-agent-core`, and `pi-coding-agent` as exact versions without range prefixes and lock them. Add CI-running contract tests against the installed version proving: tool execution defaults to parallel; constructing Agent/AgentSession spawns no subprocess; `estimateContextTokens` and `shouldCompact` accept a bare message array without a running session; and low-level `compact()` requires a prepared compaction rather than a bare array. Production code may use only documented public exports such as `createAgentSession`, `resourceLoader.systemPromptOverride`, tool execution config, and compaction exports. Rewrite useful example patterns locally; never import example or internal paths.\n\n## Scope\n\n### In scope\n\n- Exact dependencies, lockfile, named contract suite, and CI invocation.\n\n### Out of scope\n\n- Upgrading pi, AgentHarness, and tests of Alldots business logic.\n\n## Acceptance criteria\n\n- Routine install cannot silently change a pi version.\n- Breaking any relied-upon behavior fails with a pi-contract-specific message.\n- Source import lint finds no internal/example pi paths.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/134/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/134/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/134/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/134/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

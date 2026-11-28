@@ -3,8 +3,8 @@
 import type { Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
 import { z } from "zod";
-import { enqueueJob } from "@semprec/queue";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { enqueueJob } from "@alldots/queue";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById, lockItemById } from "../chokePoint/itemsStore.js";
@@ -22,7 +22,8 @@ import {
   defaultSyncModeForProvider,
   type SyncMode,
 } from "../mail/mailAccountSyncStateStore.js";
-import type { MailTransport, MailTransportFactory } from "../mail/mailTransport.js";
+import type { MailTransport, MailTransportFactory, MailTransportResult } from "../mail/mailTransport.js";
+import { recordPendingSentCopyAfterSend } from "../mail/mailSentCopies.js";
 import { buildOutgoingMime, generateOutgoingMessageId } from "../mail/outgoingMime.js";
 import { MailRecipientRejectedError, MailTransportUnavailableError } from "../mail/providerTypes.js";
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
@@ -414,6 +415,7 @@ export async function sendEventInvitation(
   if (planned.kind === "end") return endWithoutSending(payload, planned.reason);
   const { organizerEmail, syncMode, locale, snapshot } = planned.plan;
 
+  const messageId = generateOutgoingMessageId(organizerEmail);
   let raw: Buffer;
   let envelope: { from: string; recipients: string[] };
   try {
@@ -437,7 +439,7 @@ export async function sendEventInvitation(
         to: [{ address: payload.attendeeEmail }],
         subject,
         text: body,
-        messageId: generateOutgoingMessageId(organizerEmail),
+        messageId,
         calendar: {
           method: payload.method,
           content: payload.method === "REQUEST" ? buildItipRequest(event) : buildItipCancel(event),
@@ -461,12 +463,15 @@ export async function sendEventInvitation(
     }
     throw error;
   }
+  let sent: MailTransportResult;
   try {
-    await transport.send({ raw, envelope });
+    sent = await transport.send({ raw, envelope });
   } catch (error) {
     if (error instanceof MailRecipientRejectedError) return endWithoutSending(payload, "recipientRejected");
     throw error;
   }
+  if (sent.needsSentCopy)
+    await recordPendingSentCopyAfterSend(deps.pool, { mailboxItemId: payload.mailboxId, messageId, raw });
   if (payload.method === "CANCEL") return;
 
   if (!(await recordInvitationSentWithRetries(deps, payload, snapshot.sequence, now))) {

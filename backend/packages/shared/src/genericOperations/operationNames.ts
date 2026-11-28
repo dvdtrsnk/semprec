@@ -1,7 +1,7 @@
 /**
  * The closed generic-operation catalog. Every other file in `genericOperations` is keyed off this list; compile-time
  * exhaustiveness checks in `schemas.ts`, `port.ts`, `capabilities.ts` and `bindings.ts` point at anything missing or
- * extra. The names are used verbatim as AgentTool names and prefixed `semprec.` as MCP names, except
+ * extra. The names are used verbatim as AgentTool names and prefixed `alldots.` as MCP names, except
  * `REST_ONLY_OPERATION_NAMES`.
  */
 export const GENERIC_OPERATION_NAMES = [
@@ -19,6 +19,7 @@ export const GENERIC_OPERATION_NAMES = [
   "property.delete",
   "property.option.add",
   "property.option.update",
+  "property.option.remove",
   "view.list",
   "view.get",
   "view.create",
@@ -63,10 +64,11 @@ export type GenericOperationName = (typeof GENERIC_OPERATION_NAMES)[number];
 /**
  * Operations only REST dispatches; `GenericOperationGateway` (used by AgentTool and MCP) neither lists nor dispatches
  * them.
- * - `property.option.add` / `property.option.update`: an option changes a database's schema, so the assistant gets no
- *   tool for it.
+ * - `property.option.add` / `property.option.update` / `property.option.remove`: an option changes a database's schema,
+ *   so the assistant gets no tool for it.
  */
 export const REST_ONLY_OPERATION_NAMES = [
   "property.option.add",
   "property.option.update",
+  "property.option.remove",
 ] as const satisfies readonly GenericOperationName[];

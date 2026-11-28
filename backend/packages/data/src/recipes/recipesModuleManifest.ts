@@ -1,4 +1,4 @@
-import type { ModuleDatabaseDescriptor, ModuleManifest } from "@semprec/module-registry";
+import type { ModuleDatabaseDescriptor, ModuleManifest } from "@alldots/module-registry";
 import { RECIPES_MODULE_ID } from "../seed/recipesModuleKeys.js";
 
 /** `seed/seedRecipesModule.ts` creates the default view with this type and name. The user may hide it from the overview. */

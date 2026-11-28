@@ -1,14 +1,14 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/176",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/176/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/176/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/176/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/176",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/176",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/176/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/176/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/176/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/176",
   "id": 5289607657,
   "node_id": "I_kwDOUFuQ4c8AAAABO0kB6Q",
   "number": 176,
-  "title": "[operations 06/08] Install the Semprec service units and timer skeletons with shared-env and loopback contracts",
+  "title": "[operations 06/08] Install the Alldots service units and timer skeletons with shared-env and loopback contracts",
   "user": {
     "login": "dvdtrsnk",
     "id": 122625462,
@@ -34,7 +34,7 @@
     {
       "id": 11979305080,
       "node_id": "LA_kwDOUFuQ4c8AAAACygWweA",
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/labels/spec:approved",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/labels/spec:approved",
       "name": "spec:approved",
       "color": "0e8a16",
       "default": false,
@@ -59,14 +59,14 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/172",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/172",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
     "blocking": 0,
     "total_blocking": 0
   },
-  "body": "**Blocked by:** #244, #175, #91\n\n## Context\n\nIssue #244 delivered the idempotent `provision.sh` with host packages, the service user, and the `/opt/semprec` tree. This slice completes provisioning with the systemd layer: the five service units, the timer/shell skeletons whose bodies later issues fill, and journald configuration. #177 (backup) and #178 (restore test) fill their timer bodies; #171 fills the dead-man switch; the trash purge timer wraps the purge task from #156.\n\n## Task\n\nExtend `provision.sh` so it also installs, idempotently:\n\n- **Five service units**: `semprec-api`, `semprec-agents`, `semprec-mailsync@`, `semprec-transcribe`, `semprec-ai-gateway`. Each unit runs from the `current` release symlink, loads `/opt/semprec/shared/.env` via `EnvironmentFile=` (the shared-env contract from #175), and applies the loopback contract from #174 (all internal listeners bind to `127.0.0.1`).\n- **Four timer/shell pairs as skeletons**: dead-man switch (body filled by #171), backup (#177), monthly restore test (#178), and trash purge. The skeletons install the timer schedule and a shell entry point; their bodies are filled by the issues named.\n- **journald configuration**: `Storage=persistent` plus limits — the provisioning-level application of the retention values #171 defines at the app/logging level.\n\nRerunning must not duplicate units or timers and must not overwrite configured secrets or releases.\n\n## Scope\n\n### In scope\n\n- Service units, timer/shell skeletons, journald configuration, unit verification, idempotence, and necessary documentation.\n\n### Out of scope\n\n- Host packages, service user, and the `/opt/semprec` tree — delivered by #244.\n- Timer bodies — #171, #177, #178.\n- `deploy.sh`/CI — #190/#188.\n\n## Acceptance criteria\n\n- Units verify (`systemd-analyze verify` passes) and point to `current` plus the shared env file.\n- All five services and four timers are installed after one run; a second run creates no duplicates and overwrites no secrets.\n- journald is configured with `Storage=persistent` and the limits after the run.\n",
+  "body": "**Blocked by:** #244, #175, #91\n\n## Context\n\nIssue #244 delivered the idempotent `provision.sh` with host packages, the service user, and the `/opt/alldots` tree. This slice completes provisioning with the systemd layer: the five service units, the timer/shell skeletons whose bodies later issues fill, and journald configuration. #177 (backup) and #178 (restore test) fill their timer bodies; #171 fills the dead-man switch; the trash purge timer wraps the purge task from #156.\n\n## Task\n\nExtend `provision.sh` so it also installs, idempotently:\n\n- **Five service units**: `alldots-api`, `alldots-agents`, `alldots-mailsync@`, `alldots-transcribe`, `alldots-ai-gateway`. Each unit runs from the `current` release symlink, loads `/opt/alldots/shared/.env` via `EnvironmentFile=` (the shared-env contract from #175), and applies the loopback contract from #174 (all internal listeners bind to `127.0.0.1`).\n- **Four timer/shell pairs as skeletons**: dead-man switch (body filled by #171), backup (#177), monthly restore test (#178), and trash purge. The skeletons install the timer schedule and a shell entry point; their bodies are filled by the issues named.\n- **journald configuration**: `Storage=persistent` plus limits — the provisioning-level application of the retention values #171 defines at the app/logging level.\n\nRerunning must not duplicate units or timers and must not overwrite configured secrets or releases.\n\n## Scope\n\n### In scope\n\n- Service units, timer/shell skeletons, journald configuration, unit verification, idempotence, and necessary documentation.\n\n### Out of scope\n\n- Host packages, service user, and the `/opt/alldots` tree — delivered by #244.\n- Timer bodies — #171, #177, #178.\n- `deploy.sh`/CI — #190/#188.\n\n## Acceptance criteria\n\n- Units verify (`systemd-analyze verify` passes) and point to `current` plus the shared env file.\n- All five services and four timers are installed after one run; a second run creates no duplicates and overwrites no secrets.\n- journald is configured with `Storage=persistent` and the limits after the run.\n",
   "closed_by": {
     "login": "bb-agent-relay[bot]",
     "id": 324208905,
@@ -89,7 +89,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/176/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/176/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -100,7 +100,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/176/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/176/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

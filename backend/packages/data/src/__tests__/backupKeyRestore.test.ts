@@ -7,8 +7,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client, Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ensureQueueSchema, grantQueueSchemaPrivileges } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { installQueueSchema } from "../db/queueSchema.js";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { runMigrations } from "../db/migrate.js";
 import { withTransaction } from "../db/pool.js";
 import { dropClosedDatabase } from "../testSupport/dropClosedDatabase.js";
@@ -29,7 +29,7 @@ const DELETING = "44444444-4444-4444-8444-444444444444";
 const TOMBSTONED = "55555555-5555-4555-8555-555555555555";
 const RESTORE_TEST_SCRIPT = resolve(
   dirname(fileURLToPath(import.meta.url)),
-  "../../../../../deploy/systemd/scripts/semprec-restore-test.sh",
+  "../../../../../deploy/systemd/scripts/alldots-restore-test.sh",
 );
 let fixture: BackupRecoveryFixture;
 let admin: Pool;
@@ -116,27 +116,27 @@ beforeAll(async () => {
   await sql(
     "postgres",
     `
-    CREATE ROLE semprec_restore NOLOGIN NOSUPERUSER NOBYPASSRLS;
+    CREATE ROLE alldots_restore NOLOGIN NOSUPERUSER NOBYPASSRLS;
     DO $$
     BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_side') THEN
-        CREATE ROLE semprec_side NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alldots_side') THEN
+        CREATE ROLE alldots_side NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
       END IF;
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_data') THEN
-        CREATE ROLE semprec_data NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION IN ROLE semprec_side;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alldots_data') THEN
+        CREATE ROLE alldots_data NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION IN ROLE alldots_side;
       END IF;
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_router') THEN
-        CREATE ROLE semprec_router NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alldots_router') THEN
+        CREATE ROLE alldots_router NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
       END IF;
     END
     $$;
-    -- The shape of the production catalog that names cluster roles: a policy for semprec_side and a
-    -- function owned by semprec_router. A restore into a cluster without these roles fails on both.
+    -- The shape of the production catalog that names cluster roles: a policy for alldots_side and a
+    -- function owned by alldots_router. A restore into a cluster without these roles fails on both.
     CREATE TABLE public.catalog_role_probe (id integer PRIMARY KEY);
     ALTER TABLE public.catalog_role_probe ENABLE ROW LEVEL SECURITY;
-    CREATE POLICY semprec_side_all ON public.catalog_role_probe TO semprec_side USING (true) WITH CHECK (true);
+    CREATE POLICY alldots_side_all ON public.catalog_role_probe TO alldots_side USING (true) WITH CHECK (true);
     CREATE FUNCTION public.catalog_role_probe_fn() RETURNS integer LANGUAGE sql AS 'SELECT 1';
-    ALTER FUNCTION public.catalog_role_probe_fn() OWNER TO semprec_router;
+    ALTER FUNCTION public.catalog_role_probe_fn() OWNER TO alldots_router;
     CREATE TABLE public.tenants (id uuid PRIMARY KEY, status text NOT NULL DEFAULT 'active');
     CREATE TABLE public.tenant_deletions (tenant_id uuid PRIMARY KEY);
     CREATE TABLE public.items (updated_at timestamptz NOT NULL);
@@ -193,17 +193,17 @@ beforeAll(async () => {
   await sql(
     "restored_main",
     `
-    GRANT USAGE ON SCHEMA public TO semprec_restore;
-    GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore;
-    GRANT SELECT, INSERT ON public.tenant_keys TO semprec_restore;
-    GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO semprec_restore;
+    GRANT USAGE ON SCHEMA public TO alldots_restore;
+    GRANT SELECT ON public.tenants, public.tenant_deletions TO alldots_restore;
+    GRANT SELECT, INSERT ON public.tenant_keys TO alldots_restore;
+    GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO alldots_restore;
   `,
   );
   const target = new URL(fixture.adminUrl);
   target.pathname = "/restored_main";
   targetUrl = target.toString();
   admin = new Pool({ connectionString: targetUrl });
-  runtime = new Pool({ connectionString: targetUrl, options: "-c role=semprec_restore" });
+  runtime = new Pool({ connectionString: targetUrl, options: "-c role=alldots_restore" });
   // An idle client dropped by the server is an error event; without a listener it is an uncaught exception that
   // fails the whole run after every test passed. Every such error is recorded and fails afterAll.
   admin.on("error", (error) => poolErrors.push(error));
@@ -238,7 +238,7 @@ describe("offline compatible tenant keys", () => {
       restoreTenantKeys({
         adminUrl: targetUrl,
         targetUrl,
-        targetRole: "semprec_restore",
+        targetRole: "alldots_restore",
         container: fixture.containerId,
         archive: Buffer.from("invalid"),
         recordStage: async () => {
@@ -271,7 +271,7 @@ describe("offline compatible tenant keys", () => {
       restoreTenantKeys({
         adminUrl: targetUrl,
         targetUrl,
-        targetRole: "semprec_restore",
+        targetRole: "alldots_restore",
         container: fixture.containerId,
         archive: malformed,
         recordStage: async (name) => {
@@ -279,7 +279,7 @@ describe("offline compatible tenant keys", () => {
         },
       }),
     ).rejects.toThrow();
-    expect(stageName).toMatch(/^semprec_restore_[a-f0-9]{32}$/);
+    expect(stageName).toMatch(/^alldots_restore_[a-f0-9]{32}$/);
     const absent = await admin.query<{ present: boolean }>(
       "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1) AS present",
       [stageName],
@@ -296,7 +296,7 @@ describe("offline compatible tenant keys", () => {
       restoreTenantKeys({
         adminUrl: targetUrl,
         targetUrl: fixture.adminUrl,
-        targetRole: "semprec_restore",
+        targetRole: "alldots_restore",
         container: fixture.containerId,
         archive,
         recordStage: async () => {
@@ -318,7 +318,7 @@ describe("offline compatible tenant keys", () => {
         restoreTenantKeys({
           adminUrl: targetUrl,
           targetUrl,
-          targetRole: "semprec_restore",
+          targetRole: "alldots_restore",
           container: fixture.containerId,
           archive,
           recordStage: async (name) => {
@@ -372,7 +372,7 @@ describe("offline compatible tenant keys", () => {
     }
     if (stageName) {
       try {
-        if (!/^semprec_restore_[a-f0-9]{32}$/.test(stageName)) throw new Error("Invalid owned stage identity");
+        if (!/^alldots_restore_[a-f0-9]{32}$/.test(stageName)) throw new Error("Invalid owned stage identity");
         await admin.query(`DROP DATABASE IF EXISTS "${stageName}"`);
         const absence = await admin.query<{ present: boolean }>(
           "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1) AS present",
@@ -399,14 +399,14 @@ describe("offline compatible tenant keys", () => {
     await restoreTenantKeys({
       adminUrl: targetUrl,
       targetUrl,
-      targetRole: "semprec_restore",
+      targetRole: "alldots_restore",
       container: fixture.containerId,
       archive,
       recordStage: async (name) => {
         stageName = name;
       },
     });
-    expect(stageName).toMatch(/^semprec_restore_[a-f0-9]{32}$/);
+    expect(stageName).toMatch(/^alldots_restore_[a-f0-9]{32}$/);
     const absent = await admin.query<{ present: boolean }>(
       "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1) AS present",
       [stageName],
@@ -456,7 +456,7 @@ describe("offline compatible tenant keys", () => {
   }, 120_000);
   it("runs the compiled offline owner against the selected PostgreSQL 16 instance", async () => {
     const database = "restored_cli";
-    const work = await mkdtemp(join(tmpdir(), "semprec-key-cli-"));
+    const work = await mkdtemp(join(tmpdir(), "alldots-key-cli-"));
     const archivePath = join(work, "tenant-keys.dump");
     const badArchive = join(work, "malformed.dump");
     const receipt = join(work, "receipt");
@@ -480,10 +480,10 @@ describe("offline compatible tenant keys", () => {
       );
       await sql(
         "restored_cli",
-        `GRANT USAGE ON SCHEMA public TO semprec_restore;
-        GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore;
-        GRANT SELECT, INSERT ON public.tenant_keys TO semprec_restore;
-        GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO semprec_restore`,
+        `GRANT USAGE ON SCHEMA public TO alldots_restore;
+        GRANT SELECT ON public.tenants, public.tenant_deletions TO alldots_restore;
+        GRANT SELECT, INSERT ON public.tenant_keys TO alldots_restore;
+        GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO alldots_restore`,
       );
       const url = new URL(fixture.adminUrl);
       url.pathname = `/${database}`;
@@ -503,11 +503,11 @@ describe("offline compatible tenant keys", () => {
                 ...process.env,
                 NODE_OPTIONS: undefined,
                 NODE_PATH: undefined,
-                SEMPREC_RESTORE_ADMIN_URL: url.toString(),
-                SEMPREC_RESTORE_TARGET_URL: url.toString(),
-                SEMPREC_RESTORE_TARGET_ROLE: "semprec_restore",
-                SEMPREC_RESTORE_CONTAINER: fixture.containerId,
-                SEMPREC_RESTORE_RECEIPT: receipt,
+                ALLDOTS_RESTORE_ADMIN_URL: url.toString(),
+                ALLDOTS_RESTORE_TARGET_URL: url.toString(),
+                ALLDOTS_RESTORE_TARGET_ROLE: "alldots_restore",
+                ALLDOTS_RESTORE_CONTAINER: fixture.containerId,
+                ALLDOTS_RESTORE_RECEIPT: receipt,
               },
               stdio: ["ignore", "pipe", "pipe"],
             },
@@ -602,10 +602,10 @@ describe("offline compatible tenant keys", () => {
       await sqlOn(
         fixture,
         target,
-        `GRANT USAGE ON SCHEMA public TO semprec_restore;
-        GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore;
-        GRANT SELECT, INSERT ON public.tenant_keys TO semprec_restore;
-        GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO semprec_restore;
+        `GRANT USAGE ON SCHEMA public TO alldots_restore;
+        GRANT SELECT ON public.tenants, public.tenant_deletions TO alldots_restore;
+        GRANT SELECT, INSERT ON public.tenant_keys TO alldots_restore;
+        GRANT EXECUTE ON FUNCTION public.app_tenant_default() TO alldots_restore;
         INSERT INTO public.tenants (id, status) VALUES ('${DELETING}', 'deleting'), ('${TOMBSTONED}', 'active');
         INSERT INTO public.tenant_deletions (tenant_id) VALUES ('${TOMBSTONED}')`,
       );
@@ -635,7 +635,7 @@ describe("offline compatible tenant keys", () => {
       await restoreTenantKeys({
         adminUrl: targetUrlOfCase,
         targetUrl: targetUrlOfCase,
-        targetRole: "semprec_restore",
+        targetRole: "alldots_restore",
         container: fixture.containerId,
         archive: stagedKeys,
         recordStage: async () => undefined,
@@ -682,8 +682,7 @@ describe("offline compatible tenant keys", () => {
       // The schema steps of runMigrationsCli.ts that create objects naming cluster roles.
       await runAsSystem("backup key restore test", async () => {
         await runMigrations(migrated);
-        await ensureQueueSchema(migrated);
-        await grantQueueSchemaPrivileges(migrated);
+        await installQueueSchema(migrated);
       });
       const dump = await fixture.exec([
         "pg_dump",
@@ -711,14 +710,14 @@ describe("offline compatible tenant keys", () => {
         "--no-psqlrc",
         "--tuples-only",
         "--no-align",
-        "--command=SELECT count(*) FROM pg_roles WHERE rolname LIKE 'semprec\\_%'",
+        "--command=SELECT count(*) FROM pg_roles WHERE rolname LIKE 'alldots\\_%'",
       ]);
       expect(existing.toString("utf8").trim()).toBe("0");
 
       await sqlOn(roleless, "postgres", "CREATE DATABASE restored_catalog");
       const withoutRoles = await execInFixture(roleless, ["pg_restore", ...restoreFlags], dump);
       expect(withoutRoles.code).not.toBe(0);
-      expect(withoutRoles.stderr).toContain('role "semprec_side" does not exist');
+      expect(withoutRoles.stderr).toContain('role "alldots_side" does not exist');
 
       // The failed restore stopped halfway; the next attempt starts from an empty database as the monthly run does.
       await sqlOn(roleless, "postgres", "DROP DATABASE restored_catalog; CREATE DATABASE restored_catalog");
@@ -765,7 +764,7 @@ describe("offline compatible tenant keys", () => {
 
   it("prints the fixed ledger failure line of the compiled validator and nothing of the failure", async () => {
     const database = "restored_ledger";
-    const work = await mkdtemp(join(tmpdir(), "semprec-ledger-cli-"));
+    const work = await mkdtemp(join(tmpdir(), "alldots-ledger-cli-"));
     const backend = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
     const cli = join(backend, "packages/data/dist/tenancy/validateRestoreLedgerCli.js");
     const ledgerWith = join(work, "ledger-with-tombstone");
@@ -782,7 +781,7 @@ describe("offline compatible tenant keys", () => {
           NODE_OPTIONS: undefined,
           NODE_PATH: undefined,
           DATABASE_URL: databaseUrlOfRun,
-          SEMPREC_RESTORE_TARGET_ROLE: "semprec_restore",
+          ALLDOTS_RESTORE_TARGET_ROLE: "alldots_restore",
         },
       });
     try {
@@ -814,8 +813,8 @@ describe("offline compatible tenant keys", () => {
       await sqlOn(
         fixture,
         database,
-        `GRANT USAGE ON SCHEMA public TO semprec_restore;
-        GRANT SELECT ON public.tenants, public.tenant_deletions TO semprec_restore`,
+        `GRANT USAGE ON SCHEMA public TO alldots_restore;
+        GRANT SELECT ON public.tenants, public.tenant_deletions TO alldots_restore`,
       );
       expect(await validate(ledgerWith, url)).toEqual({ code: 0, stdout: "", stderr: "" });
       expect(await validate(ledgerWithout, url)).toEqual({
@@ -870,7 +869,7 @@ describe("offline compatible tenant keys", () => {
   }, 120_000);
 
   it("runs the monthly script with real owned bridge, compiled owner and synthetic snapshots", async () => {
-    const work = await mkdtemp(join(tmpdir(), "semprec-monthly-real-"));
+    const work = await mkdtemp(join(tmpdir(), "alldots-monthly-real-"));
     const bin = join(work, "bin");
     const restoreRoot = join(work, "restore");
     const files = join(work, "files");
@@ -887,19 +886,19 @@ describe("offline compatible tenant keys", () => {
       await Promise.all([mkdir(bin), mkdir(restoreRoot), mkdir(files), mkdir(mail)]);
       await writeFile(mainPath, mainArchive, { mode: 0o600, flag: "wx" });
       await writeFile(keyPath, archive, { mode: 0o600, flag: "wx" });
-      const original = await readFile(join(repo, "deploy/systemd/scripts/semprec-restore-test.sh"), "utf8");
+      const original = await readFile(join(repo, "deploy/systemd/scripts/alldots-restore-test.sh"), "utf8");
       const rewritten = original
         .replace("readonly RESTORE_ROOT=/var/tmp", `readonly RESTORE_ROOT=${restoreRoot}`)
         .replace(
-          "readonly RESULT_CLI=/opt/semprec/current/backend/packages/data/dist/observability/restoreTestResultCli.js",
+          "readonly RESULT_CLI=/opt/alldots/current/backend/packages/data/dist/observability/restoreTestResultCli.js",
           "readonly RESULT_CLI=/synthetic/restoreTestResultCli.js",
         )
         .replace(
-          "readonly KEY_RESTORE_CLI=/opt/semprec/current/backend/packages/data/dist/tenancy/restoreTenantKeysCli.js",
+          "readonly KEY_RESTORE_CLI=/opt/alldots/current/backend/packages/data/dist/tenancy/restoreTenantKeysCli.js",
           `readonly KEY_RESTORE_CLI=${join(backend, "packages/data/dist/tenancy/restoreTenantKeysCli.js")}`,
         )
         .replace(
-          "readonly LEDGER_VALIDATOR=/opt/semprec/current/backend/packages/data/dist/tenancy/validateRestoreLedgerCli.js",
+          "readonly LEDGER_VALIDATOR=/opt/alldots/current/backend/packages/data/dist/tenancy/validateRestoreLedgerCli.js",
           `readonly LEDGER_VALIDATOR=${join(backend, "packages/data/dist/tenancy/validateRestoreLedgerCli.js")}`,
         )
         .replace(
@@ -914,12 +913,12 @@ describe("offline compatible tenant keys", () => {
         `#!/bin/bash
 set -euo pipefail
 target="\${!#}"
-mkdir -p "$target/var/backups/semprec"
-if [[ " $* " == *" /var/backups/semprec/tenant-keys.dump "* ]]; then
-  cp "$TEST_KEYS" "$target/var/backups/semprec/tenant-keys.dump"
+mkdir -p "$target/var/backups/alldots"
+if [[ " $* " == *" /var/backups/alldots/tenant-keys.dump "* ]]; then
+  cp "$TEST_KEYS" "$target/var/backups/alldots/tenant-keys.dump"
 else
-  cp "$TEST_MAIN" "$target/var/backups/semprec/postgres.dump"
-  : > "$target/var/backups/semprec/tenant-deletions.ledger"
+  cp "$TEST_MAIN" "$target/var/backups/alldots/postgres.dump"
+  : > "$target/var/backups/alldots/tenant-deletions.ledger"
 fi
 `,
         { mode: 0o700 },
@@ -950,7 +949,7 @@ exec "$TEST_NODE" "$@"
             AWS_SECRET_ACCESS_KEY: "synthetic",
             FILES_STORAGE_DIR: files,
             MAIL_ATTACHMENTS_DIR: mail,
-            SEMPREC_SIDE_DATABASE_URL: "postgres://synthetic",
+            ALLDOTS_SIDE_DATABASE_URL: "postgres://synthetic",
             HEALTHCHECKS_RESTORE_PING_URL: "https://example.invalid/test",
             TEST_MAIN: mainPath,
             TEST_KEYS: keyPath,
@@ -1003,7 +1002,7 @@ exec "$TEST_NODE" "$@"
   }, 180_000);
 
   it("retains an interrupted Docker exec until its held database operation settles", async () => {
-    const database = `semprec_restore_${randomUUID().replaceAll("-", "")}`;
+    const database = `alldots_restore_${randomUUID().replaceAll("-", "")}`;
     await sql("postgres", `CREATE DATABASE "${database}"`);
     await sql(
       database,
@@ -1096,7 +1095,7 @@ exec "$TEST_NODE" "$@"
     if (failure) throw failure.value;
   }, 120_000);
   it("retains an exec when its start response is lost until the daemon finishes", async () => {
-    const database = `semprec_restore_${randomUUID().replaceAll("-", "")}`;
+    const database = `alldots_restore_${randomUUID().replaceAll("-", "")}`;
     await sql("postgres", `CREATE DATABASE "${database}"`);
     await sql(
       database,
@@ -1207,7 +1206,7 @@ const controlImage = "sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f61699206
 describe("fixture resource identity", () => {
   for (const mode of ["network-race", "network-unknown", "container-race", "container-unknown"] as const) {
     it(`preserves ${mode} until its independent owner cleans it`, async () => {
-      const work = await mkdtemp(join(tmpdir(), "semprec-identity-control-"));
+      const work = await mkdtemp(join(tmpdir(), "alldots-identity-control-"));
       const previous = { ...process.env };
       const docker = (await dockerCommand("which", ["docker"])).stdout.trim();
       const networkFile = join(work, "network-id");

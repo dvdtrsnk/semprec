@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runOnce } from "@semprec/queue";
+import { runOnce } from "@alldots/queue";
 import { bindToTenantZero, getTestPool, inTenantZero, resetDatabase } from "../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createViewTypeRegistry, type ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
@@ -12,7 +12,7 @@ import { createActionRegistry } from "../scheduler/actions.js";
 import { withTransaction } from "../db/pool.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn } from "../inbox/inboxTickAction.js";
 import {
   confirmProposalWithClient,
   rejectProposalWithClient,
@@ -25,7 +25,7 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { JOURNAL_INBOX_COMPUTED_KEY, recomputeJournalInboxDay } from "../inbox/journalInboxCompute.js";
 import { JOURNAL_INBOX_VIEW_TYPE } from "../views/journalInboxViewType.js";
 import type { JournalInboxItemSummary } from "../inbox/journalInboxCompute.js";
-import { AiGatewayFailedError } from "@semprec/shared";
+import { AiGatewayFailedError } from "@alldots/shared";
 
 let pool: Pool;
 let chokePoint: ChokePoint;
@@ -85,8 +85,8 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
     );
   }
 
-  async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
-    const handler = createSemprecTickAction(pool, computeProposal);
+  async function runTick(itemId: string, computeProposal: ComputeAlldotsProposalFn): Promise<void> {
+    const handler = createAlldotsTickAction(pool, computeProposal);
     await inTenantZero(() =>
       handler(
         { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
@@ -381,12 +381,10 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
   describe("processing state and proposal summary (issue #1489)", () => {
     let filesId: string;
     let projectsId: string;
-    let areasId: string;
 
     beforeEach(async () => {
       filesId = await databaseIdFor("files");
       projectsId = await databaseIdFor("projects");
-      areasId = await databaseIdFor("areas");
     });
 
     async function createType(name: string, emoji: string, targetDatabase: "tasks" | "files"): Promise<string> {
@@ -404,7 +402,7 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       return type.id;
     }
 
-    function filesComputation(relations: Record<string, string[]>): ComputeSemprecProposalFn {
+    function filesComputation(relations: Record<string, string[]>): ComputeAlldotsProposalFn {
       return async () => ({
         properties: {},
         operations: [
@@ -476,13 +474,16 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
       expect(entry).toMatchObject({ status: "computeFailed", processing: "failed", proposalSummary: null });
     });
 
-    it("summarises a proposed Files card: target database, project, area and the follow-up step", async () => {
+    it("summarises a proposed Files card in a tenant without an Areas database: target database, project and the follow-up step", async () => {
+      const { rows: areas } = await pool.query<{ id: string }>(
+        "SELECT id FROM databases WHERE owner_module_id = 'areas'",
+      );
+      expect(areas).toEqual([]);
       const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Renovation" } });
-      const area = await chokePoint.createItem({ databaseId: areasId, properties: { name: "Home" } });
       const item = await captureItem("Invoice scan", await createType("File", "📄", "files"));
       const dayId = await journalDayIdFor(item.id);
 
-      await runTick(item.id, filesComputation({ projects: [project.id], area: [area.id] }));
+      await runTick(item.id, filesComputation({ projects: [project.id] }));
       await drainQueue();
 
       const entry = (await computedInboxItems(dayId))![0]!;
@@ -495,30 +496,11 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
         targetItemName: null,
         projectItemId: project.id,
         projectName: "Renovation",
-        areaItemId: area.id,
-        areaName: "Home",
         followUps: [{ databaseKey: "tasks", name: "Pay invoice", amount: null, currency: null }],
       });
     });
 
-    it("leaves the area unknown when the Files card names only a project", async () => {
-      const project = await chokePoint.createItem({ databaseId: projectsId, properties: { name: "Renovation" } });
-      const item = await captureItem("Invoice scan", await createType("File", "📄", "files"));
-      const dayId = await journalDayIdFor(item.id);
-
-      await runTick(item.id, filesComputation({ projects: [project.id] }));
-      await drainQueue();
-
-      const entry = (await computedInboxItems(dayId))![0]!;
-      expect(entry.proposalSummary).toMatchObject({
-        projectItemId: project.id,
-        projectName: "Renovation",
-        areaItemId: null,
-        areaName: null,
-      });
-    });
-
-    it("summarises a single-step proposal with no project, area or follow-up", async () => {
+    it("summarises a single-step proposal with no project or follow-up", async () => {
       const item = await captureItem("Buy milk", await createType("Task", "☑️", "tasks"));
       const dayId = await journalDayIdFor(item.id);
 
@@ -534,8 +516,6 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
         targetItemName: null,
         projectItemId: null,
         projectName: null,
-        areaItemId: null,
-        areaName: null,
         followUps: [],
       });
     });
@@ -561,8 +541,6 @@ describe("Journal Inbox-list computed cache (issue #106)", () => {
         targetItemName: null,
         projectItemId: null,
         projectName: null,
-        areaItemId: null,
-        areaName: null,
         followUps: [],
       });
     });

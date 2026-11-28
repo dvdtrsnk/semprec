@@ -78,6 +78,8 @@ describe("itemRelationFilter related-item lookup (issue #262)", () => {
     const { itemId: emailItemId } = await inTenantZero(() =>
       withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: filesId,
           folderRelationPropertyId: folderProperty.id,

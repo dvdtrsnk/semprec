@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { manifestPath } from "../testSupport/moduleManifestPath.js";
 import { seedSystem } from "../seed/seedSystem.js";

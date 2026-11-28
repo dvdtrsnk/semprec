@@ -14,6 +14,7 @@ public enum SempIssueLink: Equatable, Sendable {
     case chat
     case thread
     case project
+    case mailbox
 }
 
 /// A problem that needs attention; `title` and `text` are the server's, in the person's language.
@@ -127,6 +128,7 @@ public enum SempStatusEffect: Equatable, Sendable {
     case openChat(threadId: String, messageId: String)
     case openThread(threadId: String)
     case openProject(projectId: String)
+    case openMailbox(mailboxId: String)
 }
 
 public typealias SempStatusScreenModel = ScreenModel<SempStatusState, SempStatusAction, SempStatusEffect>

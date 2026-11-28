@@ -11,22 +11,60 @@ export const IMAP_IDLE_MAX_IDLE_TIME_MS = 25 * 60 * 1000;
 /** Longer than `IMAP_IDLE_MAX_IDLE_TIME_MS` so a renewal never trips it; imapflow's 5-minute default is too short. */
 export const IMAP_IDLE_SOCKET_TIMEOUT_MS = 35 * 60 * 1000;
 
+/**
+ * imapflow's `autoIdleDelay` (15 s by default) on the IDLE connection: a server reports a new message only while
+ * IDLE runs, so the connection, which issues no command after its SELECT, starts IDLE at once instead of leaving a
+ * blind window after every connect.
+ */
+export const IMAP_IDLE_AUTO_IDLE_DELAY_MS = 0;
+
 // TCP keepalive needs no configuration: imapflow always enables it on its sockets.
+
+/**
+ * How often an IDLE connection is checked for still idling. imapflow does not restart an IDLE that ended without our
+ * DONE (a tagged reply from the server, a failed IDLE): the connection stays open but is told of nothing until the
+ * socket timeout. Two consecutive checks finding it not idling end the session, so the lifecycle reconnects and
+ * catches up; a renewal (`maxIdleTime`) or a keepalive NOOP leaves IDLE for milliseconds and never spans two checks.
+ */
+export const IMAP_IDLE_CHECK_INTERVAL_MS = 60_000;
+
+/** The session ended because its connection, still open, was no longer idling. */
+export class ImapIdleStoppedError extends Error {
+  override readonly name = "ImapIdleStoppedError";
+
+  constructor() {
+    super("The IMAP connection stopped idling");
+  }
+}
+
+export interface ImapFlowIdleTransportOptions {
+  /** Defaults to `IMAP_IDLE_CHECK_INTERVAL_MS`. */
+  idleCheckIntervalMs?: number;
+}
 
 export interface ImapIdleFlowOptions {
   maxIdleTime: number;
   socketTimeout: number;
+  autoIdleDelay: number;
+  /**
+   * Always `false`. imapflow 1.7.6 does not lower the message count it holds for a VANISHED expunge, so once QRESYNC
+   * is enabled the EXISTS of the next delivery repeats that count and emits nothing: on iCloud every message deleted
+   * in INBOX silenced the next arrival. Without QRESYNC the server reports EXPUNGE, which imapflow counts.
+   */
+  qresync: false;
 }
 
 /**
  * Returns a connected, authenticated client built by the composition root with the IDLE options;
  * the transport never connects a client itself (see
- * docs/architecture/domain-mail-and-inbox.md#server-settings-and-outbound-connections).
+ * docs/architecture/domain-mail-and-inbox.md#server-settings-and-outbound-connections). `signal`
+ * aborts once the lifecycle stops and ends a wait for the login admission.
  */
 export type CreateIdleTunedImapFlowClient = (
   mailboxItemId: string,
   credential: string,
   idleOptions: ImapIdleFlowOptions,
+  signal: AbortSignal,
 ) => Promise<ImapFlow>;
 
 const SPECIAL_USE_INBOX = "\\Inbox";
@@ -38,6 +76,10 @@ function endPromiseFor(client: ImapFlow): {
   secondary: unknown[];
   claimEnd: () => Promise<unknown>;
   unclaimedError: () => { value: unknown } | undefined;
+  /** Ends the connection with `error` unless it has already ended; never records a secondary. */
+  endWith: (error: unknown) => void;
+  /** Whether the client's `close` event has been observed. */
+  hasClosed: () => boolean;
   dispose: () => void;
 } {
   let resolveEnd!: (error: unknown) => void;
@@ -82,6 +124,10 @@ function endPromiseFor(client: ImapFlow): {
       return promise;
     },
     unclaimedError: () => (claimed ? undefined : firstError),
+    endWith: (error) => {
+      if (!endSettled) onError(error);
+    },
+    hasClosed: () => closeSettled,
     dispose: () => {
       client.off("error", onError);
       client.off("close", onClose);
@@ -91,7 +137,29 @@ function endPromiseFor(client: ImapFlow): {
 
 const IDLE_LOGOUT_TIMEOUT_MS = 10_000;
 
+/** imapflow's refusal of a command on a connection whose socket is already gone: there is nothing left to log out of. */
+function isConnectionGone(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "NoConnection";
+}
+
+function throwCleanupFailures(ended: ReturnType<typeof endPromiseFor>): void {
+  const failures = ended.secondary;
+  const unclaimed = ended.unclaimedError();
+  if (unclaimed) failures.unshift(unclaimed.value);
+  if (failures.length === 0) return;
+  if (failures.length === 1) throw failures[0];
+  throw new AggregateError(failures, "IMAP IDLE connection cleanup failed", { cause: failures[0] });
+}
+
+/**
+ * Logs out, then waits for the close. A connection the server or the network already closed (the server's BYE, a
+ * reset) is not logged out: its close is the end of the cleanup, not a failure of it.
+ */
 async function closeClient(client: ImapFlow, ended: ReturnType<typeof endPromiseFor>): Promise<void> {
+  if (ended.hasClosed()) {
+    throwCleanupFailures(ended);
+    return;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   let logout: Promise<{ kind: "done"; value: unknown } | { kind: "failed"; error: unknown }>;
   try {
@@ -125,7 +193,7 @@ async function closeClient(client: ImapFlow, ended: ReturnType<typeof endPromise
   };
   try {
     const outcome = await Promise.race([logout, deadline]);
-    if (outcome.kind === "failed") failures.push(outcome.error);
+    if (outcome.kind === "failed" && !isConnectionGone(outcome.error)) failures.push(outcome.error);
     if (outcome.kind === "done" && outcome.value === false) diagnose("ambiguous");
     if (outcome.kind === "failed" || (outcome.kind === "done" && outcome.value === false)) requestClose();
     if (outcome.kind === "timeout") {
@@ -133,8 +201,9 @@ async function closeClient(client: ImapFlow, ended: ReturnType<typeof endPromise
       diagnose("unresolved");
       requestClose();
       const settled = await logout;
-      if (settled.kind === "failed") failures.unshift(settled.error);
-      else if (settled.value === false) diagnose("ambiguous");
+      if (settled.kind === "failed") {
+        if (!isConnectionGone(settled.error)) failures.unshift(settled.error);
+      } else if (settled.value === false) diagnose("ambiguous");
       await ended.closed;
     } else {
       const closeResult = await Promise.race([
@@ -151,11 +220,7 @@ async function closeClient(client: ImapFlow, ended: ReturnType<typeof endPromise
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-  const unclaimed = ended.unclaimedError();
-  if (unclaimed) failures.unshift(unclaimed.value);
-  if (failures.length === 0) return;
-  if (failures.length === 1) throw failures[0];
-  throw new AggregateError(failures, "IMAP IDLE connection cleanup failed", { cause: failures[0] });
+  throwCleanupFailures(ended);
 }
 
 async function closeAfterFailure(
@@ -206,13 +271,24 @@ class ImapFlowIdleConnection implements ImapIdleConnection {
   }
 }
 
-export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlowClient): ImapIdleTransport {
+export function createImapFlowIdleTransport(
+  createClient: CreateIdleTunedImapFlowClient,
+  options: ImapFlowIdleTransportOptions = {},
+): ImapIdleTransport {
+  const idleCheckIntervalMs = options.idleCheckIntervalMs ?? IMAP_IDLE_CHECK_INTERVAL_MS;
   return {
-    async resolveFolders(mailboxItemId, credential): Promise<ImapIdleFolderTarget[]> {
-      const client = await createClient(mailboxItemId, credential, {
-        maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
-        socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
-      });
+    async resolveFolders(mailboxItemId, credential, signal): Promise<ImapIdleFolderTarget[]> {
+      const client = await createClient(
+        mailboxItemId,
+        credential,
+        {
+          maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
+          socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+          autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
+          qresync: false,
+        },
+        signal,
+      );
       const ended = endPromiseFor(client);
       let targets: ImapIdleFolderTarget[];
       try {
@@ -232,25 +308,46 @@ export function createImapFlowIdleTransport(createClient: CreateIdleTunedImapFlo
       return targets.length > 0 ? targets : [{ path: "INBOX" }];
     },
 
-    async connect(mailboxItemId, credential, folderPath, onSignal): Promise<ImapIdleConnection> {
-      const client = await createClient(mailboxItemId, credential, {
-        maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
-        socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
-      });
+    async connect(mailboxItemId, credential, folderPath, onSignal, signal): Promise<ImapIdleConnection> {
+      const client = await createClient(
+        mailboxItemId,
+        credential,
+        {
+          maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
+          socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+          autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
+          qresync: false,
+        },
+        signal,
+      );
       const ended = endPromiseFor(client);
-      try {
-        await client.mailboxOpen(folderPath);
-      } catch (err) {
-        return closeAfterFailure(client, ended, err);
-      }
-      // imapflow's default auto-IDLE keeps emitting these; no explicit IDLE command is needed.
+      // imapflow's auto-IDLE keeps emitting these; no explicit IDLE command is needed. Attached before the SELECT, so
+      // no event between the SELECT's reply and the return below can go unheard.
       client.on("exists", onSignal);
       client.on("expunge", onSignal);
       client.on("flags", onSignal);
-      const detachSignalListeners = () => {
+      const detachListeners = () => {
         client.off("exists", onSignal);
         client.off("expunge", onSignal);
         client.off("flags", onSignal);
+      };
+      try {
+        await client.mailboxOpen(folderPath);
+      } catch (err) {
+        detachListeners();
+        return closeAfterFailure(client, ended, err);
+      }
+      let missedChecks = 0;
+      const watchdog = setInterval(() => {
+        missedChecks = client.idling ? 0 : missedChecks + 1;
+        if (missedChecks < 2) return;
+        clearInterval(watchdog);
+        ended.endWith(new ImapIdleStoppedError());
+      }, idleCheckIntervalMs);
+      watchdog.unref();
+      const detachSignalListeners = () => {
+        clearInterval(watchdog);
+        detachListeners();
       };
       return new ImapFlowIdleConnection(client, detachSignalListeners, ended);
     },

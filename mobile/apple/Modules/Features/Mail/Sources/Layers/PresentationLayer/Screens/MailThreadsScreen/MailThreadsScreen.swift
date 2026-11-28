@@ -2,9 +2,9 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The thread list of the mail: a search, quick filters, the areas and projects the threads belong to, a notice for a
-/// mailbox that needs signing in again, and the threads. It is the one screen for all mail, an area, a project, a
-/// folder and a mailbox: the model it is made over carries which.
+/// The thread list of the mail: a search, quick filters, the projects the threads belong to, a notice for a mailbox
+/// that needs signing in again, and the threads. It is the one screen for all mail, a project, a folder and a mailbox:
+/// the model it is made over carries which.
 struct MailThreadsScreen: View {
 
     // MARK: - Dependencies
@@ -26,7 +26,7 @@ struct MailThreadsScreen: View {
         content
             .navigationTitle(Text(verbatim: title ?? String(localized: "mail.title", bundle: .module)))
             .toolbar {
-                ToolbarItemGroup(placement: .primaryAction) {
+                PlainToolbarItemGroup(placement: .primaryAction) {
                     Button { viewModel.send(.open(.openFolders)) } label: {
                         Label { Text("mail.folders", bundle: .module) } icon: { Image(systemName: "folder") }
                     }
@@ -49,7 +49,7 @@ struct MailThreadsScreen: View {
                 Text("mail.failure.title", bundle: .module),
                 isPresented: actionFailed,
                 actions: { dismissButton },
-                message: { Text("mail.failure.message", bundle: .module) }
+                message: { Text(MailRefusal.actionMessage(for: viewModel.state.actionRefusal)) }
             )
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(MailIdentifiers.threadsScreen)
@@ -77,6 +77,9 @@ private extension MailThreadsScreen {
             Section {
                 filterBar
                 ForEach(viewModel.state.reauthorization) { notice in reauthorization(notice) }
+                if let summary = viewModel.state.remoteSearch, let line = remoteSearchLine(summary) {
+                    remoteSearch(line)
+                }
             }
             .listRowBackground(Color.clear)
             .listRowInsets(EdgeInsets())
@@ -174,6 +177,15 @@ private extension MailThreadsScreen {
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    func remoteSearch(_ line: String) -> some View {
+        Label { Text(verbatim: line) } icon: { Image(systemName: "server.rack") }
+            .font(.footnote)
+            .foregroundStyle(Theme.Colors.secondaryText)
+            .padding(.horizontal, Theme.Spacing.medium)
+            .padding(.bottom, Theme.Spacing.small)
+            .accessibilityIdentifier(MailIdentifiers.threadsRemoteSearch)
+    }
+
     func reauthorization(_ notice: MailAccountNotice) -> some View {
         HStack(spacing: Theme.Spacing.small) {
             Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
@@ -208,7 +220,7 @@ private extension MailThreadsScreen {
     }
 
     var hasContext: Bool {
-        viewModel.state.areaId != nil || viewModel.state.projectId != nil
+        viewModel.state.projectId != nil
     }
 
     struct ContextChip {
@@ -218,17 +230,10 @@ private extension MailThreadsScreen {
         let clear: () -> Void
     }
 
-    /// The chips of the area and project the list is narrowed to; each clears its own.
+    /// The chip of the project the list is narrowed to; it clears it.
     var contextChips: [ContextChip] {
         var chips: [ContextChip] = []
         let state = viewModel.state
-        if state.areaId != nil {
-            let name = state.areaName ?? String(localized: "mail.filter.area", bundle: .module)
-            let title = String(format: String(localized: "mail.chip.area", bundle: .module), locale: .current, name)
-            chips.append(ContextChip(title: title, color: state.facets.areas.first { $0.id == state.areaId }?.color) {
-                viewModel.send(.setArea(nil))
-            })
-        }
         if state.projectId != nil {
             let name = state.projectName ?? String(localized: "mail.filter.project", bundle: .module)
             let title = String(format: String(localized: "mail.chip.project", bundle: .module), locale: .current, name)
@@ -236,6 +241,23 @@ private extension MailThreadsScreen {
             chips.append(ContextChip(title: title, color: color) { viewModel.send(.setProject(nil)) })
         }
         return chips
+    }
+
+    /// What the provider search added: the hits the index does not hold yet and the accounts it could not search, or
+    /// `nil` when it added nothing to say.
+    func remoteSearchLine(_ summary: MailRemoteSearchSummary) -> String? {
+        var parts: [String] = []
+        if summary.unindexed > 0 {
+            let format = String(localized: "mail.search.unindexed", bundle: .module)
+            parts.append(String(format: format, locale: .current, summary.unindexed))
+        }
+        if !summary.failedAccounts.isEmpty {
+            let unknown = String(localized: "mail.search.unknownAccount", bundle: .module)
+            let names = summary.failedAccounts.map { $0.name.isEmpty ? unknown : $0.name }
+            let format = String(localized: "mail.search.failed", bundle: .module)
+            parts.append(String(format: format, locale: .current, names.joined(separator: ", ")))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
     func reauthorizationTitle(_ notice: MailAccountNotice) -> String {
@@ -259,7 +281,7 @@ private extension MailListFilter {
     }
 }
 
-/// An area or a project the list is narrowed to, as a capsule with a color dot and a button that removes it.
+/// The project the list is narrowed to, as a capsule with a color dot and a button that removes it.
 private struct MailContextChip: View {
 
     // MARK: - Dependencies
@@ -294,6 +316,18 @@ private struct MailContextChip: View {
         MailThreadsScreen(
             viewModel: MailThreadsViewModel(
                 model: ScriptedMailThreadsScreenModel(state: PreviewMail.threads),
+                router: PreviewMailRouter()
+            ),
+            title: nil
+        )
+    }
+}
+
+#Preview("Search") {
+    NavigationStack {
+        MailThreadsScreen(
+            viewModel: MailThreadsViewModel(
+                model: ScriptedMailThreadsScreenModel(state: PreviewMail.search),
                 router: PreviewMailRouter()
             ),
             title: nil

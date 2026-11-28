@@ -9,7 +9,7 @@ import { digest, parseRecord, specDigest } from "./records.mjs";
 const now = "2026-10-27T12:00:00Z";
 const body = "**Blocked by:** none\n**Model tier:** low\n\n## Context\nModel tier rationale: A mechanical operation.\n\n## Task\nDo the operation.\n\n## Touches\n- example.txt\n\n## Scope\n### In scope\nThe operation.\n### Out of scope\nOther work.\n\n## Acceptance criteria\nIt works.\n";
 function raw(number = 1) {
-  return { number, id: number + 10000000000, node_id: `I_${number}`, title: "Implement operation", html_url: `https://github.com/dvdtrsnk/semprec/issues/${number}`,
+  return { number, id: number + 10000000000, node_id: `I_${number}`, title: "Implement operation", html_url: `https://github.com/dvdtrsnk/alldots/issues/${number}`,
     body, state: "open", state_reason: null, labels: [{ name: "spec:approved" }, { name: "agent:ready" }], assignees: [{ login: "owner" }], milestone: null,
     created_at: now, updated_at: now, closed_at: null, comments: 0, sub_issues_summary: { total: 0, completed: 0 }, parent_issue_url: null };
 }
@@ -18,10 +18,10 @@ function bundle(number = 1) {
     collections: Object.fromEntries(["comments", "events", "subIssues", "closedByPullRequests"].map(name => [name, { count: 0, complete: true }])) };
 }
 async function fixture(t, bundles = [bundle()]) {
-  const root = await mkdtemp(join(tmpdir(), "semprec-import-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), "alldots-import-")); t.after(() => rm(root, { recursive: true, force: true }));
   const input = join(root, "export"); const destination = join(root, "repository");
   await mkdir(join(input, "issues"), { recursive: true });
-  const manifest = { schemaVersion: 1, repository: "dvdtrsnk/semprec", state: "all", complete: true, exportedAt: now,
+  const manifest = { schemaVersion: 1, repository: "dvdtrsnk/alldots", state: "all", complete: true, exportedAt: now,
     issueCount: bundles.length, openCount: bundles.filter(value => value.issue.state === "open").length,
     closedCount: bundles.filter(value => value.issue.state === "closed").length, issues: [] };
   for (const value of bundles) {
@@ -70,9 +70,9 @@ test("dry-run validates a complete export without writing destination; import is
 });
 test("comments, events, source metadata, hierarchy and merged PR handovers survive import", async t => {
   const epic = bundle(1); epic.issue.title = "Batch — epic"; epic.issue.labels = []; epic.issue.body = "Approved behavior";
-  const child = bundle(2); child.issue.parent_issue_url = "https://api.github.com/repos/dvdtrsnk/semprec/issues/1";
+  const child = bundle(2); child.issue.parent_issue_url = "https://api.github.com/repos/dvdtrsnk/alldots/issues/1";
   epic.subIssues = [{ number: 2 }]; epic.collections.subIssues.count = 1; epic.issue.sub_issues_summary.total = 1;
-  child.comments = [{ id: 99, user: null, created_at: now, updated_at: now, html_url: "https://github.com/dvdtrsnk/semprec/issues/2#issuecomment-99", body: "Original\r\ncomment 😀" }];
+  child.comments = [{ id: 99, user: null, created_at: now, updated_at: now, html_url: "https://github.com/dvdtrsnk/alldots/issues/2#issuecomment-99", body: "Original\r\ncomment 😀" }];
   child.collections.comments.count = 1; child.issue.comments = 1;
   child.events = [{ id: 77, event: "labeled", actor: { login: "owner" } }]; child.collections.events.count = 1;
   child.issue.state = "closed"; child.issue.state_reason = "completed"; child.issue.closed_at = now;
@@ -101,7 +101,7 @@ test("incorrect hashes, all-state scope and manifest counts are refused", async 
   }
 });
 test("GitHub comment counts, missing children and inconsistent parent relationships refuse import", async t => {
-  for (const change of [value => value.issue.comments = 1, value => { value.subIssues = [{ number: 999 }]; value.collections.subIssues.count = 1; value.issue.sub_issues_summary.total = 1; }, value => value.issue.parent_issue_url = "https://api.github.com/repos/dvdtrsnk/semprec/issues/999"]) {
+  for (const change of [value => value.issue.comments = 1, value => { value.subIssues = [{ number: 999 }]; value.collections.subIssues.count = 1; value.issue.sub_issues_summary.total = 1; }, value => value.issue.parent_issue_url = "https://api.github.com/repos/dvdtrsnk/alldots/issues/999"]) {
     const value = bundle(); change(value); const setup = await fixture(t, [value]);
     await assert.rejects(prepareImport(setup.input));
   }

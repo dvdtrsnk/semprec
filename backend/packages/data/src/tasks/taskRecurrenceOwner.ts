@@ -1,4 +1,4 @@
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { isDeepStrictEqual } from "node:util";
@@ -106,7 +106,6 @@ export function templateOf(properties: Record<string, unknown>): TaskRecurrenceT
     timeFrom: text(properties.timeFrom),
     timeTo: text(properties.timeTo),
     notifications: properties.notifications === true,
-    persistent: properties.persistent === true,
     flagged: properties.flagged === true,
     description: text(properties.description),
   };

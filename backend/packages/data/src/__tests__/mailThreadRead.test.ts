@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
@@ -44,8 +44,8 @@ const CLIENT_ADDRESS = "klient@example.test";
 describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-thread-read-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-thread-read-"));
   });
 
   beforeEach(async () => {
@@ -119,6 +119,8 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
     }) => {
       const result = await withTransaction(runtime, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: db("emails"),
           filesDatabaseId: db("files"),
           folderRelationPropertyId: property("folder"),
@@ -275,23 +277,24 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
     });
   });
 
-  it("never writes mail the user sent from an Inbox, mail in Sent or mail in Drafts, and picks the last incoming message among the rest", async () => {
+  it("writes mail to oneself delivered to an Inbox like any received message, never mail in Sent or Drafts", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const first = await f.ingest({ id: "<first@example.test>", day: 1 });
       const refs = ["<first@example.test>"];
       const second = await f.ingest({ id: "<second@example.test>", day: 2, refs });
-      // Each message below is later than the incoming ones and is excluded for exactly one reason.
-      const ownInInbox = await f.ingest({ id: "<own@example.test>", day: 3, refs, from: OWN_ADDRESS });
+      // From the user's own address but delivered to the Inbox: received, and the last received message.
+      const toSelf = await f.ingest({ id: "<own@example.test>", day: 3, refs, from: OWN_ADDRESS });
+      // Each message below is later than the received ones and is excluded for exactly one reason.
       const otherInSent = await f.ingest({ id: "<sent@example.test>", day: 4, refs, folder: f.folders.sent.id });
       const otherInDrafts = await f.ingest({ id: "<draft@example.test>", day: 5, refs, folder: f.folders.drafts.id });
-      const excluded = [ownInInbox, otherInSent, otherInDrafts];
+      const excluded = [otherInSent, otherInDrafts];
       const threadId = await threadOf(first);
       const excludedBefore = await stateOf(excluded);
       recordThreadAnnouncements();
 
       const opened = await post(threadId, { read: true });
-      expect(await readsOf([first, second])).toEqual([true, true]);
+      expect(await readsOf([first, second, toSelf])).toEqual([true, true, true]);
       expect(await stateOf(excluded)).toEqual(excludedBefore);
       // The answer is the thread detail's unread state, which counts the draft of a sender that is no mailbox
       // address of the tenant. The route never writes the draft, so the thread stays unread.
@@ -299,9 +302,9 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
 
       const result = await post(threadId, { read: false });
       expect(result.body.unread).toBe(true);
-      expect(await readsOf([first, second])).toEqual([true, false]);
+      expect(await readsOf([first, second, toSelf])).toEqual([true, true, false]);
       expect(await stateOf(excluded)).toEqual(excludedBefore);
-      expect(await readsOf(excluded)).toEqual([null, null, null]);
+      expect(await readsOf(excluded)).toEqual([null, null]);
     });
   });
 
@@ -378,14 +381,19 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
 
   it("serializes with a reconcile pass that locks the copies in another order instead of deadlocking with it", async () => {
     await runInTenant(tenant, async () => {
-      const { threadId, reply1, reply1Copy, reply3 } = await offerThread();
+      const { f, threadId, reply1, reply1Copy, reply3 } = await offerThread();
       const { emailsDatabaseId } = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
       // The route locks the copies in item id order; the pass below locks the highest id first.
       const byId = [reply1, reply1Copy, reply3].sort();
       const lowest = byId[0];
       const highest = byId[2];
       if (lowest === undefined || highest === undefined) throw new Error("Expected three copies");
-      const seen = (messageItemId: string) => ({ emailsDatabaseId, messageItemId, flags: ["\\Seen"] });
+      const seen = (messageItemId: string) => ({
+        emailsDatabaseId,
+        messageItemId,
+        folderItemId: f.folders.inbox.id,
+        flags: ["\\Seen"],
+      });
 
       let routeIsWaiting!: () => void;
       const routeWaits = new Promise<void>((resolve) => {
@@ -425,7 +433,7 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
     });
   });
 
-  it("answers a thread of sent mail only with unread false and writes nothing", async () => {
+  it("answers read:true on a thread of sent mail only with unread false, refuses read:false and writes nothing", async () => {
     await runInTenant(tenant, async () => {
       const f = await setup();
       const sentOnly = await f.ingest({
@@ -439,12 +447,15 @@ describe("POST /api/mail/threads/:threadId/read (issue gh-1865)", () => {
       const before = await stateOf([sentOnly]);
       recordThreadAnnouncements();
 
-      for (const read of [true, false]) {
-        expect(await post(threadId, { read })).toEqual({ status: 200, body: { threadId, unread: false } });
-      }
+      expect(await post(threadId, { read: true })).toEqual({ status: 200, body: { threadId, unread: false } });
+      await expect(post(threadId, { read: false })).rejects.toMatchObject({
+        status: 409,
+        code: "mail_thread_no_received_message",
+      });
 
       expect(await stateOf([sentOnly])).toEqual(before);
       expect(await desiredReadStates()).toEqual([]);
+      expect(events).toEqual([{ scope: "mailThread", threadId }]);
     });
   });
 

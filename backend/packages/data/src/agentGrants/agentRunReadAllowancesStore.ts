@@ -2,7 +2,7 @@ import type { PoolClient } from "pg";
 import type { Queryable } from "../db/pool.js";
 
 // Per-turn read allowances: items a user attached to the running turn's message, which the agent may read without a
-// database grant. `semprec-agents` opens them at turn start and clears them when it settles.
+// database grant. `alldots-agents` opens them at turn start and clears them when it settles.
 
 /**
  * The ids must come from the persisted, validated refs of the turn's message, never from a tool argument.

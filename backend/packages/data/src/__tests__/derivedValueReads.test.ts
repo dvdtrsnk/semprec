@@ -1,10 +1,8 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
-import { createItemWithClient } from "../chokePoint/itemWrites.js";
-import { createRelationWithClient } from "../chokePoint/relationOps.js";
 import { createViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { createPool, withTransaction } from "../db/pool.js";
 import { getDerivedValuesForItems } from "../derived/derivedValueReads.js";
@@ -34,13 +32,13 @@ async function link(databaseId: string, key: string, from: string, to: string): 
 describe("derived values through project relations", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    data = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    data = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
     const result = await runAsSystem("verify derived read test role", () =>
       data.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(result.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(result.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
   });
   beforeEach(async () => {
     await resetDatabase(admin);
@@ -53,120 +51,90 @@ describe("derived values through project relations", () => {
     await admin.end();
   });
 
-  it("deduplicates project areas, reads changes and excludes trashed projects", async () => {
+  it("derives an Event's company through its project, reads changes and excludes a trashed project", async () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
-      const areas = await database("areas");
+      const companies = await database("companies");
       const projects = await database("projects");
-      const files = await database("files");
-      const tasks = await database("tasks");
       const events = await database("events");
-      const work = await cp.createItem({
-        databaseId: areas,
-        properties: { name: "Work", color: "#5856D6", icon: "briefcase" },
-      });
-      const home = await cp.createItem({ databaseId: areas, properties: { name: "Home" } });
-      const first = await cp.createItem({ databaseId: projects, properties: { name: "Web" } });
-      const second = await cp.createItem({ databaseId: projects, properties: { name: "iOS" } });
-      const file = await cp.createItem({ databaseId: files, properties: { name: "Brief" } });
-      const task = await cp.createItem({ databaseId: tasks, properties: { name: "Task" } });
+      const novak = await cp.createItem({ databaseId: companies, properties: { name: "Novak" } });
+      const acme = await cp.createItem({ databaseId: companies, properties: { name: "Acme" } });
+      const project = await cp.createItem({ databaseId: projects, properties: { name: "Web" } });
       const event = await cp.createItem({ databaseId: events, properties: { name: "Event", date: "2026-10-16" } });
-      await link(files, "area", file.id, home.id);
-      await link(projects, "area", first.id, work.id);
-      await link(projects, "area", second.id, work.id);
-      await link(files, "projects", file.id, first.id);
-      await link(files, "projects", file.id, second.id);
-      await link(tasks, "project", task.id, second.id);
-      await link(events, "project", event.id, second.id);
-      const beforeVersions = [file.updatedAt, task.updatedAt, event.updatedAt];
-      const read = async () => (await cp.getDerivedValuesForItems([file.id])).get(file.id);
-      expect((await read())?.area).toEqual({
-        values: [{ id: work.id, title: "Work", color: "#5856D6", icon: "briefcase" }],
-        via: "project",
-        projectIds: [first.id, second.id].sort(),
+      await link(projects, "company", project.id, novak.id);
+      await link(events, "project", event.id, project.id);
+      const before = await cp.findItem(event.id);
+      const read = async () => (await cp.getDerivedValuesForItems([event.id])).get(event.id);
+      expect(await read()).toEqual({
+        company: { values: [{ id: novak.id, title: "Novak" }], via: "project", projectIds: [project.id] },
       });
       expect(
-        (await cp.listItemRelations(file.id))?.some(
-          (entry) => entry.propertyKey === "area" && entry.targetItemId === home.id,
+        (await cp.listItemRelations(event.id))?.some(
+          (entry) => entry.propertyKey === "company" && entry.targetItemId === novak.id,
         ),
-      ).toBe(true);
-      expect((await cp.getValueLinksForItems([file.id])).get(file.id)?.area).toBeUndefined();
-      expect((await cp.getValueLinksForItems([file.id], true)).get(file.id)?.area).toMatchObject({
+      ).toBe(false);
+      expect((await cp.getValueLinksForItems([event.id])).get(event.id)?.company).toBeUndefined();
+      expect((await cp.getValueLinksForItems([event.id], true)).get(event.id)?.company).toEqual({
         valueKind: "derived",
         brokenBy: null,
         brokenAt: null,
-        sources: expect.arrayContaining([
-          { kind: "item", itemId: first.id, databaseKey: "projects", title: "Web", propertyKey: "area" },
-          { kind: "item", itemId: second.id, databaseKey: "projects", title: "iOS", propertyKey: "area" },
-        ]),
+        sources: [{ kind: "item", itemId: project.id, databaseKey: "projects", title: "Web", propertyKey: "company" }],
       });
-      const property = (await cp.listProperties(projects)).find((p) => p.key === "area");
-      if (!property) throw new Error("Missing area relation");
-      await cp.setRelation({ relationPropertyId: property.id, callerItemId: second.id, targetItemId: home.id });
-      expect((await read())?.area?.values.map((value) => value.id)).toEqual([home.id, work.id]);
-      const changed = await cp.getDerivedValuesForItems([task.id, event.id, file.id]);
-      expect(changed.get(task.id)?.area?.values.map((value) => value.id)).toEqual([home.id]);
-      expect(changed.get(event.id)?.area?.values.map((value) => value.id)).toEqual([home.id]);
-      expect(changed.get(file.id)?.area?.values.map((value) => value.id)).toEqual([home.id, work.id]);
-      expect(
-        (await Promise.all([file.id, task.id, event.id].map((id) => cp.findItem(id)))).map((item) => item?.updatedAt),
-      ).toEqual(beforeVersions);
-      await cp.softDeleteItem(projects, first.id);
-      expect((await read())?.area?.values.map((value) => value.id)).toEqual([home.id]);
+      const property = (await cp.listProperties(projects)).find((p) => p.key === "company");
+      if (!property) throw new Error("Missing company relation");
+      await cp.setRelation({ relationPropertyId: property.id, callerItemId: project.id, targetItemId: acme.id });
+      expect((await read())?.company?.values).toEqual([{ id: acme.id, title: "Acme" }]);
+      expect((await cp.findItem(event.id))?.updatedAt).toBe(before?.updatedAt);
+      await cp.softDeleteItem(projects, project.id);
+      expect(await read()).toBeUndefined();
     });
   });
 
-  it("derives Journal and task areas and event company, with no entry without a project", async () => {
+  it("derives the company only for Events, and nothing for an Event without a project or a trashed company", async () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
-      const areas = await database("areas"),
-        projects = await database("projects"),
+      const projects = await database("projects"),
         companies = await database("companies"),
         tasks = await database("tasks"),
+        files = await database("files"),
         journal = await database("journal"),
         events = await database("events");
-      const area = await cp.createItem({ databaseId: areas, properties: { name: "Work" } });
       const company = await cp.createItem({ databaseId: companies, properties: { name: "Novak" } });
       const project = await cp.createItem({ databaseId: projects, properties: { name: "Web" } });
-      await link(projects, "area", project.id, area.id);
       await link(projects, "company", project.id, company.id);
       const task = await cp.createItem({ databaseId: tasks, properties: { name: "Task" } });
+      const file = await cp.createItem({ databaseId: files, properties: { name: "File" } });
       const day = await withTransaction(data, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-16"));
       const event = await cp.createItem({ databaseId: events, properties: { name: "Event", date: "2026-10-16" } });
-      const empty = await withTransaction(data, (client) => ensureJournalPeriodDoc(client, "day", "2026-10-17"));
+      const alone = await cp.createItem({ databaseId: events, properties: { name: "Alone", date: "2026-10-17" } });
       await link(tasks, "project", task.id, project.id);
+      await link(files, "projects", file.id, project.id);
       await link(journal, "project", day.itemId, project.id);
       await link(events, "project", event.id, project.id);
-      const values = await cp.getDerivedValuesForItems([task.id, day.itemId, event.id, empty.itemId]);
-      expect(values.get(task.id)?.area?.values[0]?.id).toBe(area.id);
-      expect(values.get(day.itemId)?.area?.values[0]?.id).toBe(area.id);
+      const values = await cp.getDerivedValuesForItems([task.id, file.id, day.itemId, event.id, alone.id]);
+      expect([...values.keys()]).toEqual([event.id]);
       expect(values.get(event.id)?.company?.values).toEqual([{ id: company.id, title: "Novak" }]);
-      expect(values.has(empty.itemId)).toBe(false);
-      await cp.softDeleteItem(areas, area.id);
       await cp.softDeleteItem(companies, company.id);
-      const afterTrash = await cp.getDerivedValuesForItems([task.id, day.itemId, event.id]);
-      expect(afterTrash.has(task.id)).toBe(false);
-      expect(afterTrash.has(day.itemId)).toBe(false);
-      expect(afterTrash.has(event.id)).toBe(false);
+      expect((await cp.getDerivedValuesForItems([event.id])).has(event.id)).toBe(false);
     });
   });
 
-  it("omits a project without an area and never resolves another tenant's item", async () => {
+  it("omits a project without a company and never resolves another tenant's item", async () => {
     let foreignId = "";
     await runInTenant(foreign, async () => {
       const cp = createChokePoint(data);
-      const tasks = await database("tasks");
-      foreignId = (await cp.createItem({ databaseId: tasks, properties: { name: "Foreign" } })).id;
+      const events = await database("events");
+      foreignId = (await cp.createItem({ databaseId: events, properties: { name: "Foreign", date: "2026-10-16" } })).id;
     });
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
-      const tasks = await database("tasks");
+      const events = await database("events");
       const projects = await database("projects");
-      const project = await cp.createItem({ databaseId: projects, properties: { name: "No area" } });
-      const task = await cp.createItem({ databaseId: tasks, properties: { name: "Task" } });
-      await link(tasks, "project", task.id, project.id);
-      const values = await cp.getDerivedValuesForItems([task.id, foreignId]);
-      expect(values.has(task.id)).toBe(false);
+      const project = await cp.createItem({ databaseId: projects, properties: { name: "No company" } });
+      const event = await cp.createItem({ databaseId: events, properties: { name: "Event", date: "2026-10-16" } });
+      await link(events, "project", event.id, project.id);
+      const values = await cp.getDerivedValuesForItems([event.id, foreignId]);
+      expect(values.has(event.id)).toBe(false);
       expect(values.has(foreignId)).toBe(false);
     });
   });
@@ -174,16 +142,19 @@ describe("derived values through project relations", () => {
   it("uses a constant number of statements for one or fifty items", async () => {
     await runInTenant(tenant, async () => {
       const cp = createChokePoint(data);
-      const tasks = await database("tasks");
+      const events = await database("events");
       const projects = await database("projects");
-      const areas = await database("areas");
+      const companies = await database("companies");
       const project = await cp.createItem({ databaseId: projects, properties: { name: "Project" } });
-      const area = await cp.createItem({ databaseId: areas, properties: { name: "Area" } });
-      await link(projects, "area", project.id, area.id);
+      const company = await cp.createItem({ databaseId: companies, properties: { name: "Company" } });
+      await link(projects, "company", project.id, company.id);
       const items: ItemRow[] = [];
       for (let i = 0; i < 50; i++) {
-        const item = await cp.createItem({ databaseId: tasks, properties: { name: `Task ${i}` } });
-        await link(tasks, "project", item.id, project.id);
+        const item = await cp.createItem({
+          databaseId: events,
+          properties: { name: `Event ${i}`, date: "2026-10-16" },
+        });
+        await link(events, "project", item.id, project.id);
         items.push(item);
       }
       const count = (input: ItemRow[]) =>
@@ -203,48 +174,6 @@ describe("derived values through project relations", () => {
           }
         });
       expect(await count(items)).toBe(await count(items.slice(0, 1)));
-    });
-  });
-
-  it("keeps every contributor when one item has more than fifty projects", async () => {
-    await runInTenant(tenant, async () => {
-      const cp = createChokePoint(data);
-      const files = await database("files");
-      const projects = await database("projects");
-      const areas = await database("areas");
-      const projectArea = (await cp.listProperties(projects)).find((property) => property.key === "area");
-      const fileProjects = (await cp.listProperties(files)).find((property) => property.key === "projects");
-      if (!projectArea || !fileProjects) throw new Error("Missing contributor fixture relations");
-      // One transaction through the same write owners, avoiding 155 separate commits while keeping every write
-      // hook and edge.
-      const { area, file, ids } = await withTransaction(data, async (client) => {
-        const area = await createItemWithClient(client, { databaseId: areas, properties: { name: "Shared" } });
-        const file = await createItemWithClient(client, { databaseId: files, properties: { name: "File" } });
-        const ids: string[] = [];
-        for (let i = 0; i < 51; i++) {
-          const project = await createItemWithClient(client, {
-            databaseId: projects,
-            properties: { name: `Project ${i}` },
-          });
-          ids.push(project.id);
-          await createRelationWithClient(client, {
-            relationPropertyId: projectArea.id,
-            callerItemId: project.id,
-            targetItemId: area.id,
-          });
-          await createRelationWithClient(client, {
-            relationPropertyId: fileProjects.id,
-            callerItemId: file.id,
-            targetItemId: project.id,
-          });
-        }
-        return { area, file, ids };
-      });
-      const derived = (await cp.getDerivedValuesForItems([file.id])).get(file.id);
-      expect(derived?.area?.values).toEqual([{ id: area.id, title: "Shared", color: null, icon: null }]);
-      expect(derived?.area?.projectIds).toEqual(ids.sort());
-      const links = (await cp.getValueLinksForItems([file.id], true)).get(file.id);
-      expect(links?.area?.sources).toHaveLength(51);
     });
   });
 });

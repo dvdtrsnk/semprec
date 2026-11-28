@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
-import { writeBlock } from "@semprec/block-model";
+import { runInTenant } from "@alldots/shared";
+import { writeBlock } from "@alldots/block-model";
 import * as Y from "yjs";
 import { z } from "zod";
 import "../../domainWriteHooks.js";
@@ -26,7 +26,7 @@ let pool: Pool;
 let tenant: string;
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
 });
 beforeEach(async () => {
   await resetDatabase(admin);
@@ -55,6 +55,7 @@ const response = z.object({
   markdown: z.string().nullable(),
   week: period.optional(),
   weeks: z.array(period).optional(),
+  quarters: z.array(period).optional(),
   inbox: z.array(z.unknown()).optional(),
 });
 
@@ -214,6 +215,46 @@ describe("journal period read", () => {
     );
     expect(rows.map((row) => row.itemId)).toEqual([own]);
   });
+
+  it("lists the four quarters of a year with the written quarter's page, and quarters for no other period", async () =>
+    runInTenant(tenant, async () => {
+      const id = await journalId();
+      const quarter = await withTransaction(pool, (client) =>
+        getOrCreateJournalItem(client, id, "quarter", new Date("2026-10-16T12:00:00Z"), "Europe/Prague"),
+      );
+      const doc = await withTransaction(pool, (client) => getOrCreateDoc(client, quarter.id, "page"));
+      await withTransaction(pool, (client) =>
+        mutateDocWithClient(client, doc.id, "user", (ydoc) =>
+          writeBlock(ydoc, { id: "body", type: "text", text: "Quarter goals" }),
+        ),
+      );
+      const year = await read("year", "2026");
+      expect(year.quarters?.map((value) => value.period)).toEqual(["2026-Q1", "2026-Q2", "2026-Q3", "2026-Q4"]);
+      expect(year.quarters?.[0]).toEqual({
+        period: "2026-Q1",
+        range: { from: "2026-01-01", to: "2026-03-31" },
+        itemId: null,
+        docId: null,
+        markdown: null,
+      });
+      expect(year.quarters?.[3]).toEqual({
+        period: "2026-Q4",
+        range: { from: "2026-10-01", to: "2026-12-31" },
+        itemId: quarter.id,
+        docId: doc.id,
+        markdown: "Quarter goals",
+      });
+      expect(year.weeks).toBeUndefined();
+      const others: [string, string][] = [
+        ["quarter", "2026-Q4"],
+        ["month", "2026-10"],
+        ["week", "2026-W42"],
+        ["day", "2026-10-16"],
+      ];
+      for (const [type, key] of others) {
+        expect((await read(type, key)).quarters).toBeUndefined();
+      }
+    }));
 
   it("resolves month weeks in order and prefers a live reservation", async () =>
     runInTenant(tenant, async () => {

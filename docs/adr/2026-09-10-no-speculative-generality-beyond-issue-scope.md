@@ -10,7 +10,7 @@ superseded-by: null
 
 ## Context
 
-Semprec is implemented by autonomous agents working a strictly sequential
+Alldots is implemented by autonomous agents working a strictly sequential
 queue of self-contained GitHub issues, one at a time
 (`README.md`, `.claude/skills/work-issue/SKILL.md`). An agent implementing
 one issue can always see a "better," more general version of what it's

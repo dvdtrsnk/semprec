@@ -93,6 +93,24 @@ public struct JournalWeek: Equatable, Sendable, Identifiable {
     }
 }
 
+/// A quarter of the diary, 1 to 4; `firstDay` and `lastDay` are `YYYY-MM-DD` and `page` is its note.
+public struct JournalQuarter: Equatable, Sendable, Identifiable {
+
+    public let number: Int
+    public let firstDay: String
+    public let lastDay: String
+    public let page: JournalPage
+
+    public var id: Int { number }
+
+    public init(number: Int, firstDay: String, lastDay: String, page: JournalPage) {
+        self.number = number
+        self.firstDay = firstDay
+        self.lastDay = lastDay
+        self.page = page
+    }
+}
+
 /// An event of the selected day; the times are minutes since midnight and `nil` for an all-day event.
 public struct JournalEvent: Equatable, Sendable, Identifiable {
 
@@ -141,10 +159,11 @@ public struct JournalBirthday: Equatable, Sendable, Identifiable {
     }
 }
 
-/// Where an Inbox item stands.
+/// Where an Inbox item stands; `waiting` is a capture that waits on the device to be sent.
 public enum JournalInboxStatus: Equatable, Sendable {
 
     case none
+    case waiting
     case pending
     case failed
     case needsClarification
@@ -161,8 +180,8 @@ public struct JournalInboxItem: Equatable, Sendable, Identifiable {
     public let text: String?
     public let emoji: String?
     public let status: JournalInboxStatus
-    public let attachmentName: String?
-    public let attachmentCount: Int
+    /// Its files, in the order the item lists them.
+    public let attachments: [InboxAttachment]
 
     public init(
         id: String,
@@ -170,21 +189,20 @@ public struct JournalInboxItem: Equatable, Sendable, Identifiable {
         text: String? = nil,
         emoji: String? = nil,
         status: JournalInboxStatus = .none,
-        attachmentName: String? = nil,
-        attachmentCount: Int = 0
+        attachments: [InboxAttachment] = []
     ) {
         self.id = id
         self.time = time
         self.text = text
         self.emoji = emoji
         self.status = status
-        self.attachmentName = attachmentName
-        self.attachmentCount = attachmentCount
+        self.attachments = attachments
     }
 }
 
 /// The diary: the selected period of the time axis with its note and, for a day, its events, birthdays and Inbox.
-/// A month has no `page` of its own; it lists its `weeks`. A day has its own week in `weeks`.
+/// A month has no `page` of its own; it lists its `weeks`. A year lists its `quarters`. A day has its own week in
+/// `weeks`.
 public struct JournalState: Equatable, Sendable {
 
     public var phase: JournalPhase
@@ -194,11 +212,18 @@ public struct JournalState: Equatable, Sendable {
     public var axis: [JournalAxisRow]
     public var page: JournalPage?
     public var weeks: [JournalWeek]
+    public var quarters: [JournalQuarter]
     public var events: [JournalEvent]
     public var birthdays: [JournalBirthday]
     public var inbox: [JournalInboxItem]
-    public var saving: Bool
-    public var editProblem: JournalEditProblem?
+    /// The period the page, weeks, quarters, events and Inbox belong to: right after a new selection still the previous
+    /// one, until the new period arrives. `nil` while nothing is shown.
+    public var shown: JournalSelection?
+    /// The periods of the same kind beside `shown`, once they have been read, to lay out beside it.
+    public var before: JournalPeriodContent?
+    public var after: JournalPeriodContent?
+    /// The Inbox attachment the person opened, while it is made ready, shown or failed.
+    public var attachment: AttachmentPreview?
 
     public init(
         phase: JournalPhase,
@@ -207,11 +232,14 @@ public struct JournalState: Equatable, Sendable {
         axis: [JournalAxisRow] = [],
         page: JournalPage? = nil,
         weeks: [JournalWeek] = [],
+        quarters: [JournalQuarter] = [],
         events: [JournalEvent] = [],
         birthdays: [JournalBirthday] = [],
         inbox: [JournalInboxItem] = [],
-        saving: Bool = false,
-        editProblem: JournalEditProblem? = nil
+        shown: JournalSelection? = nil,
+        before: JournalPeriodContent? = nil,
+        after: JournalPeriodContent? = nil,
+        attachment: AttachmentPreview? = nil
     ) {
         self.phase = phase
         self.selection = selection
@@ -219,11 +247,44 @@ public struct JournalState: Equatable, Sendable {
         self.axis = axis
         self.page = page
         self.weeks = weeks
+        self.quarters = quarters
         self.events = events
         self.birthdays = birthdays
         self.inbox = inbox
-        self.saving = saving
-        self.editProblem = editProblem
+        self.shown = shown
+        self.before = before
+        self.after = after
+        self.attachment = attachment
+    }
+}
+
+/// What the diary shows for one period, `shown`, as `JournalState` lists it for the shown period.
+public struct JournalPeriodContent: Equatable, Sendable {
+
+    public var shown: JournalSelection
+    public var page: JournalPage?
+    public var weeks: [JournalWeek]
+    public var quarters: [JournalQuarter]
+    public var events: [JournalEvent]
+    public var birthdays: [JournalBirthday]
+    public var inbox: [JournalInboxItem]
+
+    public init(
+        shown: JournalSelection,
+        page: JournalPage? = nil,
+        weeks: [JournalWeek] = [],
+        quarters: [JournalQuarter] = [],
+        events: [JournalEvent] = [],
+        birthdays: [JournalBirthday] = [],
+        inbox: [JournalInboxItem] = []
+    ) {
+        self.shown = shown
+        self.page = page
+        self.weeks = weeks
+        self.quarters = quarters
+        self.events = events
+        self.birthdays = birthdays
+        self.inbox = inbox
     }
 }
 
@@ -233,24 +294,22 @@ public enum JournalAction: Equatable, Sendable {
     /// Shows the period of `kind` that starts on `start` (`YYYY-MM-DD`).
     case select(kind: JournalPeriodKind, start: String)
     case goToday
+    /// Shows the period of the selected kind `steps` periods after the selected one, before it for a negative `steps`.
+    case turn(steps: Int)
     /// Moves the windows of the time axis around `day` (`YYYY-MM-DD`); the selection stays.
     case showAxisAround(day: String)
     case openEvent(id: String)
     case openInbox
-    case openPage(pageId: String, title: String)
-    /// Replaces the text of block `index` of `page` with the plain `text` typed.
-    case setText(page: JournalPageRef, index: Int, text: String)
-    case toggleDone(page: JournalPageRef, index: Int)
-    case addBlock(page: JournalPageRef, kind: JournalBlockKind, text: String)
-    /// Hides the message about the last failed change.
-    case dismissProblem
+    /// Makes the attachment `attachmentId` of the Inbox entry `entryId` ready to preview, in `JournalState.attachment`.
+    case openAttachment(entryId: String, attachmentId: String)
+    /// Ends the preview of an attachment, or its failure, and stops one being opened.
+    case closeAttachment
 }
 
 public enum JournalEffect: Equatable, Sendable {
 
     case openEvent(id: String)
     case openInbox
-    case openPage(pageId: String, title: String)
 }
 
 public typealias JournalScreenModel = ScreenModel<JournalState, JournalAction, JournalEffect>

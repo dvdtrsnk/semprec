@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runOnce } from "@semprec/queue";
+import { runOnce } from "@alldots/queue";
 import { bindToTenantZero, getTestPool, inTenantZero, resetDatabase } from "../../testSupport/testDb.js";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -13,7 +13,7 @@ import * as relationsStore from "../../chokePoint/relationsStore.js";
 import * as propertiesStore from "../../chokePoint/propertiesStore.js";
 import { createInboxItemWithClient } from "../inboxStore.js";
 import { createInboxTypeWithClient } from "../inboxTypesStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn } from "../inboxTickAction.js";
 import { confirmProposalWithClient } from "../proposalActions.js";
 import {
   JOURNAL_INBOX_COMPUTED_KEY,
@@ -71,8 +71,8 @@ describe("Inbox tick write phase recomputes the day's Inbox summary (issue #1390
     await pool?.end();
   });
 
-  async function runTick(itemId: string, computeProposal: ComputeSemprecProposalFn): Promise<void> {
-    const handler = createSemprecTickAction(pool, computeProposal);
+  async function runTick(itemId: string, computeProposal: ComputeAlldotsProposalFn): Promise<void> {
+    const handler = createAlldotsTickAction(pool, computeProposal);
     await inTenantZero(() =>
       handler(
         { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },

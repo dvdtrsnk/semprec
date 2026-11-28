@@ -1,7 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer, type WebSocket as ServerSocket } from "ws";
-import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
+import { AiGatewayFailedError, runInTenant } from "@alldots/shared";
 import { openSttStream, type SttStreamErrorCode } from "../httpAiGatewayClient.js";
 
 const TENANT = "11111111-1111-1111-1111-111111111111";
@@ -77,7 +77,7 @@ describe("openSttStream", () => {
 
     expect(harness.requests[0]?.url).toBe("/internal/stt/stream?language=cs");
     expect(harness.requests[0]?.headers.authorization).toBe("Bearer secret");
-    expect(harness.requests[0]?.headers["x-semprec-tenant-id"]).toBe(TENANT);
+    expect(harness.requests[0]?.headers["x-alldots-tenant-id"]).toBe(TENANT);
 
     expect(stream.sendAudio(new Uint8Array([1, 2]))).toBe(true);
     stream.end();

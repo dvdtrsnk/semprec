@@ -1,6 +1,6 @@
-# Semprec — how work is done here
+# Alldots — how work is done here
 
-Semprec is a personal life-organization system: a Postgres data layer behind a
+Alldots is a personal life-organization system: a Postgres data layer behind a
 generic choke-point API, Yjs CRDT blocks/canvas, an IMAP inbox pipeline, and an
 agent runtime. `backend/` is a pnpm workspace (`packages/`, `services/`),
 `web/` is React + TypeScript on Vite, and `mobile/` holds the native apps
@@ -58,7 +58,7 @@ decision and needs no document. Load `adr-conventions` for the details.
 | `implement-issue` | starting any issue — the execution contract |
 | `adr-conventions` | changing an architectural rule (`docs/architecture/`), or adding or superseding a mobile/web ADR |
 | `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table, or a `NOTIFY` that follows one |
-| `db-migrations` | a schema change, constraint, index, or backfill |
+| `db-migrations` | a schema change, constraint, index, or the seed |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
 | `io-hardening` | a new HTTP route, handler, WebSocket upgrade, `LISTEN` consumer, pooled-connection consumer, or any network call |
@@ -110,10 +110,13 @@ errors (`error-handling`) follow.
 
 1. Every write to item/database state goes through the generic choke-point API.
 2. One owner, one writer — per the module contract's ownership model.
-3. Before the first production release the schema is a baseline that is
-   edited directly; expand/contract and data cutovers apply only after it
-   (`docs/architecture/migrations-and-seeding.md`).
-4. Every AI/provider call goes through `semprec-ai-gateway`.
+3. The backend handles no versions and no migrations: it always assumes it is
+   the first version. A schema change edits `0001_baseline.sql` and the seed
+   in place. No backfill, data cutover, reconcile of already seeded tenants
+   or compatibility branch for data an older version wrote; every database is
+   recreated from the baseline. Production rules arrive with the owner's first
+   production deployment (`docs/architecture/migrations-and-seeding.md`).
+4. Every AI/provider call goes through `alldots-ai-gateway`.
 5. Canonical stored keys are English camelCase (view types kebab-case); labels
    resolve through i18n and are never hardcoded.
 6. Nothing crossing a boundary stays `any` or an unchecked `as` — type it or
@@ -160,14 +163,14 @@ one:
   `mobile/android/app/src/androidTest/` (`connectedDebugAndroidTest`, on an
   emulator you reserved).
 - Swift XCTest bundles (`CoreKitTests`, `HomeFeatureTests`,
-  `SettingsFeatureTests`, `SemprecTests`, each from its target's `Tests/`), all
-  hosted in the app and run by the `Semprec` scheme on macOS and on a reserved
+  `SettingsFeatureTests`, `AlldotsTests`, each from its target's `Tests/`), all
+  hosted in the app and run by the `Alldots` scheme on macOS and on a reserved
   iOS simulator. `CoreKitTests` drive the real Kotlin ViewModels and check
   every mapping branch of the bridges with Kotlin values; the feature tests
-  use `ScriptedScreenModel`; `SemprecTests` show the real `AppScene` in a
+  use `ScriptedScreenModel`; `AlldotsTests` show the real `AppScene` in a
   window and drive its NavigatorUI stacks.
-- The XCUITest bundle `SemprecUITests` (`mobile/apple/Projects/App/UITests/`),
-  run by its own `SemprecUITests` scheme on a reserved iOS simulator only,
+- The XCUITest bundle `AlldotsUITests` (`mobile/apple/Projects/App/UITests/`),
+  run by its own `AlldotsUITests` scheme on a reserved iOS simulator only,
   walks the app's flows by the same identifiers as Android's `SmokeFlowTest`.
 
 Write the test list from the issue's Acceptance criteria and the behaviors a
@@ -178,23 +181,27 @@ fixtures. Load the `testing` skill (policy: `docs/architecture/testing.md`).
 
 ## Before you open a pull request
 
-Run the same pipeline CI runs; a CI round-trip costs minutes:
+Run the pipelines CI runs for your change; a CI round-trip costs minutes. On a
+pull request, CI and Relay run a platform's pipeline only when the change
+touches its area.
+After committing, ask which areas yours touches (the comparison is between
+commits, so uncommitted work is not part of it):
 
 ```
-cd backend
-pnpm run verify
-
-cd ../web
-pnpm run verify
+node .github/scripts/changed-areas.mjs --base origin/develop --json
 ```
 
-For changes under `mobile/`, CI reports the non-required `mobile-android`
-(architecture and Android) and `mobile-apple` (shared Kotlin and Apple) jobs.
-Relay enforces the same pipeline through `verify-mobile`. Both omit device
-steps, which report NOT RUN. Before opening a pull request that touches mobile,
-run its full pipeline from the repository root with an iOS simulator and an
-Android emulator you reserved (`bb device-lab reserve --platform ios`, then
-`--platform android`) and release afterwards (`bb device-lab release --all`):
+Run `pnpm run verify` in `backend/` when `backend` is `true` and in `web/`
+when `web` is `true`.
+
+For an `android` or `apple` change, CI reports the non-required
+`mobile-android` (architecture, Android and detekt) and `mobile-apple`
+(architecture, shared Kotlin and Apple) jobs, and Relay runs the matching
+steps through `verify-mobile`. Both omit device steps, which report NOT RUN.
+Before opening a pull request that touches mobile, run its full pipeline from
+the repository root with an iOS simulator and an Android emulator you reserved
+(`bb device-lab reserve --platform ios`, then `--platform android`) and
+release afterwards (`bb device-lab release --all`):
 
 ```
 mobile/scripts/verify --ios-simulator <UDID> --android-serial <serial>

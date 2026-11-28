@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Semprec repository issue metadata",
+  "title": "Alldots repository issue metadata",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -154,7 +154,7 @@
               "const": "github"
             },
             "repository": {
-              "const": "dvdtrsnk/semprec"
+              "const": "dvdtrsnk/alldots"
             },
             "number": {
               "type": "integer",

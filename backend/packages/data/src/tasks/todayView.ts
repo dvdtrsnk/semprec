@@ -108,7 +108,7 @@ export function createTasksTodayView(
 }
 
 /**
- * The overview badge count: the statement `item.count` runs for `tasksTodayFilter({ openOnly: true })`, in the
+ * The number of open tasks in the Today list: the statement `item.count` runs for `tasksTodayFilter({ openOnly: true })`, in the
  * caller's transaction. `now` evaluates relative dates; defaults to the current time.
  */
 export async function countTasksToday(client: PoolClient, now?: Date): Promise<number> {

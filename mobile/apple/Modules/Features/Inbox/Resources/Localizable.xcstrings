@@ -145,6 +145,54 @@
         }
       }
     },
+    "inbox.attachment" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Příloha"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Attachment"
+          }
+        }
+      }
+    },
+    "inbox.attachment.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přílohu se nepodařilo otevřít"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachment could not be opened"
+          }
+        }
+      }
+    },
+    "inbox.attachment.opening" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevírá se příloha"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opening the attachment"
+          }
+        }
+      }
+    },
     "inbox.captured" : {
       "localizations" : {
         "cs" : {
@@ -1117,22 +1165,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Semp wants to approve"
-          }
-        }
-      }
-    },
-    "inbox.type.area" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nová oblast"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "New area"
           }
         }
       }

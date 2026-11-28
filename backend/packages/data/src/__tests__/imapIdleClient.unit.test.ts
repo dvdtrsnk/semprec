@@ -2,11 +2,15 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
   createImapFlowIdleTransport,
+  ImapIdleStoppedError,
+  IMAP_IDLE_AUTO_IDLE_DELAY_MS,
   IMAP_IDLE_MAX_IDLE_TIME_MS,
   IMAP_IDLE_SOCKET_TIMEOUT_MS,
   type CreateIdleTunedImapFlowClient,
 } from "../mail/imapIdleClient.js";
 import { logger } from "../mail/logger.js";
+
+const neverAborted = new AbortController().signal;
 
 /**
  * Just enough of imapflow's `ImapFlow` surface for this transport; no real socket. The factory hands it
@@ -19,6 +23,10 @@ class FakeImapFlow extends EventEmitter {
   listResult: Array<{ path: string; specialUse?: string }> = [];
   /** Simulates a final server push (e.g. an EXISTS) arriving during logout, right before BYE/close. */
   emitOnLogout: string | undefined;
+  /** Simulates a push arriving while the folder is being selected. */
+  emitOnOpen: string | undefined;
+  /** imapflow's public flag: whether IDLE (or its polling fallback) is running on the connection. */
+  idling = false;
 
   async connect(): Promise<void> {
     this.connectCalls++;
@@ -30,6 +38,7 @@ class FakeImapFlow extends EventEmitter {
 
   async mailboxOpen(path: string): Promise<void> {
     this.openedMailbox = path;
+    if (this.emitOnOpen) this.emit(this.emitOnOpen, {});
   }
 
   async logout(): Promise<boolean | void> {
@@ -45,10 +54,10 @@ class FakeImapFlow extends EventEmitter {
 
 function makeFactory(clients: FakeImapFlow[]): {
   createClient: CreateIdleTunedImapFlowClient;
-  idleOptionsSeen: Array<{ maxIdleTime: number; socketTimeout: number }>;
+  idleOptionsSeen: Array<{ maxIdleTime: number; socketTimeout: number; autoIdleDelay: number }>;
 } {
   let index = 0;
-  const idleOptionsSeen: Array<{ maxIdleTime: number; socketTimeout: number }> = [];
+  const idleOptionsSeen: Array<{ maxIdleTime: number; socketTimeout: number; autoIdleDelay: number }> = [];
   const createClient: CreateIdleTunedImapFlowClient = async (_mailboxItemId, _credential, idleOptions) => {
     idleOptionsSeen.push(idleOptions);
     const client = clients[index++];
@@ -75,7 +84,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const { createClient, idleOptionsSeen } = makeFactory([client]);
     const transport = createImapFlowIdleTransport(createClient);
 
-    const folders = await transport.resolveFolders("mailbox-1", "cred");
+    const folders = await transport.resolveFolders("mailbox-1", "cred", neverAborted);
 
     expect(folders.map((f) => f.path).sort()).toEqual(["INBOX", "[Gmail]/All Mail"].sort());
     expect(client.connectCalls).toBe(0);
@@ -83,6 +92,8 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     expect(idleOptionsSeen[0]).toEqual({
       maxIdleTime: IMAP_IDLE_MAX_IDLE_TIME_MS,
       socketTimeout: IMAP_IDLE_SOCKET_TIMEOUT_MS,
+      autoIdleDelay: IMAP_IDLE_AUTO_IDLE_DELAY_MS,
+      qresync: false,
     });
   });
 
@@ -92,7 +103,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const { createClient } = makeFactory([client]);
     const transport = createImapFlowIdleTransport(createClient);
 
-    const folders = await transport.resolveFolders("mailbox-1", "cred");
+    const folders = await transport.resolveFolders("mailbox-1", "cred", neverAborted);
 
     expect(folders).toEqual([{ path: "INBOX" }]);
   });
@@ -103,7 +114,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const transport = createImapFlowIdleTransport(createClient);
 
     let signals = 0;
-    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++);
+    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++, neverAborted);
 
     expect(client.openedMailbox).toBe("INBOX");
     expect(client.connectCalls).toBe(0);
@@ -125,7 +136,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const transport = createImapFlowIdleTransport(createClient);
 
     let signals = 0;
-    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++);
+    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => signals++, neverAborted);
 
     await connection.close();
 
@@ -137,7 +148,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const { createClient } = makeFactory([client]);
     const transport = createImapFlowIdleTransport(createClient);
 
-    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => {});
+    const connection = await transport.connect("mailbox-1", "cred", "INBOX", () => {}, neverAborted);
     const boom = new Error("socket reset");
     const ended = connection.waitForEnd();
     client.emit("error", boom);
@@ -158,7 +169,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     const transport = createImapFlowIdleTransport(makeFactory([client]).createClient);
     let observed: unknown;
     try {
-      await transport.resolveFolders("mailbox-1", "credential");
+      await transport.resolveFolders("mailbox-1", "credential", neverAborted);
     } catch (error) {
       observed = error;
     }
@@ -175,7 +186,11 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
     };
     let observed: unknown;
     try {
-      await createImapFlowIdleTransport(makeFactory([client]).createClient).resolveFolders("mailbox-1", "credential");
+      await createImapFlowIdleTransport(makeFactory([client]).createClient).resolveFolders(
+        "mailbox-1",
+        "credential",
+        neverAborted,
+      );
     } catch (error) {
       observed = error;
     }
@@ -193,6 +208,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       "credential",
       "INBOX",
       () => {},
+      neverAborted,
     );
     const ended = connection.waitForEnd();
     client.emit("error", shared);
@@ -222,6 +238,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       "credential",
       "INBOX",
       () => {},
+      neverAborted,
     );
     const ended = connection.waitForEnd();
     client.emit("error", original);
@@ -248,6 +265,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       "cred",
       "INBOX",
       () => {},
+      neverAborted,
     );
     let settled = false;
     const closing = connection.close().then(() => {
@@ -287,6 +305,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "cred",
         "INBOX",
         () => {},
+        neverAborted,
       );
       outcome = connection.close().catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(10_000);
@@ -314,6 +333,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "private-folder",
         () => {},
+        neverAborted,
       );
       await connection.close();
       expect(close).toHaveBeenCalledTimes(1);
@@ -343,6 +363,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       let settled = false;
       pending = connection
@@ -382,6 +403,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "private-folder",
         () => {},
+        neverAborted,
       );
       let settled = false;
       pending = connection
@@ -421,6 +443,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       if (alreadyClosed) client.emit("close");
       let settled = false;
@@ -455,6 +478,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       let settled = false;
       pending = connection
@@ -495,6 +519,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       let settled = false;
       pending = connection
@@ -537,6 +562,7 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
         "credential",
         "INBOX",
         () => {},
+        neverAborted,
       );
       pending = connection.close().catch((error: unknown) => error);
       await vi.advanceTimersByTimeAsync(10_000);
@@ -562,10 +588,131 @@ describe("imapflow-backed IDLE transport (issue #196)", () => {
       "cred",
       "INBOX",
       () => {},
+      neverAborted,
     );
     const ended = connection.waitForEnd();
     client.emit("error", undefined);
     await expect(ended).resolves.toEqual({ failure: undefined });
     await connection.close();
+  });
+
+  it("hears a signal emitted while the folder is being selected", async () => {
+    const client = new FakeImapFlow();
+    client.emitOnOpen = "exists";
+    let signals = 0;
+    const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+      "mailbox-1",
+      "cred",
+      "INBOX",
+      () => signals++,
+      neverAborted,
+    );
+    expect(signals).toBe(1);
+    await connection.close();
+  });
+
+  it("closes a connection the server already closed without logging out", async () => {
+    const client = new FakeImapFlow();
+    const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+      "mailbox-1",
+      "cred",
+      "INBOX",
+      () => {},
+      neverAborted,
+    );
+    const ended = connection.waitForEnd();
+    client.emit("close");
+    await expect(ended).resolves.toBeUndefined();
+    await expect(connection.close()).resolves.toBeUndefined();
+    expect(client.logoutCalls).toBe(0);
+  });
+
+  it("takes imapflow's NoConnection refusal of the logout as a connection already gone", async () => {
+    const client = new FakeImapFlow();
+    client.logout = async () => {
+      client.logoutCalls++;
+      throw Object.assign(new Error("Connection not available"), { code: "NoConnection" });
+    };
+    const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+      "mailbox-1",
+      "cred",
+      "INBOX",
+      () => {},
+      neverAborted,
+    );
+    const ended = connection.waitForEnd();
+    await expect(connection.close()).resolves.toBeUndefined();
+    await expect(ended).resolves.toBeUndefined();
+    expect(client.logoutCalls).toBe(1);
+  });
+
+  it("keeps a logout refusal other than NoConnection as a cleanup failure", async () => {
+    const client = new FakeImapFlow();
+    const refusal = Object.assign(new Error("private refusal"), { code: "ProtocolError" });
+    client.logout = async () => {
+      throw refusal;
+    };
+    const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient).connect(
+      "mailbox-1",
+      "cred",
+      "INBOX",
+      () => {},
+      neverAborted,
+    );
+    void connection.waitForEnd();
+    await expect(connection.close()).rejects.toBe(refusal);
+  });
+
+  it("ends the session once two consecutive checks find the open connection not idling", async () => {
+    const client = new FakeImapFlow();
+    client.idling = true;
+    let outcome: { value: unknown } | undefined;
+    vi.useFakeTimers();
+    let connection: Awaited<ReturnType<ReturnType<typeof createImapFlowIdleTransport>["connect"]>>;
+    try {
+      connection = await createImapFlowIdleTransport(makeFactory([client]).createClient, {
+        idleCheckIntervalMs: 1_000,
+      }).connect("mailbox-1", "cred", "INBOX", () => {}, neverAborted);
+      void connection.waitForEnd().then((value) => {
+        outcome = { value };
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      // One check during an IDLE renewal finds it not idling; the next finds it idling again.
+      client.idling = false;
+      await vi.advanceTimersByTimeAsync(1_000);
+      client.idling = true;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(outcome).toBeUndefined();
+
+      client.idling = false;
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(outcome?.value).toBeInstanceOf(ImapIdleStoppedError);
+    } finally {
+      vi.useRealTimers();
+    }
+    await connection.close();
+    expect(client.logoutCalls).toBe(1);
+  });
+
+  it("stops checking for idling once close begins", async () => {
+    const client = new FakeImapFlow();
+    let releaseLogout!: () => void;
+    const logoutGate = new Promise<void>((resolve) => {
+      releaseLogout = resolve;
+    });
+    client.logout = async () => {
+      client.logoutCalls++;
+      await logoutGate;
+      client.emit("close");
+    };
+    const connection = await createImapFlowIdleTransport(makeFactory([client]).createClient, {
+      idleCheckIntervalMs: 5,
+    }).connect("mailbox-1", "cred", "INBOX", () => {}, neverAborted);
+    const ended = connection.waitForEnd();
+    const closing = connection.close();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    releaseLogout();
+    await expect(closing).resolves.toBeUndefined();
+    await expect(ended).resolves.toBeUndefined();
   });
 });

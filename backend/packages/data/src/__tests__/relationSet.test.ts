@@ -1,8 +1,8 @@
 import "../domainWriteHooks.js";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
-import { runOnce } from "@semprec/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
+import { runOnce } from "@alldots/queue";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { setRelationWithClient } from "../chokePoint/relationOps.js";
 import { withTransaction } from "../db/pool.js";
@@ -20,13 +20,13 @@ describe("relation.set", () => {
   let tenant: string;
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("test:verify-runtime-role", () =>
       pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(pool);
   });
   beforeEach(async () => {
@@ -42,13 +42,13 @@ describe("relation.set", () => {
   async function fixture() {
     const databases = await cp.listDatabases();
     const projects = databases.find((db) => db.ownerModuleId === "projects");
-    const areas = databases.find((db) => db.ownerModuleId === "areas");
-    if (!projects || !areas) throw new Error("Missing seeded databases");
-    const property = (await cp.listProperties(projects.id)).find((entry) => entry.key === "area");
-    if (!property) throw new Error("Missing project area property");
+    const companies = databases.find((db) => db.ownerModuleId === "companies");
+    if (!projects || !companies) throw new Error("Missing seeded databases");
+    const property = (await cp.listProperties(projects.id)).find((entry) => entry.key === "company");
+    if (!property) throw new Error("Missing project company property");
     const project = await cp.createItem({ databaseId: projects.id, properties: { name: "Project" } });
-    const first = await cp.createItem({ databaseId: areas.id, properties: { name: "First" } });
-    const second = await cp.createItem({ databaseId: areas.id, properties: { name: "Second" } });
+    const first = await cp.createItem({ databaseId: companies.id, properties: { name: "First" } });
+    const second = await cp.createItem({ databaseId: companies.id, properties: { name: "Second" } });
     return { property, project, first, second };
   }
 

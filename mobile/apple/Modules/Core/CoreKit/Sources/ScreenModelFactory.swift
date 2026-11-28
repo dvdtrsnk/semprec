@@ -5,6 +5,16 @@ import Foundation
 @MainActor
 public protocol ScreenModelFactory: AnyObject, Sendable {
 
+    // MARK: - Live updates
+    /// Connects the scene's sync socket with the signed-in session and keeps it connected, so the calendar, the
+    /// invitations and the mailboxes show what the server changed; signed out, it does nothing. Calling it while the
+    /// socket runs changes nothing.
+    func startLiveUpdates()
+    /// Closes the scene's sync socket until the next `startLiveUpdates()`.
+    func stopLiveUpdates()
+    /// Whether the scene is offline and how many of its changes wait to be sent or were refused.
+    func makeSyncStatus() -> any SyncStatusScreenModel
+
     func makeSession() -> any SessionScreenModel
     func makeLogin() -> any LoginScreenModel
     func makeOverview() -> any OverviewScreenModel
@@ -19,7 +29,7 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     // Journal slice
     /// `initialDay` is the device's current day, `YYYY-MM-DD`; the server's answer names today.
     func makeJournal(initialDay: String) -> any JournalScreenModel
-    func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel
+    func makeNoteEditor(source: NoteEditorSource) -> any NoteEditorScreenModel
     /// The capture row of the diary's Inbox.
     func makeInboxCapture() -> any InboxCaptureScreenModel
     /// The calendar as a list from `day` (`YYYY-MM-DD`) on.
@@ -27,6 +37,12 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
 
     /// The sleep sheet for the evening `night` (`YYYY-MM-DD`, or nil); `startOnNight` opens it on that night.
     func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel
+    /// The wake settings of this device: whether only a scanned code stops a sleep alarm, and the codes.
+    func makeWakeSettings() -> any WakeSettingsScreenModel
+    /// The guard of one window, which covers it while a wake mission rings.
+    func makeWakeGuard() -> any WakeGuardScreenModel
+    /// The debug tool of the device's alarms: the permission, ringing a test alarm or a mission, and the alarms held.
+    func makeDebugAlarms() -> any DebugAlarmScreenModel
 
     // Calendar slice
     /// `initialDay` is the device's current day, `YYYY-MM-DD`; the server's answer names today.
@@ -41,12 +57,11 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeNotificationSettings() -> any NotificationSettingsScreenModel
     func makeAiUsage() -> any AiUsageScreenModel
     func makeTrash() -> any TrashScreenModel
+    /// The internet accounts with their services, and one of them; an account is a mailbox, so `accountId` is the id
+    /// of its Mailboxes item.
+    func makeInternetAccounts() -> any InternetAccountsScreenModel
+    func makeInternetAccount(accountId: String) -> any InternetAccountScreenModel
 
-    // MARK: - Areas
-    func makeArea(areaId: String) -> any AreaScreenModel
-
-    // MARK: - Notes
-    func makeNotes(itemId: String) -> any NotesScreenModel
     // MARK: - Inbox
     func makeInbox() -> any InboxScreenModel
     // MARK: - Mail
@@ -54,8 +69,8 @@ public protocol ScreenModelFactory: AnyObject, Sendable {
     func makeMailThread(threadId: String) -> any MailThreadScreenModel
     func makeMailCompose(start: MailComposeStart) -> any MailComposeScreenModel
     func makeMailFolders() -> any MailFoldersScreenModel
-    func makeMailAccounts() -> any MailAccountsScreenModel
-    func makeMailAccount(mailboxId: String) -> any MailAccountScreenModel
+    /// The mail signals of a project: which people, domains and keywords mark its threads, with the threads they match.
+    func makeProjectMailSignals(projectId: String) -> any ProjectMailSignalsScreenModel
 
     // Semp slice
     /// A conversation. `threadId` names the thread of `.existing`, `inboxItemId` the Inbox item of `.item`; `title`

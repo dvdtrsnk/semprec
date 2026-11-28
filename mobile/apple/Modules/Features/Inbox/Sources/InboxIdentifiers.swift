@@ -14,4 +14,6 @@ enum InboxIdentifiers {
     static let picker = "inbox.picker"
     static let fieldPrefix = "inbox.field."
     static let optionPrefix = "inbox.option."
+    /// Followed by the attachment id.
+    static let attachmentPrefix = "inbox.attachment."
 }

@@ -1,7 +1,7 @@
 import "../../domainWriteHooks.js";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { currentTenantScope, runInTenant } from "@semprec/shared";
+import { currentTenantScope, runInTenant } from "@alldots/shared";
 import { createBlob } from "../../blobs/blobsStore.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
 import { withTransaction } from "../../db/pool.js";
@@ -118,7 +118,7 @@ async function sweep(storage: BlobStorageWriter, alternate?: BlobStorageWriter, 
 describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     chokePoint = createChokePoint(dataPool);
   });
 
@@ -250,82 +250,6 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     await inTenant(() => chokePoint.restoreDatabase(databaseId));
     expect(await purgeAtOf(databaseId)).toBeNull();
     expect(await count("databases WHERE id = $1 AND archived_at IS NULL", [databaseId])).toBe(1);
-  });
-
-  it("gives a database archived before the deadline existed one 30 days from the first sweep and deletes it no earlier", async () => {
-    const databaseId = await createDatabase("Legacy");
-    await inTenant(() => chokePoint.archiveDatabase(databaseId));
-    // Archived without a deadline, long ago.
-    await adminPool.query(
-      "UPDATE databases SET archived_at = now() - interval '200 days', purge_at = NULL WHERE id = $1",
-      [databaseId],
-    );
-    const before = Date.now();
-
-    expect(await sweep(fakeStorage().storage)).toBe(0);
-
-    const stamped = await purgeAtOf(databaseId);
-    expect(stamped).not.toBeNull();
-    const firstSweepToDeadlineDays = ((stamped?.getTime() ?? 0) - before) / 86_400_000;
-    expect(firstSweepToDeadlineDays).toBeGreaterThan(RETENTION_DAYS - 0.01);
-    expect(firstSweepToDeadlineDays).toBeLessThan(RETENTION_DAYS + 0.01);
-    expect(await databaseExists(databaseId)).toBe(true);
-
-    expect(await sweep(fakeStorage().storage)).toBe(0);
-    expect(await purgeAtOf(databaseId)).toEqual(stamped);
-    expect(await databaseExists(databaseId)).toBe(true);
-
-    await adminPool.query("UPDATE databases SET purge_at = now() - interval '1 minute' WHERE id = $1", [databaseId]);
-    expect(await sweep(fakeStorage().storage)).toBe(1);
-    expect(await databaseExists(databaseId)).toBe(false);
-  });
-
-  it("replaces a deadline that an older release left behind a restore and a new archive, instead of purging at once", async () => {
-    // Re-archived by a writer that sets `archived_at` only: the stale deadline is past, the new archive minutes old.
-    const pastId = await createDatabase("Re-archived, deadline past");
-    const pastItemId = await createItem(pastId);
-    await archive(pastId, RETENTION_DAYS + 10);
-    await adminPool.query("UPDATE databases SET archived_at = NULL WHERE id = $1", [pastId]);
-    await adminPool.query("UPDATE databases SET archived_at = now() - interval '5 minutes' WHERE id = $1", [pastId]);
-    const aheadId = await createDatabase("Re-archived, deadline ahead");
-    await archive(aheadId, RETENTION_DAYS - 10);
-    await adminPool.query("UPDATE databases SET archived_at = NULL WHERE id = $1", [aheadId]);
-    await adminPool.query("UPDATE databases SET archived_at = now() WHERE id = $1", [aheadId]);
-    const validId = await createDatabase("Archived by this release");
-    await archive(validId, 3);
-    const validDeadline = await purgeAtOf(validId);
-    const before = Date.now();
-
-    expect(await sweep(fakeStorage().storage)).toBe(0);
-
-    expect(await databaseExists(pastId)).toBe(true);
-    expect(await count("items WHERE id = $1", [pastItemId])).toBe(1);
-    expect(await databaseExists(aheadId)).toBe(true);
-    for (const id of [pastId, aheadId]) {
-      const days = (((await purgeAtOf(id))?.getTime() ?? 0) - before) / 86_400_000;
-      expect(days).toBeGreaterThan(RETENTION_DAYS - 0.01);
-      expect(days).toBeLessThan(RETENTION_DAYS + 0.01);
-    }
-    expect(await purgeAtOf(validId)).toEqual(validDeadline);
-  });
-
-  it("stops a purge that is running when an older release restores and archives the database again", async () => {
-    const databaseId = await createDatabase("Re-archived during its purge");
-    const itemId = await createItem(databaseId);
-    await archive(databaseId, RETENTION_DAYS + 1);
-    const actualList = vi.mocked(itemsStore.listItemIdsForPurge).getMockImplementation();
-    vi.mocked(itemsStore.listItemIdsForPurge).mockImplementationOnce(async (...args) => {
-      // Committed after the selection: the first archive's deadline is past, the new archive is now.
-      await adminPool.query("UPDATE databases SET archived_at = NULL WHERE id = $1", [databaseId]);
-      await adminPool.query("UPDATE databases SET archived_at = now() WHERE id = $1", [databaseId]);
-      return actualList ? actualList(...args) : [];
-    });
-
-    expect(await sweep(fakeStorage().storage)).toBe(0);
-
-    expect(await databaseExists(databaseId)).toBe(true);
-    expect(await count("items WHERE id = $1", [itemId])).toBe(1);
-    expect(itemsStore.hardDeleteItemsOfDatabase).not.toHaveBeenCalled();
   });
 
   it("removes a one-directional relation property of a kept database that targets the purged database, and its rollup", async () => {
@@ -602,9 +526,6 @@ describe("purgeExpiredArchivedDatabases (issue gh-1875)", () => {
     expect(await purgeAtOf(tasks)).not.toBeNull();
     expect(await databaseExists(foreignId)).toBe(true);
     expect(await count("items WHERE id = $1", [foreignItemId])).toBe(1);
-    await adminPool.query("UPDATE databases SET purge_at = NULL WHERE id = $1", [tasks]);
-    await sweep(fakeStorage().storage);
-    expect(await purgeAtOf(tasks)).toBeNull();
   });
 
   it("completes the purge when removing the bytes of a blob fails, and logs the ids only", async () => {

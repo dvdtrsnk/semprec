@@ -41,6 +41,7 @@ final class ItemViewModel: ObservableObject {
         switch destination {
         case .tasks: router.showProjectTasks(projectId: itemId)
         case .mail: router.showProjectMail(projectId: itemId)
+        case .mailSignals: router.showProjectMailSignals(projectId: itemId)
         case .notes: router.showProjectNotes(projectId: itemId)
         case .agent: router.showProjectAgent(projectId: itemId)
         case .files:
@@ -54,7 +55,7 @@ final class ItemViewModel: ObservableObject {
 /// Where a row of a project's screen leads.
 enum ProjectDestination: Equatable {
 
-    case tasks, mail, notes, agent, files
+    case tasks, mail, mailSignals, notes, agent, files
 }
 
 // MARK: - Private
@@ -65,7 +66,6 @@ private extension ItemViewModel {
         case .openItem(let id, let databaseKey):
             switch databaseKey {
             case DatabaseKey.events: router.showEvent(itemId: id)
-            case DatabaseKey.areas: router.showArea(areaId: id)
             default: router.showItem(itemId: id, databaseKey: databaseKey)
             }
         case .openCollection(let databaseId, let databaseKey, let filterJson):

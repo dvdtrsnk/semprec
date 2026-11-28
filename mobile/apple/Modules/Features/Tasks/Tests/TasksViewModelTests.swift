@@ -30,9 +30,9 @@ final class TasksViewModelTests: XCTestCase {
         let model = ScriptedTasksScreenModel(state: TasksState(phase: .content))
         let viewModel = TasksViewModel(model: model, router: RouterSpy())
         let actions: [TasksAction] = [
-            .selectTab(.all), .toggleHideDone, .setArea("a1"), .setProject(nil), .setFlaggedOnly(true), .clearFilters,
-            .retry, .refresh, .toggleDone(taskId: "t1"), .rename(taskId: "t1", title: "Nový"), .add(title: "Koupit"),
-            .openDetails(taskId: "t1"), .dismissNotice
+            .selectTab(.all), .toggleHideDone, .setProject("p1"), .setProject(nil), .setFlaggedOnly(true),
+            .clearFilters, .retry, .refresh, .toggleDone(taskId: "t1"), .rename(taskId: "t1", title: "Nový"),
+            .add(title: "Koupit"), .openDetails(taskId: "t1"), .dismissNotice
         ]
         actions.forEach(viewModel.send)
         XCTAssertEqual(model.actions, actions)

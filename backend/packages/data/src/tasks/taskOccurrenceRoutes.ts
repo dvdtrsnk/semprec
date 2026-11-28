@@ -12,7 +12,6 @@ import { isCalendarDate } from "./taskRecurrenceOwner.js";
 import {
   getTaskRecurrenceBySeriesId,
   hasSeriesOccurrence,
-  publicTaskRecurrenceTemplate,
   type TaskRecurrenceTemplate,
 } from "./taskRecurrenceStore.js";
 import type { RouteParams, RouteBody, RouteUser } from "../customRoute.js";
@@ -77,7 +76,7 @@ async function lockOccurrence(
 }
 
 function templateProperties(template: TaskRecurrenceTemplate): Record<string, unknown> {
-  const { name, ...rest } = publicTaskRecurrenceTemplate(template);
+  const { name, ...rest } = template;
   return { ...(name === null ? {} : { name }), ...rest };
 }
 

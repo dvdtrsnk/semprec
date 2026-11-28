@@ -14,8 +14,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      "/api": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001", ws: true },
-      "/mcp": { target: process.env.SEMPREC_API_URL ?? "http://localhost:3001" },
+      "/api": { target: process.env.ALLDOTS_API_URL ?? "http://localhost:3001", ws: true },
+      "/mcp": { target: process.env.ALLDOTS_API_URL ?? "http://localhost:3001" },
     },
   },
   test: {

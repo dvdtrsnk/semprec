@@ -1,7 +1,7 @@
 import * as Y from "yjs";
 import type { PoolClient } from "pg";
-import { readPageBlocks, serializeInline } from "@semprec/block-model";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { readPageBlocks, serializeInline } from "@alldots/block-model";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { getDocByItemId, readPageStatesForItems } from "./docsStore.js";
 import { ConflictError } from "../errors.js";
 
@@ -33,6 +33,7 @@ export async function readPageSummary(client: PoolClient, itemId: string, locale
               type: block.type,
               indent: block.indent,
               done: block.done,
+              toggle: block.toggle,
               text: serializeInline(block.text),
               ...(block.pageId === null ? {} : { pageId: block.pageId }),
             },

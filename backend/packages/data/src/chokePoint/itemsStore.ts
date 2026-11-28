@@ -74,6 +74,15 @@ export async function lockItemById(client: Queryable, databaseId: string, itemId
  * the locking statement, so a non-qualifying row is not locked and `null` is returned; a row changed
  * while waiting is rechecked against its latest committed version.
  */
+/** Locks the row, live or trashed, `FOR SHARE`; `false` when there is none. */
+export async function lockItemForShare(client: Queryable, databaseId: string, itemId: string): Promise<boolean> {
+  const { rows } = await client.query<{ id: string }>(
+    "SELECT id FROM items WHERE database_id = $1 AND id = $2 FOR SHARE",
+    [databaseId, itemId],
+  );
+  return rows.length > 0;
+}
+
 export async function lockTrashedItemBefore(
   client: Queryable,
   databaseId: string,
@@ -331,6 +340,48 @@ export async function restoreItem(client: Queryable, databaseId: string, itemId:
     [databaseId, itemId],
   );
   return rows[0] ? mapItemRow(rows[0]) : null;
+}
+
+/**
+ * Every row, live or trashed, whose `propertyKey` value is `optionKey` or an array holding it, locked `FOR NO KEY
+ * UPDATE` in id order by the statement that tests the value, so a row updated while it waits is tested again on its
+ * latest committed version.
+ */
+export async function lockItemsHoldingOption(
+  client: Queryable,
+  databaseId: string,
+  propertyKey: string,
+  optionKey: string,
+): Promise<ItemRow[]> {
+  const { rows } = await client.query<ItemDbRow>(
+    `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version FROM items
+      WHERE database_id = $1 AND (properties @> $2::jsonb OR properties @> $3::jsonb)
+      ORDER BY id FOR NO KEY UPDATE`,
+    [databaseId, JSON.stringify({ [propertyKey]: optionKey }), JSON.stringify({ [propertyKey]: [optionKey] })],
+  );
+  return rows.map(mapItemRow);
+}
+
+/**
+ * Sets one key of a trashed row's `properties` and advances `updated_at` and `version`, in the caller's transaction.
+ * Throws when the row is gone or live.
+ */
+export async function setTrashedItemProperty(
+  client: Queryable,
+  databaseId: string,
+  itemId: string,
+  key: string,
+  value: unknown[] | null,
+): Promise<void> {
+  requireAffectedRows(
+    await client.query(
+      `UPDATE items SET properties = jsonb_set(properties, ARRAY[$3]::text[], $4::jsonb), updated_at = now(),
+              version = version + 1
+        WHERE database_id = $1 AND id = $2 AND deleted_at IS NOT NULL`,
+      [databaseId, itemId, key, JSON.stringify(value)],
+    ),
+    "trashed item property write",
+  );
 }
 
 /** Every row regardless of `deleted_at`: the cascade traversal must see live and trashed rows alike. */
@@ -672,10 +723,20 @@ export async function countItemsGrouped(
  */
 export async function getItemsByIds(client: Queryable, itemIds: string[]): Promise<ItemRow[]> {
   if (itemIds.length === 0) return [];
+  return getItemsByIdsAmong(client, itemIds, await visibleDatabaseIds(client));
+}
+
+/** `getItemsByIds` with the `visibleDatabaseIds` a caller reading several batches already read. */
+export async function getItemsByIdsAmong(
+  client: Queryable,
+  itemIds: string[],
+  databaseIds: readonly string[],
+): Promise<ItemRow[]> {
+  if (itemIds.length === 0) return [];
   const { rows } = await client.query<ItemDbRow>(
     `SELECT id, database_id, properties, computed, created_at, updated_at, deleted_at, version
      FROM items WHERE id = ANY($1::uuid[]) AND database_id = ANY($2::uuid[]) AND deleted_at IS NULL`,
-    [itemIds, await visibleDatabaseIds(client)],
+    [itemIds, databaseIds],
   );
   return rows.map(mapItemRow);
 }

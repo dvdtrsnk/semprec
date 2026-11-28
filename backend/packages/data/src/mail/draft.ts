@@ -41,7 +41,7 @@ export interface CreateEmailDraftInput {
   date?: Date;
   /**
    * When given, the `mail_drafts` row is written on the same client, so the caller must run in one
-   * transaction. Without it the draft stays a plain Email, read-only for Semprec.
+   * transaction. Without it the draft stays a plain Email, read-only for Alldots.
    */
   metadata?: Omit<InsertMailDraftInput, "emailItemId">;
   /** Defaults to the system writer. */
@@ -122,10 +122,21 @@ export class MailAttachmentTooLargeError extends ChokePointError {
   }
 }
 
+/**
+ * Neither the connect nor a sync pass found a Drafts folder for the mailbox, so a draft has nowhere to be filed.
+ * 409 `mail_drafts_folder_missing`.
+ */
+export class MailDraftsFolderMissingError extends ChokePointError {
+  constructor(mailboxItemId: string) {
+    super(409, "mail_drafts_folder_missing", "The mailbox has no Drafts folder", { mailboxId: mailboxItemId });
+    this.name = "MailDraftsFolderMissingError";
+  }
+}
+
 /** No `mail_drafts` row: a provider-held draft is read-only here, like any other message. */
 export class MailDraftNotEditableError extends ChokePointError {
   constructor() {
-    super(409, "mail_draft_not_editable", "The draft has no Semprec draft row and cannot be changed");
+    super(409, "mail_draft_not_editable", "The draft has no Alldots draft row and cannot be changed");
     this.name = "MailDraftNotEditableError";
   }
 }
@@ -243,8 +254,9 @@ export async function announceDraftThreadChanged(client: PoolClient, threadId: s
 
 /**
  * Unknown references (including another tenant's) are 404; a merged-away thread id is stored as
- * the absorbing thread. A mailbox without a discovered Drafts folder is 400. A second unsent agent
- * draft for a thread fails with `MailDraftThreadConflictError` (409); the caller must roll back.
+ * the absorbing thread. A mailbox without a discovered Drafts folder is 409 `mail_drafts_folder_missing`.
+ * A second unsent agent draft for a thread fails with `MailDraftThreadConflictError` (409); the caller
+ * must roll back.
  */
 export async function createEmailDraftInMailbox(
   client: PoolClient,
@@ -271,12 +283,7 @@ export async function createEmailDraftInMailbox(
     mailboxItemId: input.mailboxItemId,
     specialPurpose: "drafts",
   });
-  if (!draftsFolderItemId) {
-    throw new ValidationError(
-      `Mailbox ${input.mailboxItemId} has no Drafts folder yet - sync the account before drafting`,
-      { field: "mailboxId" },
-    );
-  }
+  if (!draftsFolderItemId) throw new MailDraftsFolderMissingError(input.mailboxItemId);
 
   const item = await createEmailDraft(client, {
     emailsDatabaseId: ids.emailsDatabaseId,
@@ -314,7 +321,7 @@ async function assertLiveEmail(client: PoolClient, emailsDatabaseId: string, ite
   if (!email || email.deletedAt) throw new NotFoundError("Source message not found");
 }
 
-/** Missing, foreign-tenant and non-Semprec (no `mail_drafts` row) drafts all give the same 404. */
+/** Missing, foreign-tenant and non-Alldots (no `mail_drafts` row) drafts all give the same 404. */
 export async function readEmailDraft(client: PoolClient, draftItemId: string): Promise<EmailDraftView> {
   const ids = await resolveMailModuleIds(client);
   const item = await getItemById(client, ids.emailsDatabaseId, draftItemId);

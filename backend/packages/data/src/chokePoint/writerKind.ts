@@ -2,6 +2,9 @@
 
 export type WriterKind = "user" | "agent" | "system";
 
+/** The system processes a domain rule tells apart from other system writes. */
+export type SystemWriterProcess = "calendarSync";
+
 export interface WriterIdentity {
   writerKind: WriterKind;
   /** Set only for an `agent` written under a run credential. */
@@ -14,6 +17,14 @@ export interface WriterIdentity {
   onBehalfOfUserId?: string;
   /** Set by the approved executor only for its revalidated mutation. */
   approvedRequestId?: string;
+  /** Set only on a `system` value, by the named process. */
+  systemProcess?: SystemWriterProcess;
 }
 
 export const SYSTEM_WRITER: WriterIdentity = Object.freeze({ writerKind: "system" });
+
+/** The calendar sync: writes account calendars, their remote fields and the events of read-only ones. */
+export const CALENDAR_SYNC_WRITER: WriterIdentity = Object.freeze({
+  writerKind: "system",
+  systemProcess: "calendarSync",
+});

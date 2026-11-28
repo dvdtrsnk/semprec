@@ -10,36 +10,19 @@ import {
   type TaskRecurrenceRule,
 } from "./taskRecurrenceRule.js";
 
-/**
- * The properties a series' occurrences are created from. `persistent` is legacy: stored templates keep the
- * boolean, new series store `false`, and no reader outside this module sees it (`publicTaskRecurrenceTemplate`).
- */
+/** The properties a series' occurrences are created from. */
 const templateSchema = z
   .object({
     name: z.string().nullable(),
     timeFrom: z.string().nullable(),
     timeTo: z.string().nullable(),
     notifications: z.boolean(),
-    persistent: z.boolean(),
     flagged: z.boolean(),
     description: z.string().nullable(),
   })
   .strict();
 
 export type TaskRecurrenceTemplate = z.infer<typeof templateSchema>;
-
-export type PublicTaskRecurrenceTemplate = Omit<TaskRecurrenceTemplate, "persistent">;
-
-export function publicTaskRecurrenceTemplate(template: TaskRecurrenceTemplate): PublicTaskRecurrenceTemplate {
-  return {
-    name: template.name,
-    timeFrom: template.timeFrom,
-    timeTo: template.timeTo,
-    notifications: template.notifications,
-    flagged: template.flagged,
-    description: template.description,
-  };
-}
 
 /**
  * Unlike `types.ts`'s loosely typed `TaskRecurrenceRow`, carries the validated, discriminated `TaskRecurrenceRule`.

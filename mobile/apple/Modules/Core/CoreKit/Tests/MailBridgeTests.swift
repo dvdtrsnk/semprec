@@ -15,8 +15,8 @@ final class MailBridgeTests: XCTestCase {
         let thread = factory.makeMailThread(threadId: "t1")
         let compose = factory.makeMailCompose(start: .draft(draftId: "d1"))
         let folders = factory.makeMailFolders()
-        let accounts = factory.makeMailAccounts()
-        let account = factory.makeMailAccount(mailboxId: "m1")
+        let accounts = factory.makeInternetAccounts()
+        let account = factory.makeInternetAccount(accountId: "m1")
         let threadsState = await firstState(of: threads) { $0.phase != .loading }
         let threadState = await firstState(of: thread) { $0.phase != .loading }
         let composeState = await firstState(of: compose) { $0.phase != .loading }
@@ -33,12 +33,11 @@ final class MailBridgeTests: XCTestCase {
 
     @MainActor
     func testTheStartOfTheListReachesTheKotlinViewModel() async throws {
-        let start = MailListStart(areaId: "a1", projectId: "p1", box: .flagged, mailboxId: "m1", folderId: "f1")
+        let start = MailListStart(projectId: "p1", box: .flagged, mailboxId: "m1", folderId: "f1")
         let model = try XCTUnwrap(
             isolatedFactory().makeMailThreads(start: start) as? SharedMailThreadsScreenModel
         )
         let state = model.state
-        XCTAssertEqual(state.areaId, "a1")
         XCTAssertEqual(state.projectId, "p1")
         XCTAssertEqual(state.box, .flagged)
         XCTAssertEqual(state.mailboxId, "m1")
@@ -96,6 +95,43 @@ final class MailBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testTheThreadScreenOpensTheFilesItemOfASavedAttachment() async {
+        let model = isolatedFactory().makeMailThread(threadId: "t1")
+        model.send(.open(.file(fileItemId: "f1")))
+        let raised = await effects(of: model, count: 1)
+        XCTAssertEqual(raised, [.openFile(fileItemId: "f1")])
+    }
+
+    // Without a loaded thread there is no message to fetch or save from, so the Kotlin ViewModel leaves its state.
+    @MainActor
+    func testFetchingABodyOrSavingAnAttachmentOfAThreadThatDidNotLoadChangesNothing() async throws {
+        let model = try XCTUnwrap(
+            isolatedFactory().makeMailThread(threadId: "t1") as? SharedMailThreadScreenModel
+        )
+        _ = await firstState(of: model) { $0.phase != .loading }
+        let failed = model.viewModel.state.value
+        model.send(.loadBody(emailId: "e1"))
+        model.send(.saveAttachment(emailId: "e1", attachmentId: "a1"))
+        XCTAssertTrue(model.viewModel.state.value === failed)
+        XCTAssertEqual(model.state.phase, .failure(.unauthorized))
+    }
+
+    @MainActor
+    func testASearchReachesTheKotlinThreadListAndLoadsItAgain() async throws {
+        let model = try XCTUnwrap(
+            isolatedFactory().makeMailThreads(start: MailListStart()) as? SharedMailThreadsScreenModel
+        )
+        _ = await firstState(of: model) { $0.phase != .loading }
+        let listed = model.viewModel.state.value
+        model.send(.search("faktura"))
+        XCTAssertFalse(model.viewModel.state.value === listed, "A search must start a new load of the Kotlin ViewModel")
+        XCTAssertEqual(model.state.search, "faktura")
+        let searched = await firstState(of: model) { $0.phase != .loading }
+        XCTAssertEqual(searched?.phase, .failure(.unauthorized))
+        XCTAssertNil(searched?.remoteSearch)
+    }
+
+    @MainActor
     func testLeavingAComposeScreenWithoutADraftClosesAtOnce() async {
         let model = isolatedFactory().makeMailCompose(start: .new)
         _ = await firstState(of: model) { $0.phase != .loading }
@@ -126,15 +162,15 @@ final class MailBridgeTests: XCTestCase {
             factory.makeMailThread(threadId: "t1"),
             factory.makeMailCompose(start: .new),
             factory.makeMailFolders(),
-            factory.makeMailAccounts(),
-            factory.makeMailAccount(mailboxId: "m1")
+            factory.makeInternetAccounts(),
+            factory.makeInternetAccount(accountId: "m1")
         ]
         let leases = try [
             XCTUnwrap((models[0] as? SharedMailThreadScreenModel)?.lease),
             XCTUnwrap((models[1] as? SharedMailComposeScreenModel)?.lease),
             XCTUnwrap((models[2] as? SharedMailFoldersScreenModel)?.lease),
-            XCTUnwrap((models[3] as? SharedMailAccountsScreenModel)?.lease),
-            XCTUnwrap((models[4] as? SharedMailAccountScreenModel)?.lease)
+            XCTUnwrap((models[3] as? SharedInternetAccountsScreenModel)?.lease),
+            XCTUnwrap((models[4] as? SharedInternetAccountScreenModel)?.lease)
         ]
         XCTAssertTrue(leases.allSatisfy { !$0.isClosed })
         models.removeAll()

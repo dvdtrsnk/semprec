@@ -8,7 +8,7 @@ import {
   resetDatabase,
   withTenantTransaction,
 } from "../testSupport/testDb.js";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { withTransaction } from "../db/pool.js";
 import { createHeartbeat } from "../scheduler/schedulerStore.js";
@@ -118,7 +118,7 @@ describe("moduleRegistry.checkDrift", () => {
         }),
       );
     });
-    const runtime = await createRuntimeRolePool(pool, "semprec_side");
+    const runtime = await createRuntimeRolePool(pool, "alldots_side");
     try {
       for (const clientPool of [pool, runtime]) {
         await withTenantTransaction(clientPool, getTenantZeroId(), async (client) => {

@@ -8,7 +8,7 @@ import {
   type SearchItemGroup,
   type SearchItemResult,
   type SearchOutput,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
@@ -41,7 +41,7 @@ let tenant: string;
 
 beforeAll(async () => {
   admin = getTestPool();
-  pool = await createRuntimeRolePool(admin, "semprec_data");
+  pool = await createRuntimeRolePool(admin, "alldots_data");
   cp = createChokePoint(pool);
 }, 120_000);
 beforeEach(async () => {
@@ -57,7 +57,7 @@ afterAll(async () => {
   await admin?.end();
 });
 
-const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "area", "contact", "journal", "file", "mail", "chat"];
+const ALL_SCOPE: SearchGroupType[] = ["task", "event", "project", "contact", "journal", "file", "mail", "chat"];
 
 function search(q: string, input: Partial<Omit<SearchItemGroupsInput, "q">> = {}): Promise<SearchOutput> {
   return runInTenant(tenant, () => searchItemGroups(pool, { q, scope: ALL_SCOPE, perGroupLimit: 4, ...input }));
@@ -113,7 +113,6 @@ describe("global search: groups, totals and paging", () => {
     const project = await create("projects", { name: "Faktura projekt" });
     const person = await create("people", { name: "Faktura Novák" });
     const company = await create("companies", { name: "Faktura s.r.o." });
-    await create("areas", { name: "Domácnost" });
 
     const answer = await search("faktura");
 
@@ -517,31 +516,25 @@ describe("global search: an agent's database grants (issue #1810)", () => {
     expect(JSON.stringify(await search("faktura", { agentProjectItemId: agent }))).not.toContain(file);
   });
 
-  it("shows no linked item of a database the agent cannot read in a subtitle, counting nothing of it", async () => {
+  it("shows no linked item of a database the agent cannot read in a subtitle", async () => {
     const project = await create("projects", { name: "Skrytý projekt" });
     const task = await create("tasks", { name: "Faktura úkol", date: "2026-10-16" });
     await link("tasks", "project", task, project);
-    const area = await create("areas", { name: "Faktura oblast" });
-    await link("areas", "projects", area, project);
     const agent = await newAgentProject();
     await admin.query("UPDATE databases SET sensitive = true WHERE id = $1", [await dbId("projects")]);
 
     const asPerson = await search("faktura");
     expect(groupOf(asPerson, "task").items[0]?.subtitleParts.map((part) => part.kind)).toEqual(["date", "project"]);
-    expect(groupOf(asPerson, "area").items[0]?.subtitleParts).toEqual([{ kind: "count", value: "1" }]);
 
     const asAgent = await search("faktura", { agentProjectItemId: agent });
     expect(groupOf(asAgent, "task").items[0]?.subtitleParts).toEqual([{ kind: "date", value: "2026-10-16" }]);
-    expect(groupOf(asAgent, "area").items[0]?.subtitleParts).toEqual([{ kind: "count", value: "0" }]);
     expect(JSON.stringify(asAgent)).not.toContain(project);
   });
 });
 
 describe("global search: the structured subtitle", () => {
-  it("shows a task with its date, time range and project, and no area", async () => {
-    const area = await create("areas", { name: "Finance" });
+  it("shows a task with its date, time range and project", async () => {
     const project = await create("projects", { name: "Účetnictví a faktury" });
-    await link("projects", "area", project, area);
     const task = await create("tasks", {
       name: "Odeslat fakturu",
       date: "2026-10-16",
@@ -671,36 +664,19 @@ describe("global search: the structured subtitle", () => {
     ]);
   });
 
-  it("shows a project with its area and status, and an area with the count of its projects but not of system projects or the trash", async () => {
-    const area = await create("areas", { name: "Domácnost" });
+  it("shows a project with its status only, not its company", async () => {
+    const company = await create("companies", { name: "Domácnost s.r.o." });
     const first = await create("projects", { name: "Domácnost rekonstrukce", status: "inProgress" });
-    const second = await create("projects", { name: "Domácnost zahrada" });
-    const trashed = await create("projects", { name: "Domácnost starý" });
-    const system = await runInTenant(tenant, () =>
-      withTransaction(
-        pool,
-        async (client) =>
-          (
-            await createItemWithClient(
-              client,
-              { databaseId: await dbId("projects"), properties: { name: "Domácnost systém", systemActive: true } },
-              { allowedSystemKeys: ["systemActive"] },
-            )
-          ).id,
-      ),
-    );
-    for (const project of [first, second, trashed, system]) await link("projects", "area", project, area);
-    await runInTenant(tenant, async () => cp.softDeleteItem(await dbId("projects"), trashed));
+    const second = await create("projects", { name: "Domácnost zahrada", status: "done" });
+    await link("projects", "company", first, company);
 
     const answer = await search("domácnost");
-    const project = groupOf(answer, "project").items.find((item) => item.itemId === first);
-    expect(project?.subtitleParts).toEqual([
-      { kind: "area", value: "Domácnost", itemId: area },
+    const projects = groupOf(answer, "project").items;
+    expect(projects.find((item) => item.itemId === first)?.subtitleParts).toEqual([
       { kind: "status", value: "inProgress" },
     ]);
-    expect(groupOf(answer, "area").items.find((item) => item.itemId === area)?.subtitleParts).toEqual([
-      { kind: "count", value: "2" },
-    ]);
+    expect(projects.find((item) => item.itemId === second)?.subtitleParts).toEqual([{ kind: "status", value: "done" }]);
+    expect(answer.groups.map((group) => group.type)).not.toContain("area");
   });
 
   it("shows a person with relationship, project and first phone, a company with its marker, and a file with its project and date", async () => {

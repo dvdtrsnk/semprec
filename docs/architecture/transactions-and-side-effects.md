@@ -53,7 +53,7 @@ concurrent writers are ordered. What may be written, and by whom, is in
 - An effect that announces a write (`NOTIFY`, realtime invalidation via `notifyInvalidation`, push,
   any delivery to the outside) is registered with `runAfterCommit(client, callback)` and runs only
   after `COMMIT` succeeded. On rollback it is discarded.
-- `runAfterCommit` is internal to `@semprec/data`; it is not exported from the package root.
+- `runAfterCommit` is internal to `@alldots/data`; it is not exported from the package root.
 - A callback is synchronous. One that throws is logged and the rest still run; the committed caller
   never sees the failure. An effect whose delivery matters must report its own failure, or be a
   queue job instead.
@@ -73,6 +73,11 @@ concurrent writers are ordered. What may be written, and by whom, is in
   page-title-mirror jobs are enqueued this way.
 - Search-index jobs are registered with `registerSearchJob(client, job)` and added at the pre-commit
   flush, grouped by job key in deterministic order under the tenant's search-flush advisory lock.
+- `runBeforeCommitOnce(client, key, flush)` registers one pre-commit flush per key for the active managed
+  transaction; the flushes run in registration order after the search-lane flush and right before `COMMIT`, a
+  failing one rolls the transaction back, and a savepoint rollback does not withdraw one. Registration closes when
+  the body returns. A flush takes its locks last, after every lock of the body. The mail thread change stamp is the
+  one flush (`mail/mailThreadChanges.ts`, see `domain-mail-and-inbox.md`, Thread list changes).
 - Blob bytes are deleted after commit, best-effort, for the storage keys the committed transaction
   returned; a failure leaves unreachable bytes but never undoes the commit.
 
@@ -116,6 +121,17 @@ Reference implementation: project agent guidance drift
 - The declared sync owner lists rows where desired ≠ current, performs every provider write, and sets
   current only after all succeed. Provider observations update current but never overwrite a
   differing desired value. The gap is the durable retry queue.
+- Account calendar Events record a user's or agent's change as a pending row of
+  `calendar_event_push_state` (a revision every change raises) in the Event write's transaction, which
+  holds the Event's row lock, and queue `calendarEventPush` in the same transaction
+  (`data/calendar/sync/eventPushHooks.ts`). One job runs per Event at a time, under the lease its first
+  transaction takes on the push's row. The job calls the provider with no transaction open and
+  stores each result in its own transaction under the account's calendar sync guard, the Event's
+  account calendar `FOR SHARE` and its row; it sets the status only while the revision it pushed is
+  still current. A sync pass leaves an Event with a pending push unwritten (checked under the Event's
+  row lock) and re-queues the push, which merges the provider's change per field against the last
+  base, the provider winning a field changed on both sides
+  (`data/calendar/sync/eventPushJob.ts`).
 
 ## Exactly-once approved operations
 
@@ -184,8 +200,11 @@ Paths that cannot impose a global order use nonblocking admission instead of wai
 
 A change to any of these paths must keep the order:
 
-- **Item update:** module pre-lock hooks (e.g. the Calendars default-mark advisory lock) → item row →
-  value-link rows.
+- **Item update:** select/multi-select property rows the patch names (`FOR SHARE`, id order, user and
+  agent writers only; the same on create) → module pre-lock hooks (e.g. the Calendars default-mark
+  advisory lock) → item row → value-link rows.
+- **Select option removal:** property row (`FOR UPDATE`) → every item holding the key, live and
+  trashed (`FOR NO KEY UPDATE`, id order, one statement) → each live item's update path.
 - **Value-link item write:** item row before any link row; required link keys checked in sorted order.
 - **User/agent edge write on a link rule's via relation:** edge row → rule target item rows
   (`linkRuleEdgeLockHook`, before-link-break hook) → value-link rows (`project` → `people` →
@@ -200,6 +219,9 @@ A change to any of these paths must keep the order:
 - **Page documents:** `loadDocWithClient` and `mutateDocWithClient` lock the document's stored rows
   `FOR UPDATE`; a document is locked after the rows that precede it above.
 - **Trash cascade:** root row (`lockItemById`) → cascade rows → per-row hooks.
+- **Pre-commit:** every lock of the transaction body → the search-flush advisory lock → the tenant's
+  `mail_thread_change_counters` row → its `mail_thread_changes` rows. The counter row is held from the flush to
+  `COMMIT` and only ever waited for by a transaction that already finished its body, so it closes no cycle.
 - **Permanent purge:** tenant purge advisory lock → item row (`lockTrashedItemBefore`) → its
   dependents.
 - **Archived database purge:** `FOR NO KEY UPDATE` on the database row first in every deleting

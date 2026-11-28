@@ -37,7 +37,7 @@ describe("relation_path_contains schema", () => {
   const value = "11111111-1111-4111-8111-111111111111";
 
   it("accepts exactly two relation keys and a UUID, including inside a group", () => {
-    const node = { type: "relation_path_contains", path: ["project", "area"], value };
+    const node = { type: "relation_path_contains", path: ["project", "company"], value };
     expect(filterNodeSchema.parse(node)).toEqual(node);
     expect(filterNodeSchema.safeParse({ type: "not", node }).success).toBe(true);
   });
@@ -45,17 +45,17 @@ describe("relation_path_contains schema", () => {
   it.each([
     { path: [] },
     { path: ["project"] },
-    { path: ["project", "area", "projects"] },
-    { path: ["", "area"] },
+    { path: ["project", "company", "projects"] },
+    { path: ["", "company"] },
     { path: ["project", ""] },
-    { path: [42, "area"] },
-    { path: "project.area" },
+    { path: [42, "company"] },
+    { path: "project.company" },
     { value: "not-a-uuid" },
     { value: null },
     { property: "project" },
   ])("rejects malformed path condition %j", (override) => {
     expect(
-      filterNodeSchema.safeParse({ type: "relation_path_contains", path: ["project", "area"], value, ...override })
+      filterNodeSchema.safeParse({ type: "relation_path_contains", path: ["project", "company"], value, ...override })
         .success,
     ).toBe(false);
   });

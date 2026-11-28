@@ -2,7 +2,7 @@ import type { Pool } from "pg";
 import { z } from "zod";
 import { lockItemForObservedMailFlags, updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
-import { NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, NotFoundError, ValidationError } from "../errors.js";
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { parseMailSearchQuery } from "./search.js";
 import { hasInvalidMailSearchDate, listMailThreads, parseMailThreadListCursor } from "./mailThreadListQuery.js";
@@ -25,9 +25,49 @@ import {
   type MailThreadMoveSelection,
 } from "./mailThreadActions.js";
 import { readMailThreadFacets, type MailThreadFacets } from "./mailThreadsFacetsStore.js";
+import {
+  encodeMailThreadChangesCursor,
+  listMailThreadsChangedSince,
+  MAIL_THREAD_CHANGES_LIMIT,
+  mailThreadChangesCursorIsStale,
+  parseMailThreadChangesCursor,
+  readMailThreadChangePoint,
+} from "./mailThreadChanges.js";
 import type { CustomRouteResult, RouteParams, RouteUrl } from "../customRoute.js";
 import { requestUrl } from "../customRoute.js";
 
+type MailThreadViewFilters = Pick<
+  NonNullable<Parameters<typeof listMailThreads>[3]>,
+  "box" | "folderId" | "mailboxId" | "projectId" | "personId" | "unread"
+>;
+
+/** The filters naming one list view: the list's and the delta's query parameters. */
+function parseMailThreadViewFilters(url: URL): MailThreadViewFilters {
+  const box = url.searchParams.get("box") ?? "inbox";
+  if (box !== "inbox" && box !== "flagged" && box !== "sempDrafts")
+    throw new ValidationError("Invalid box", { field: "box" });
+  const uuidParam = (field: string) => {
+    const value = url.searchParams.get(field);
+    if (value !== null && !z.uuid().safeParse(value).success) throw new ValidationError(`Invalid ${field}`, { field });
+    return value;
+  };
+  const rawUnread = url.searchParams.get("unread");
+  if (rawUnread !== null && rawUnread !== "true" && rawUnread !== "false")
+    throw new ValidationError("Invalid unread", { field: "unread" });
+  return {
+    box,
+    folderId: uuidParam("folderId"),
+    mailboxId: uuidParam("mailboxId"),
+    projectId: uuidParam("projectId"),
+    personId: uuidParam("personId"),
+    unread: rawUnread === "true",
+  };
+}
+
+/**
+ * One page of the view, newest first. `changesCursor` is the tenant's mail change point read in the page's own
+ * snapshot, so `GET /api/mail/threads/changes?since=` from it lists exactly the changes the page does not show.
+ */
 export function createMailThreadListRouteHandler(pool: Pool) {
   return async (ctx: RouteUrl) => {
     const url = requestUrl(ctx.req);
@@ -38,38 +78,18 @@ export function createMailThreadListRouteHandler(pool: Pool) {
     if (limit < 1 || limit > 200) throw new ValidationError("Invalid limit", { field: "limit" });
     const rawCursor = url.searchParams.get("cursor");
     const cursor = rawCursor === null ? null : parseMailThreadListCursor(rawCursor);
-    const box = url.searchParams.get("box") ?? "inbox";
-    if (box !== "inbox" && box !== "flagged" && box !== "sempDrafts")
-      throw new ValidationError("Invalid box", { field: "box" });
-    const uuidParam = (field: string) => {
-      const value = url.searchParams.get(field);
-      if (value !== null && !z.uuid().safeParse(value).success)
-        throw new ValidationError(`Invalid ${field}`, { field });
-      return value;
-    };
-    const folderId = uuidParam("folderId");
-    const mailboxId = uuidParam("mailboxId");
-    const projectId = uuidParam("projectId");
-    const areaId = uuidParam("areaId");
-    const personId = uuidParam("personId");
-    const rawUnread = url.searchParams.get("unread");
-    if (rawUnread !== null && rawUnread !== "true" && rawUnread !== "false")
-      throw new ValidationError("Invalid unread", { field: "unread" });
+    const filters = parseMailThreadViewFilters(url);
     const q = (url.searchParams.get("q") ?? "").trim();
     if (q.length > 1000) throw new ValidationError("Invalid q", { field: "q" });
     const search = q ? parseMailSearchQuery(q, true) : undefined;
     if (search && hasInvalidMailSearchDate(search)) throw new ValidationError("Invalid search date", { field: "q" });
-    const rows = await withTransaction(pool, (client) =>
-      listMailThreads(client, limit, cursor, {
-        box,
-        folderId,
-        mailboxId,
-        projectId,
-        areaId,
-        personId,
-        unread: rawUnread === "true",
-        search,
-      }),
+    const { rows, point } = await withTransaction(
+      pool,
+      async (client) => {
+        const point = await readMailThreadChangePoint(client);
+        return { rows: await listMailThreads(client, limit, cursor, { ...filters, search }), point };
+      },
+      { isolation: "repeatable_read" },
     );
     const hasMore = rows.length > limit;
     const threads = rows.slice(0, limit);
@@ -78,7 +98,45 @@ export function createMailThreadListRouteHandler(pool: Pool) {
       hasMore && last
         ? Buffer.from(JSON.stringify({ at: last.lastMessageAt, id: last.threadId })).toString("base64url")
         : null;
-    return { status: 200, body: { threads, nextCursor } };
+    return { status: 200, body: { threads, nextCursor, changesCursor: encodeMailThreadChangesCursor(point) } };
+  };
+}
+
+/**
+ * `GET /api/mail/threads/changes?since=` with the list's view filters (no `q`: search results are not a view).
+ * Answers the rows of the threads stamped after `since` that are in the view (`threads`, as the list shapes them) and
+ * the ids of those that are not, or no longer exist (`removed`), all read in one snapshot with the `cursor` to ask
+ * from next. `reset: true` (with no rows) when `since` belongs to another counter, names a step the tenant never
+ * reached, lies before a change of every row, or more than `MAIL_THREAD_CHANGES_LIMIT` threads changed since: the
+ * client then reads the view's first page again. A malformed `since` is a 400.
+ */
+export function createMailThreadChangesRouteHandler(pool: Pool) {
+  return async (ctx: RouteUrl) => {
+    const url = requestUrl(ctx.req);
+    const rawSince = url.searchParams.get("since");
+    if (rawSince === null) throw new ValidationError("Missing since", { field: "since" });
+    const since = parseMailThreadChangesCursor(rawSince);
+    if (url.searchParams.has("q")) throw new ValidationError("Search results have no changes", { field: "q" });
+    const filters = parseMailThreadViewFilters(url);
+    const body = await withTransaction(
+      pool,
+      async (client) => {
+        const point = await readMailThreadChangePoint(client);
+        const cursor = encodeMailThreadChangesCursor(point);
+        const reset = { cursor, threads: [], removed: [], reset: true };
+        if (mailThreadChangesCursorIsStale(since, point)) return reset;
+        const changed = await listMailThreadsChangedSince(client, since.seq, MAIL_THREAD_CHANGES_LIMIT);
+        if (changed === null) return reset;
+        const threads =
+          changed.length === 0
+            ? []
+            : await listMailThreads(client, changed.length, null, { ...filters, changedThreadIds: changed });
+        const shown = new Set(threads.map((thread) => thread.threadId));
+        return { cursor, threads, removed: changed.filter((threadId) => !shown.has(threadId)), reset: false };
+      },
+      { isolation: "repeatable_read" },
+    );
+    return { status: 200, body };
   };
 }
 
@@ -97,31 +155,30 @@ export function createMailThreadDetailRouteHandler(pool: Pool) {
   };
 }
 
-/**
- * Thread counts of the mailbox filter bar in one statement. The selected project narrows the area
- * counts and the selected area narrows the project counts. An id of no project or area in the caller's
- * tenant selects no thread and is no error.
- */
+/** Thread counts of the mailbox filter bar in one statement. */
 export function createMailThreadFacetsRouteHandler(pool: Pool) {
-  return async (ctx: RouteUrl): Promise<CustomRouteResult<MailThreadFacets>> => {
-    const url = requestUrl(ctx.req);
-    const selected = (field: "areaId" | "projectId"): string | null => {
-      const value = url.searchParams.get(field);
-      if (value !== null && !z.uuid().safeParse(value).success)
-        throw new ValidationError(`Invalid ${field}`, { field });
-      return value;
-    };
-    const selection = { areaId: selected("areaId"), projectId: selected("projectId") };
-    return { status: 200, body: await withTransaction(pool, (client) => readMailThreadFacets(client, selection)) };
-  };
+  return async (): Promise<CustomRouteResult<MailThreadFacets>> => ({
+    status: 200,
+    body: await withTransaction(pool, (client) => readMailThreadFacets(client)),
+  });
 }
 
 const readBodySchema = z.object({ read: z.boolean() }).strict();
 
+/** Refuses a change the thread has no received message for, so a 200 never stands for a write that did not happen. */
+function noReceivedMessage(): ConflictError {
+  return new ConflictError(
+    "The thread has no received message to change",
+    undefined,
+    "mail_thread_no_received_message",
+  );
+}
+
 /**
- * `read: true` sets `read` on every incoming copy in every mailbox; `read: false` only on the copies of
- * the last incoming message. Non-incoming copies (own mail, Sent, Drafts) are never written. The server
- * loads the versions, so the last write wins.
+ * `read: true` sets `read` on every received copy in every mailbox (mail to oneself delivered to an Inbox included);
+ * `read: false` only on the copies of the last received message, and is refused with 409
+ * `mail_thread_no_received_message` when there is none. Copies that are not received (the user's own Sent copies,
+ * Drafts) are never written. The server loads the versions, so the last write wins.
  *
  * The transaction starts with the tenant's mail-thread guard; each copy is then locked in item id order
  * and written as the session's user only when its `read` differs, so the Emails flag hook queues the
@@ -145,6 +202,7 @@ export function createMailThreadReadRouteHandler(pool: Pool) {
       const threadId = await resolveMailThreadForAction(client, requested.data);
       const { messages, lastIncomingMessageId } = await listMailThreadActionMessages(client, threadId);
       if (messages.length === 0) throw new NotFoundError("Thread not found");
+      if (!read && lastIncomingMessageId === null) throw noReceivedMessage();
       const { emailsDatabaseId } = await resolveMailModuleIds(client);
       const targets = messages.filter(
         (message) => message.incoming && (read || message.messageId === lastIncomingMessageId),
@@ -171,9 +229,9 @@ export function createMailThreadReadRouteHandler(pool: Pool) {
 const flagBodySchema = z.object({ flagged: z.boolean() }).strict();
 
 /**
- * `flagged: true` flags the copies of the last incoming message (nothing to flag without one);
- * `flagged: false` clears every live copy, own mail, Sent and Drafts included. Locking, writing and
- * invalidation follow the read route.
+ * `flagged: true` flags the copies of the last received message, and is refused with 409
+ * `mail_thread_no_received_message` when there is none; `flagged: false` clears every live copy, own mail, Sent and
+ * Drafts included. Locking, writing and invalidation follow the read route.
  */
 export function createMailThreadFlagRouteHandler(pool: Pool) {
   const queueAffinity = createActionQueueAffinity();
@@ -193,6 +251,7 @@ export function createMailThreadFlagRouteHandler(pool: Pool) {
       const threadId = await resolveMailThreadForAction(client, requested.data);
       const { messages, lastIncomingMessageId } = await listMailThreadActionMessages(client, threadId);
       if (messages.length === 0) throw new NotFoundError("Thread not found");
+      if (flagged && lastIncomingMessageId === null) throw noReceivedMessage();
       const { emailsDatabaseId } = await resolveMailModuleIds(client);
       const targets = messages.filter(
         (message) => !flagged || (message.incoming && message.messageId === lastIncomingMessageId),
@@ -242,7 +301,8 @@ async function moveMailThread(
 }
 
 /**
- * Moves the copies in an Inbox to their own mailbox's Archive (a Gmail API mailbox's synthetic one).
+ * Moves the copies in an Inbox to their own mailbox's Archive (a Gmail API mailbox's synthetic one). The Sent copy an
+ * IMAP server keeps of mail to oneself stays in Sent, as it does for the trash route.
  * A mailbox without an Archive fails the whole call with 409 `mail_archive_folder_missing`. Moves are
  * recorded as pending and synced later; nothing is deleted.
  */
@@ -260,8 +320,8 @@ export function createMailThreadTrashRouteHandler(pool: Pool) {
 }
 
 /**
- * Moves copies in Archive or Trash back: incoming ones to Inbox, the user's own to Sent; Junk and drafts
- * stay. 409 `mail_thread_not_archived_or_trashed`, `mail_inbox_folder_missing` or
+ * Moves copies in Archive or Trash back: received ones (mail to oneself included) to Inbox, the user's own to Sent;
+ * Junk and drafts stay. 409 `mail_thread_not_archived_or_trashed`, `mail_inbox_folder_missing` or
  * `mail_sent_folder_missing`, each changing nothing.
  */
 export function createMailThreadRestoreRouteHandler(pool: Pool) {

@@ -50,8 +50,8 @@ final class CalendarItemCopyTests: XCTestCase {
 
     // MARK: - Copy
     func testTheTimeTextShowsTheRangeOrJustTheStart() {
-        XCTAssertEqual(item().timeText, "14:00–15:30")
-        XCTAssertEqual(item(end: 870, hasEnd: false).timeText, "14:00")
+        XCTAssertEqual(item().timeText, CalendarDates.range(from: 840, to: 930))
+        XCTAssertEqual(item(end: 870, hasEnd: false).timeText, CalendarDates.clock(minutes: 840))
         XCTAssertNil(item(start: nil, end: nil).timeText)
     }
 
@@ -83,8 +83,13 @@ final class CalendarItemCopyTests: XCTestCase {
         XCTAssertTrue(note(.moved, "Review")?.contains("Review") == true)
         XCTAssertTrue(note(.doneElsewhere, "Review")?.contains("Review") == true)
         XCTAssertNotEqual(note(.doneElsewhere, "2026-10-17"), note(.doneElsewhere, "Review"))
-        XCTAssertTrue(CalendarEventTask(id: "t", title: "T", state: .doneElsewhere, note: nil).isDone)
+        // Done elsewhere is not done in this event, and says so as a missed task does.
+        XCTAssertTrue(CalendarEventTask(id: "t", title: "T", state: .done, note: nil).isDone)
+        XCTAssertFalse(CalendarEventTask(id: "t", title: "T", state: .doneElsewhere, note: nil).isDone)
         XCTAssertFalse(CalendarEventTask(id: "t", title: "T", state: .missed, note: nil).isDone)
+        XCTAssertTrue(CalendarEventTask(id: "t", title: "T", state: .doneElsewhere, note: nil).isNotDoneHere)
+        XCTAssertTrue(CalendarEventTask(id: "t", title: "T", state: .missed, note: nil).isNotDoneHere)
+        XCTAssertFalse(CalendarEventTask(id: "t", title: "T", state: .open, note: nil).isNotDoneHere)
     }
 
     func testTheCarriedFromTextNamesTheDay() {
@@ -98,13 +103,23 @@ final class CalendarItemCopyTests: XCTestCase {
 
     // MARK: - Geometry
     func testMinutesAndPointsConvertBothWays() {
-        XCTAssertEqual(CalendarGeometry.y(minutes: 60), 56)
-        XCTAssertEqual(CalendarGeometry.minutes(position: 56), 60)
-        XCTAssertEqual(CalendarGeometry.minutes(position: -10), 0)
-        XCTAssertEqual(CalendarGeometry.minutes(position: 100_000), 1440)
-        XCTAssertEqual(CalendarGeometry.height, 56 * 24)
-        XCTAssertEqual(CalendarGeometry.blockHeight(start: 600, end: 601), 22)
-        XCTAssertEqual(CalendarGeometry.blockHeight(start: 600, end: 660), 56)
-        XCTAssertEqual(CalendarGeometry.hourId(7), "hour-7")
+        let geometry = CalendarGeometry()
+        XCTAssertEqual(geometry.y(minutes: 60), 56)
+        XCTAssertEqual(geometry.minutes(position: 56), 60)
+        XCTAssertEqual(geometry.minutes(position: -10), 0)
+        XCTAssertEqual(geometry.minutes(position: 100_000), 1440)
+        XCTAssertEqual(geometry.height, 56 * 24)
+        XCTAssertEqual(geometry.blockHeight(start: 600, end: 601), 22)
+        XCTAssertEqual(geometry.blockHeight(start: 600, end: 660), 56)
+        XCTAssertEqual(CalendarGeometry.hourId(7, day: "2026-11-18"), "2026-11-18-hour-7")
+    }
+
+    func testAPinchedHourHeightScalesTheDayWithinItsRange() {
+        let tall = CalendarGeometry(hourHeight: 112)
+        XCTAssertEqual(tall.y(minutes: 90), 168)
+        XCTAssertEqual(tall.minutes(position: 168), 90)
+        XCTAssertEqual(tall.height, 112 * 24)
+        XCTAssertEqual(CalendarGeometry(hourHeight: 1).hourHeight, CalendarGeometry.minimumHourHeight)
+        XCTAssertEqual(CalendarGeometry(hourHeight: 10_000).hourHeight, CalendarGeometry.maximumHourHeight)
     }
 }

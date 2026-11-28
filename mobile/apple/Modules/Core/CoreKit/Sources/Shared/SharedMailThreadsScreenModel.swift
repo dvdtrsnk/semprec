@@ -57,14 +57,14 @@ extension SharedMailThreadsScreenModel {
             filter: filter(state.filter),
             mailboxId: state.mailboxId,
             folderId: state.folderId,
-            areaId: state.areaId,
             projectId: state.projectId,
-            areaName: state.areaName,
             projectName: state.projectName,
             mailboxes: state.mailboxes.map { MailMailboxChip(id: $0.id, name: $0.name) },
             reauthorization: state.reauthorization.map { MailAccountNotice(id: $0.id, name: $0.name, since: $0.since) },
             facets: facets(state.facets),
-            actionFailed: state.actionFailed
+            remoteSearch: state.remoteSearch.map(remoteSearch),
+            actionFailed: state.actionFailed,
+            actionRefusal: state.actionRefusal.map(\.refusal)
         )
     }
 
@@ -76,7 +76,6 @@ extension SharedMailThreadsScreenModel {
         case .search(let text): SharedSDK.MailThreadsActionSearch(text: text)
         case .selectFilter(let filter): SharedSDK.MailThreadsActionSelectFilter(filter: sharedFilter(filter))
         case .selectMailbox(let id): SharedSDK.MailThreadsActionSelectMailbox(mailboxId: id)
-        case .setArea(let id): SharedSDK.MailThreadsActionSetArea(areaId: id)
         case .setProject(let id): SharedSDK.MailThreadsActionSetProject(projectId: id)
         case .clearContext: SharedSDK.MailThreadsActionClearContext.shared
         case .toggleRead(let id): SharedSDK.MailThreadsActionToggleRead(threadId: id)
@@ -127,6 +126,13 @@ extension SharedMailThreadsScreenModel {
         }
     }
 
+    private static func remoteSearch(_ summary: SharedSDK.MailRemoteSearchSummary) -> MailRemoteSearchSummary {
+        MailRemoteSearchSummary(
+            unindexed: Int(summary.unindexed),
+            failedAccounts: summary.failedAccounts.map { MailMailboxChip(id: $0.id, name: $0.name) }
+        )
+    }
+
     private static func thread(_ item: SharedSDK.MailThreadItem) -> MailThreadItem {
         MailThreadItem(
             threadId: item.threadId,
@@ -150,9 +156,7 @@ extension SharedMailThreadsScreenModel {
     private static func facets(_ facets: SharedSDK.MailFacetsState) -> MailFacetsState {
         MailFacetsState(
             phase: facetsPhase(facets.phase),
-            areaTotal: Int(facets.areaTotal),
             projectTotal: Int(facets.projectTotal),
-            areas: facets.areas.map(option),
             projects: facets.projects.map(option)
         )
     }
@@ -167,12 +171,6 @@ extension SharedMailThreadsScreenModel {
     }
 
     private static func option(_ option: SharedSDK.MailFilterOption) -> MailFilterOption {
-        MailFilterOption(
-            id: option.id,
-            name: option.name,
-            color: option.color,
-            count: Int(option.count),
-            areaId: option.areaId
-        )
+        MailFilterOption(id: option.id, name: option.name, color: option.color, count: Int(option.count))
     }
 }

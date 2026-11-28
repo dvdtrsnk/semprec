@@ -5,7 +5,7 @@ import OverviewFeature
 import SwiftUI
 import XCTest
 
-@testable import Semprec
+@testable import Alldots
 
 /// What the overview's rows and its profile button do in the app: the router changes the stack of the Overview tab,
 /// and the real scene shows the result.
@@ -20,7 +20,7 @@ final class OverviewRoutingTests: XCTestCase {
         context.register(overview, for: .overview)
         context.register(calendar, for: .calendar)
         AppOverviewRouter(context: context).show(.profile)
-        XCTAssertEqual(overview.sheets, [.profile])
+        XCTAssertEqual(overview.sheets, [.profile()])
         XCTAssertTrue(overview.pushed.isEmpty)
         XCTAssertTrue(calendar.sheets.isEmpty)
     }
@@ -48,21 +48,6 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testTheJournalRowSelectsTheJournalTabAndPushesNothing() {
-        let context = NavigationContext()
-        let overview = OverviewStackSpy()
-        context.register(overview, for: .overview)
-        var selected: [AppTab] = []
-        let subscription = context.tabRequests.sink { selected.append($0) }
-        AppOverviewRouter(context: context).show(.journal(itemId: "j1"))
-        AppOverviewRouter(context: context).show(.journal(itemId: nil))
-        subscription.cancel()
-        XCTAssertEqual(selected, [.journal, .journal])
-        XCTAssertTrue(overview.pushed.isEmpty)
-        XCTAssertTrue(overview.sheets.isEmpty)
-    }
-
-    @MainActor
     func testAPinnedProjectRowPushesTheProjectOntoTheOverviewStack() {
         let context = NavigationContext()
         let overview = OverviewStackSpy()
@@ -72,17 +57,13 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testAnAreaRowPushesTheAreaScreenAndACollectionRowPushesItsCollection() {
+    func testACollectionRowPushesItsCollection() {
         let context = NavigationContext()
         let overview = OverviewStackSpy()
         context.register(overview, for: .overview)
         let router = AppOverviewRouter(context: context)
-        router.show(.area(id: "a1"))
         router.show(.collection(ownerModuleId: "books", databaseId: "d1"))
-        XCTAssertEqual(
-            overview.pushed,
-            [.area(areaId: "a1", tab: .overview), .collection(.whole(databaseKey: nil, databaseId: "d1"))]
-        )
+        XCTAssertEqual(overview.pushed, [.collection(.whole(databaseKey: nil, databaseId: "d1"))])
     }
 
     @MainActor
@@ -119,13 +100,12 @@ final class OverviewRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testProjectAreaContactFileAndMailResultsOpenTheirScreens() {
+    func testProjectContactFileAndMailResultsOpenTheirScreens() {
         let context = NavigationContext()
         let overview = OverviewStackSpy()
         context.register(overview, for: .overview)
         let router = AppOverviewRouter(context: context)
         router.showSearchResult(link(.project, "p1"))
-        router.showSearchResult(link(.area, "a1"))
         router.showSearchResult(link(.contact, "c1"))
         router.showSearchResult(link(.file, "f1"))
         router.showSearchResult(
@@ -137,7 +117,6 @@ final class OverviewRoutingTests: XCTestCase {
             overview.pushed,
             [
                 .collectionItem(itemId: "p1", databaseKey: "projects"),
-                .area(areaId: "a1", tab: .overview),
                 .collectionItem(itemId: "c1", databaseKey: nil),
                 .collectionItem(itemId: "f1", databaseKey: nil),
                 .mailThread(threadId: "t1", tab: .overview)
@@ -189,7 +168,7 @@ final class OverviewRoutingTests: XCTestCase {
         let overview = try XCTUnwrap(scene.navigation.stack(for: .overview) as? NavigatorStackAdapter)
 
         scene.overviewRouter.show(.profile)
-        XCTAssertEqual(overview.navigator.presentingSheetOrCover as? AppDestination, .profile)
+        XCTAssertEqual(overview.navigator.presentingSheetOrCover as? AppDestination, .profile())
         XCTAssertEqual(overview.navigator.count, 0, "The profile must be presented, not pushed")
         try await eventually { window.presentsSheet }
         XCTAssertTrue(window.presentsSheet, "The window must show the profile sheet")

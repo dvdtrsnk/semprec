@@ -1,5 +1,5 @@
 import type { Pool } from "pg";
-import { isRiskClass } from "@semprec/shared";
+import { isRiskClass } from "@alldots/shared";
 import { Ajv, type ValidateFunction } from "ajv";
 import {
   resolveGrantedMcpTool,
@@ -17,10 +17,10 @@ import {
   type McpInvokeResult,
   type McpInvokeArgs,
   type McpInvokeOptions,
-} from "@semprec/data";
+} from "@alldots/data";
 
-export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "@semprec/data";
-export { executeMcpInvocation } from "@semprec/data";
+export type { McpInvokeResult, McpInvokeArgs, McpInvokeOptions } from "@alldots/data";
+export { executeMcpInvocation } from "@alldots/data";
 
 /** An MCP result that also names the approval request the call created, when it was deferred to a human. */
 export type McpInvokeToolResult = McpInvokeResult & { approvalRequestId?: string };
@@ -159,7 +159,7 @@ export function createMcpInvokeTool(
  * are free-form, so a plain `reason` could collide; the wrapper removes this key before validation, storage and
  * invocation.
  */
-export const MCP_APPROVAL_REASON_KEY = "semprecReason";
+export const MCP_APPROVAL_REASON_KEY = "alldotsReason";
 
 type ReasonExtraction = { ok: true; args: McpInvokeArgs; reason: string | null } | { ok: false; error: string };
 

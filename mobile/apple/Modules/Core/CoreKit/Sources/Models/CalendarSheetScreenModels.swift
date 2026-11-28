@@ -1,155 +1,5 @@
 import Foundation
 
-// MARK: - Calendars list
-
-public enum CalendarListPhase: Equatable, Sendable {
-
-    case loading
-    case content
-    /// `nil` for an unexpected failure, which has no typed reason.
-    case failure(FailureKind?)
-}
-
-/// Where a calendar comes from, which decides what can be done with it.
-public enum CalendarGroup: Equatable, Sendable {
-
-    case own
-    case system
-    case subscription
-}
-
-/// A colour a calendar can take; `key` names it for the copy, `hex` is `#RRGGBB`.
-public struct CalendarSwatch: Equatable, Sendable, Identifiable {
-
-    public let key: String
-    public let hex: String
-
-    public var id: String { key }
-
-    public init(key: String, hex: String) {
-        self.key = key
-        self.hex = hex
-    }
-}
-
-/// A calendar of the list. `systemKey` is `tasks`, `birthdays`, `sleep` or `holidaysCz` for one Semprec fills.
-public struct CalendarRow: Equatable, Sendable, Identifiable {
-
-    public let id: String
-    public let name: String
-    public let color: String
-    public let hidden: Bool
-    public let notify: Bool
-    public let group: CalendarGroup
-    public let systemKey: String?
-    public let isDefault: Bool
-    public let canRename: Bool
-    public let canDelete: Bool
-
-    public init(
-        id: String,
-        name: String,
-        color: String,
-        hidden: Bool = false,
-        notify: Bool = true,
-        group: CalendarGroup = .own,
-        systemKey: String? = nil,
-        isDefault: Bool = false,
-        canRename: Bool = true,
-        canDelete: Bool = true
-    ) {
-        self.id = id
-        self.name = name
-        self.color = color
-        self.hidden = hidden
-        self.notify = notify
-        self.group = group
-        self.systemKey = systemKey
-        self.isDefault = isDefault
-        self.canRename = canRename
-        self.canDelete = canDelete
-    }
-}
-
-/// What deleting a calendar would cancel, shown before the delete is confirmed.
-public struct CalendarImpact: Equatable, Sendable {
-
-    public let calendarId: String
-    public let eventCount: Int
-    public let recipientCount: Int
-    public let cancellationCount: Int
-
-    public init(calendarId: String, eventCount: Int, recipientCount: Int, cancellationCount: Int) {
-        self.calendarId = calendarId
-        self.eventCount = eventCount
-        self.recipientCount = recipientCount
-        self.cancellationCount = cancellationCount
-    }
-}
-
-/// The calendars sheet. `detailId` is the calendar whose settings are open; `impact` is a delete waiting for its
-/// confirmation.
-public struct CalendarListState: Equatable, Sendable {
-
-    public var phase: CalendarListPhase
-    public var calendars: [CalendarRow]
-    public var swatches: [CalendarSwatch]
-    public var detailId: String?
-    public var impact: CalendarImpact?
-    public var busy: Bool
-    public var problem: Bool
-    public var problemFailure: FailureKind?
-
-    public init(
-        phase: CalendarListPhase,
-        calendars: [CalendarRow] = [],
-        swatches: [CalendarSwatch] = [],
-        detailId: String? = nil,
-        impact: CalendarImpact? = nil,
-        busy: Bool = false,
-        problem: Bool = false,
-        problemFailure: FailureKind? = nil
-    ) {
-        self.phase = phase
-        self.calendars = calendars
-        self.swatches = swatches
-        self.detailId = detailId
-        self.impact = impact
-        self.busy = busy
-        self.problem = problem
-        self.problemFailure = problemFailure
-    }
-}
-
-public enum CalendarListAction: Equatable, Sendable {
-
-    case retry
-    case toggleHidden(calendarId: String)
-    case setAllHidden(Bool)
-    case openDetail(calendarId: String)
-    case closeDetail
-    case rename(calendarId: String, name: String)
-    case setColor(calendarId: String, color: String)
-    case setNotify(calendarId: String, notify: Bool)
-    case add(name: String)
-    case requestDelete(calendarId: String)
-    case confirmDelete
-    case cancelDelete
-    case openSleep
-    case dismissProblem
-}
-
-public enum CalendarListEffect: Equatable, Sendable {
-
-    case openSleep
-}
-
-public typealias CalendarListScreenModel = ScreenModel<CalendarListState, CalendarListAction, CalendarListEffect>
-
-/// Calendars sheet model for previews and tests; it never starts the Kotlin runtime.
-public typealias ScriptedCalendarListScreenModel =
-    ScriptedScreenModel<CalendarListState, CalendarListAction, CalendarListEffect>
-
 // MARK: - Invitations
 
 public enum InvitationsPhase: Equatable, Sendable {
@@ -292,37 +142,94 @@ public enum NewItemKind: Equatable, Sendable {
     case task
 }
 
-/// A calendar a new event can be put on.
+/// What a calendar's name is shown with when another calendar offered has the same name: nothing (`unqualified`),
+/// the own calendars' title (`own`), its account's name (`accountName`) or, when that name is missing or another
+/// account has it too, its account's address (`accountAddress`).
+public enum NewItemCalendarQualifier: Equatable, Sendable {
+
+    case unqualified
+    case own
+    case accountName
+    case accountAddress
+}
+
+/// The internet account calendars are synced from, with its name and primary address when the server gave them. The
+/// calendars whose account the server did not name share one with an empty `id`.
+public struct NewItemAccount: Equatable, Sendable {
+
+    public let id: String
+    public let name: String?
+    public let address: String?
+
+    public init(id: String, name: String? = nil, address: String? = nil) {
+        self.id = id
+        self.name = name
+        self.address = address
+    }
+}
+
+/// A calendar a new event can be put on; `account` is `nil` for an own calendar.
 public struct NewItemCalendar: Equatable, Sendable, Identifiable {
 
     public let id: String
     public let name: String
     public let color: String
     public let isDefault: Bool
+    public let account: NewItemAccount?
+    public let qualifier: NewItemCalendarQualifier
 
-    public init(id: String, name: String, color: String, isDefault: Bool = false) {
+    public init(
+        id: String,
+        name: String,
+        color: String,
+        isDefault: Bool = false,
+        account: NewItemAccount? = nil,
+        qualifier: NewItemCalendarQualifier = .unqualified
+    ) {
         self.id = id
         self.name = name
         self.color = color
         self.isDefault = isDefault
+        self.account = account
+        self.qualifier = qualifier
     }
 }
 
+/// The calendars of one source: the own ones when `account` is `nil`, else those of one internet account.
+public struct NewItemCalendarGroup: Equatable, Sendable {
+
+    public let account: NewItemAccount?
+    public let calendars: [NewItemCalendar]
+
+    public init(account: NewItemAccount? = nil, calendars: [NewItemCalendar]) {
+        self.account = account
+        self.calendars = calendars
+    }
+}
+
+/// The new item sheet. `groups` are the calendars a new event can be put on, by where they come from: the own ones
+/// first, then those of each internet account; no group is empty. `calendars` are the same calendars in one list.
 public struct NewItemState: Equatable, Sendable {
 
     public var phase: NewItemPhase
-    public var calendars: [NewItemCalendar]
+    public var groups: [NewItemCalendarGroup]
     public var defaultDay: String
 
-    public init(phase: NewItemPhase, calendars: [NewItemCalendar] = [], defaultDay: String) {
+    public var calendars: [NewItemCalendar] {
+        groups.flatMap(\.calendars)
+    }
+
+    public init(phase: NewItemPhase, groups: [NewItemCalendarGroup] = [], defaultDay: String) {
         self.phase = phase
-        self.calendars = calendars
+        self.groups = groups
         self.defaultDay = defaultDay
     }
 }
 
 /// The values of the new item form. The times are minutes of the day and are read only when `timed` (the end only
-/// when `hasEnd`); an empty `calendarId` is the default calendar.
+/// when `hasEnd`); an empty `calendarId` is the default calendar and an empty `endDay` an event that ends on `day`.
+/// `url`, `alertMinutes` (before the start) and `travelMinutes` belong to an event, `flagged` to a task; `nil` is no
+/// alert or no travel time.
 public struct NewItemDraft: Equatable, Sendable {
 
     public let kind: NewItemKind
@@ -334,6 +241,13 @@ public struct NewItemDraft: Equatable, Sendable {
     public let endMinutes: Int
     public let place: String
     public let calendarId: String
+    public let endDay: String
+    public let notes: String
+    public let url: String
+    public let alertMinutes: Int?
+    public let travelMinutes: Int?
+    public let repeatRule: NewItemRepeat
+    public let flagged: Bool
 
     public init(
         kind: NewItemKind,
@@ -344,7 +258,14 @@ public struct NewItemDraft: Equatable, Sendable {
         hasEnd: Bool,
         endMinutes: Int,
         place: String,
-        calendarId: String
+        calendarId: String,
+        endDay: String = "",
+        notes: String = "",
+        url: String = "",
+        alertMinutes: Int? = nil,
+        travelMinutes: Int? = nil,
+        repeatRule: NewItemRepeat = .never,
+        flagged: Bool = false
     ) {
         self.kind = kind
         self.title = title
@@ -355,6 +276,13 @@ public struct NewItemDraft: Equatable, Sendable {
         self.endMinutes = endMinutes
         self.place = place
         self.calendarId = calendarId
+        self.endDay = endDay
+        self.notes = notes
+        self.url = url
+        self.alertMinutes = alertMinutes
+        self.travelMinutes = travelMinutes
+        self.repeatRule = repeatRule
+        self.flagged = flagged
     }
 }
 

@@ -112,7 +112,7 @@ export interface EmailModuleResult {
 }
 
 /**
- * Seeds Mailboxes/Folders/Emails as one system project, after the ten databases. Also adds `People.emails`
+ * Seeds Mailboxes/Folders/Emails as one system project, after the core databases. Also adds `People.emails`
  * (one address per line in a longText; no property type holds a free list), briefly unlocking People.
  */
 export async function seedEmailModuleInTransaction(
@@ -160,6 +160,10 @@ export async function seedEmailModuleInTransaction(
     { key: "addresses", name: "Addresses", type: "longText", owner: "system" },
     // Overrides the provider-derived IMAP connection cap (imapConnectionLimiter.ts); unset by default.
     { key: "connectionLimit", name: "Connection limit", type: "number", owner: "user" },
+    // The account's service switches (mail/mailboxServiceHooks.ts). Unset reads as the default: Mail on,
+    // Calendars off. Switching Mail off pauses the account's mail sync and removes its mail.
+    { key: "mailEnabled", name: "Mail", type: "checkbox", owner: "user" },
+    { key: "calendarsEnabled", name: "Calendars", type: "checkbox", owner: "user" },
     {
       key: "syncStatus",
       name: "Sync status",
@@ -334,8 +338,9 @@ export async function seedEmailModuleInTransaction(
       recipientsPeopleKey: "recipientsPeople",
     },
   });
-  // A new Inbox message nudges the project's agent via core.agentRun, gated by itemRelationFilter (no
-  // junk/trash), `runProject` and `answerExpectedFilter`.
+  // A new live Inbox message nudges the project's agent via core.agentRun, gated by itemRelationFilter (no
+  // junk/trash), `liveMailFilter` (no backfilled history), `senderKnownFilter`, `answerExpectedFilter` and moved by
+  // `runProject`.
   await createHeartbeat(client, {
     projectItemId: emailProject.id,
     name: "newEmail",
@@ -343,6 +348,7 @@ export async function seedEmailModuleInTransaction(
     actionId: CORE_AGENT_RUN_ACTION_ID,
     actionConfig: {
       task: "A new message arrived in the Inbox.",
+      liveMailFilter: {},
       senderKnownFilter: {},
       answerExpectedFilter: {},
       runProject: { resolver: "mailThreadProject" },

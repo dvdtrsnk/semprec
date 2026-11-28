@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -106,9 +106,9 @@ describe("recordRestoreTestResult (issue #178)", () => {
     });
   });
 
-  it("records a failed run on a semprec_side pool, the role of the semprec-restore-test process", async () => {
+  it("records a failed run on a alldots_side pool, the role of the alldots-restore-test process", async () => {
     const userId = await createTestUser();
-    const sidePool = await createRuntimeRolePool(pool, "semprec_side");
+    const sidePool = await createRuntimeRolePool(pool, "alldots_side");
 
     let outcome: Awaited<ReturnType<typeof record>>;
     try {
@@ -191,7 +191,7 @@ describe("recordRestoreTestResult (issue #178)", () => {
     await createTestUser(suspended);
     const input = { status: "failed", runId: "run-1", failedCheck: "pgRestore" } as const;
     // With a second tenant present the record runs as the runtime role, so RLS governs each admin's write.
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
 
     let first: Awaited<ReturnType<typeof record>>;
     let second: Awaited<ReturnType<typeof record>>;

@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import {
   createRelationWithClient,
@@ -17,6 +17,8 @@ import { seedSystem } from "../seed/seedSystem.js";
 import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js";
 import type { ItemRow } from "../types.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
+import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
+import { fakeFetchedMessage, fakeImapRange } from "../testSupport/fakeImapMessages.js";
 
 describe("relation invalidations", () => {
   let admin: Pool;
@@ -25,7 +27,7 @@ describe("relation invalidations", () => {
   let tenant: string;
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
   });
   beforeEach(async () => {
@@ -35,14 +37,14 @@ describe("relation invalidations", () => {
     tenant = await createTestTenant(admin);
     await runInTenant(tenant, () => seedSystem(pool));
     await pool.end();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     pool.options.max = 1;
     const role = await runAsSystem("test:verify-runtime-role", () =>
       pool.query<{ role_name: string; rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT current_user::text AS role_name, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
       ),
     );
-    expect(role.rows).toEqual([{ role_name: "semprec_data", rolsuper: false, rolbypassrls: false }]);
+    expect(role.rows).toEqual([{ role_name: "alldots_data", rolsuper: false, rolbypassrls: false }]);
     cp = createChokePoint(pool);
   });
   afterAll(async () => {
@@ -232,24 +234,27 @@ describe("relation invalidations", () => {
           return [{ path: "All Mail", specialUse: "\\All" }];
         },
         async selectFolder() {
-          return { uidvalidity: 1, uidnext: 2, highestModSeq: null };
+          return { uidvalidity: 1, uidnext: 2, highestModSeq: null, messages: 0 };
         },
         async fetchMessagesSince() {
-          return [
-            {
-              uid: 1,
-              message: {
-                messageId: "<labels@example.test>",
-                envelope: { from: { address: "sender@example.test" } },
-                subject: "Labels",
-                attachments: [],
-                gmailLabels: Array.from({ length: 9 }, (_, i) => `Label ${i}`),
-              },
-            },
-          ];
+          return fakeImapRange([]);
         },
-        async fetchVanishedSince() {
-          return [];
+        async fetchMessagesBefore() {
+          return fakeImapRange([
+            fakeFetchedMessage(1, {
+              messageId: "<labels@example.test>",
+              envelope: { from: { address: "sender@example.test" } },
+              subject: "Labels",
+              attachments: [],
+              gmailLabels: Array.from({ length: 9 }, (_, i) => `Label ${i}`),
+            }),
+          ]);
+        },
+        async fetchSnippets() {
+          return new Map();
+        },
+        async fetchChangesSince() {
+          return { flags: [], vanished: [] };
         },
         async fetchAllUids() {
           return [1];
@@ -263,20 +268,19 @@ describe("relation invalidations", () => {
       const events: InvalidationEvent[] = [];
       setInvalidationHook((event) => events.push(event));
       const folderPropertyId = propertyId(emailProperties, "folder");
-      await withTransaction(pool, (client) =>
-        reconcileImapAccount(client, imap, {
-          mailboxItemId: mailbox.id,
-          emailsDatabaseId,
-          filesDatabaseId,
-          foldersDatabaseId,
-          folderRelationPropertyId: folderPropertyId,
-          mailboxFolderRelationPropertyId: propertyId(folderProperties, "mailbox"),
-          attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
-          storage,
-          storageKeyPrefix: "test",
-          folderPaths: ["All Mail"],
-        }),
-      );
+      await reconcileImapAccount(pool, imap, {
+        mailboxItemId: mailbox.id,
+        emailsDatabaseId,
+        filesDatabaseId,
+        foldersDatabaseId,
+        folderRelationPropertyId: folderPropertyId,
+        mailboxFolderRelationPropertyId: propertyId(folderProperties, "mailbox"),
+        attachmentsRelationPropertyId: propertyId(emailProperties, "attachments"),
+        storage,
+        storageKeyPrefix: "test",
+        folderPaths: ["All Mail"],
+        pass: UNGUARDED_MAIL_SYNC_PASS,
+      });
       const { rows } = await pool.query<{ id: string }>("SELECT id FROM items WHERE database_id = $1", [
         emailsDatabaseId,
       ]);

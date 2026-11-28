@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1499",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1499/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1499/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1499/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1499",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1499",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1499/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1499/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1499/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1499",
   "id": 6022386188,
   "node_id": "I_kwDOUFuQ4c8AAAABZvZSDA",
   "number": 1499,
@@ -47,7 +47,7 @@
     "completed": 0,
     "percent_completed": 0
   },
-  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1338",
+  "parent_issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1338",
   "issue_dependencies_summary": {
     "blocked_by": 0,
     "total_blocked_by": 0,
@@ -57,7 +57,7 @@
   "body": "**Blocked by:** none\n**Model tier:** medium\n\n## Context\n\nModel tier rationale: Mechanical addition of one envelope field to three adapters with existing unit-test fixtures, but each adapter reads it from a different source format.\n\nA reply should go to the sender's Reply-To address when the message has one. No adapter parses it: `MailEnvelope` in `backend/packages/data/src/mail/mailMessageMetaStore.ts` has only `from`, `to`, `cc` and `bcc`, and `FetchedMessage` (`backend/packages/data/src/mail/providerTypes.ts`) carries that envelope. The IMAP adapter (`imapFlowClient.ts`) builds it from the ImapFlow envelope, the Gmail adapter (`gmailRestClient.ts`) from headers and the Graph adapter (`graphRestClient.ts`) from the message resource. The envelope is stored as JSON in `mail_message_meta.envelope`, so no migration is needed.\n\nThe reply prefill that reads it is #1899.\n\nDecision: messages synced before this change have no stored Reply-To; the reply falls back to From for them. No backfill.\n\n## Task\n\nLoad `testing`.\n\n1. Add optional `replyTo?: MailEnvelopeAddress[]` to `MailEnvelope`.\n2. Fill it in `imapFlowClient.ts` (ImapFlow `replyTo`), `gmailRestClient.ts` (the `Reply-To` header; add it to the requested header list) and `graphRestClient.ts` (`replyTo` recipients), using the existing address-list helpers. A missing or unparsable header leaves it absent.\n3. Make sure ingest stores the field unchanged in `mail_message_meta.envelope`.\n\n## Touches\n\n- backend/packages/data/src/mail/mailMessageMetaStore.ts (`MailEnvelope`)\n- backend/packages/data/src/mail/providerTypes.ts\n- backend/packages/data/src/mail/imapFlowClient.ts\n- backend/packages/data/src/mail/gmailRestClient.ts\n- backend/packages/data/src/mail/graphRestClient.ts\n- backend/packages/data/src/__tests__/gmailRestClient.unit.test.ts\n- backend/packages/data/src/__tests__/graphRestClient.unit.test.ts\n\n## Scope\n\n### In scope\n\n- Parsing and storing Reply-To for all three adapters.\n\n### Out of scope\n\n- Using Reply-To when building replies (#1899).\n- Backfilling stored messages.\n\n## Acceptance criteria\n\n- When a message has a Reply-To header, then `envelope.replyTo` holds its addresses after sync through each of the three adapters.\n- When a message has no Reply-To, then `envelope.replyTo` is absent and the rest of the envelope is unchanged.\n- Existing envelope tests still pass.\n",
   "closed_by": null,
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1499/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1499/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -68,7 +68,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1499/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1499/timeline",
   "performed_via_github_app": null,
   "state_reason": null,
   "pinned_comment": null

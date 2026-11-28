@@ -6,5 +6,5 @@
   "packages/data/src/__tests__/runtimeRoleAssertion.test.ts",
   "packages/data/src/__tests__/tenancyInvariants.test.ts",
   "packages/data/src/testSupport/__tests__/tenantFixtures.test.ts",
-  "services/semprec-agents/src/__tests__/agentsDatabaseRole.test.ts"
+  "services/alldots-agents/src/__tests__/agentsDatabaseRole.test.ts"
 ]

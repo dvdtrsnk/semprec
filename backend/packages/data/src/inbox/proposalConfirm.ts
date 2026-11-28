@@ -155,7 +155,7 @@ export async function confirmProposalWithClient(
     const envelope = parseStoredProposalEnvelope(proposal.properties.proposal, proposal.id);
     if (!envelope) throw new ValidationError("Proposal has no computed envelope to confirm", { field: "proposal" });
     if ("unknownKind" in envelope) throw unsupportedEntityKindError(envelope.entityKind);
-    // The Journal database, the area and the project may be gone since the card was computed: a 409, before any write.
+    // The Journal database and the project may be gone since the card was computed: a 409, before any write.
     await assertJournalEntryReferencesLive(client, envelope);
     const markdownPageContent = envelope.entityKind === "pageContent" && Object.hasOwn(envelope.properties, "markdown");
     if (markdownPageContent && proposal.properties.kind === "transcript")

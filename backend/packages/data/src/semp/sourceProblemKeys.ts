@@ -13,6 +13,16 @@ export function mailProblemKey(mailboxItemId: string): string {
   return `mail:${mailboxItemId}`;
 }
 
+/** A mailbox's Sent copies that could not be appended; one per mailbox, apart from its sync problem. */
+export function mailSentCopyProblemKey(mailboxItemId: string): string {
+  return `mail:sentCopy:${mailboxItemId}`;
+}
+
+/** An internet account's calendar sync failure; one per account, apart from its mail problem. */
+export function calendarProblemKey(accountItemId: string): string {
+  return `calendar:${accountItemId}`;
+}
+
 export const BACKUP_RESTORE_PROBLEM_KEY = "backup:restoreTest";
 
 export const AGENTS_PROCESS_PROBLEM_KEY = "agents:process";

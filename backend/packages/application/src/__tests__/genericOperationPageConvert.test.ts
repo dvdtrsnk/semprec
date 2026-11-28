@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@alldots/data/testSupport";
 import {
   ApprovalRequiredError,
   createAgentRun,
@@ -17,8 +17,8 @@ import {
   type ChokePoint,
   type CollectionMetadataResolver,
   type DatabaseRow,
-} from "@semprec/data";
-import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
+} from "@alldots/data";
+import { CAPABILITY_IDS, type AuthenticatedActor } from "@alldots/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
 // `page.convertToBlock` of an agent run through the generic operation gateway: the call is held for
@@ -88,7 +88,7 @@ async function hostWithPages(): Promise<Fixture> {
 
 async function setGrant(actor: AuthenticatedActor, databaseId: string, access: AgentDatabaseAccess) {
   if (actor.agentProjectItemId === undefined) throw new Error("Not an agent actor");
-  // The user-only admin store is not exported from `@semprec/data`, so a fixture writes the decision directly.
+  // The user-only admin store is not exported from `@alldots/data`, so a fixture writes the decision directly.
   await withTransaction(pool, (client) =>
     client.query(
       `INSERT INTO agent_database_grants (project_item_id, database_id, access) VALUES ($1, $2, $3)

@@ -8,7 +8,7 @@ import { openBlobFromRoots } from "../../blobs/openBlobFromRoots.js";
 import { LocalFsBlobStorageWriter } from "../blobStorage.js";
 
 it("keeps the stream failure when partial-byte cleanup also fails", async () => {
-  const root = await mkdtemp(join(tmpdir(), "semprec-storage-failure-"));
+  const root = await mkdtemp(join(tmpdir(), "alldots-storage-failure-"));
   try {
     const storage = new LocalFsBlobStorageWriter(root);
     const original = new Error("primary stream failure");
@@ -26,7 +26,7 @@ it("keeps the stream failure when partial-byte cleanup also fails", async () => 
 });
 
 it("opens real primary and alternate roots, preserves ranges and reports both missing", async () => {
-  const root = await mkdtemp(join(tmpdir(), "semprec-roots-"));
+  const root = await mkdtemp(join(tmpdir(), "alldots-roots-"));
   try {
     const primary = new LocalFsBlobStorageWriter(join(root, "primary"));
     const alternate = new LocalFsBlobStorageWriter(join(root, "alternate"));
@@ -54,7 +54,7 @@ it("opens real primary and alternate roots, preserves ranges and reports both mi
 });
 
 it("preserves a non-ENOENT primary error without opening the alternate", async () => {
-  const root = await mkdtemp(join(tmpdir(), "semprec-roots-error-"));
+  const root = await mkdtemp(join(tmpdir(), "alldots-roots-error-"));
   try {
     const primary = new LocalFsBlobStorageWriter(join(root, "primary"));
     const alternate = new LocalFsBlobStorageWriter(join(root, "alternate"));
@@ -512,7 +512,7 @@ it("refuses an already aborted open without opening either root", async () => {
 it.each(["primary", "alternate"] as const)(
   "settles an aborted stalled %s initial read without admitting another root",
   async (stalledRoot) => {
-    const root = await mkdtemp(join(tmpdir(), "semprec-roots-abort-"));
+    const root = await mkdtemp(join(tmpdir(), "alldots-roots-abort-"));
     try {
       const primary = new LocalFsBlobStorageWriter(join(root, "primary"));
       const alternate = new LocalFsBlobStorageWriter(join(root, "alternate"));

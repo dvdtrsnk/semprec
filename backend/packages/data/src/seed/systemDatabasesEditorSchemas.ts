@@ -3,14 +3,14 @@ import type {
   EditorFieldDescriptor,
   EditorGroupDescriptor,
   EditorSchemaDescriptor,
-} from "@semprec/module-registry";
+} from "@alldots/module-registry";
 
 /**
  * Inbox card editor schemas of the system databases, keyed by the card's base kind; labels and
  * placeholders are in `seed/i18n/{cs,en}.json`.
  *
  * A field `key` is the owning database's property key where one exists; otherwise a pseudo key
- * (`allDay`, `followupTask`, `followDate`, `day`, `page`, `placement`, `heading`, `area`, `markdown`).
+ * (`allDay`, `followupTask`, `followDate`, `day`, `page`, `placement`, `heading`, `markdown`).
  * `required`, `when` and `timeHiddenWhen` are not evaluated yet.
  */
 
@@ -69,10 +69,7 @@ export const SYSTEM_DATABASES_EDITOR_SCHEMAS: Record<string, EditorSchemaDescrip
     },
     {
       key: "links",
-      fields: [
-        field("task", "project", "select", { optionsSource: "project" }),
-        field("task", "area", "select", { optionsSource: "area" }),
-      ],
+      fields: [field("task", "project", "select", { optionsSource: "project" })],
     },
     followupGroup("task"),
   ),
@@ -92,11 +89,8 @@ export const SYSTEM_DATABASES_EDITOR_SCHEMAS: Record<string, EditorSchemaDescrip
       field("project", "status", "seg"),
       field("project", "date", "date", { when: { field: "status", notEquals: "longTerm" } }),
       field("project", "color", "color"),
+      field("project", "tags", "multi"),
     ],
-  }),
-  area: schema({
-    key: "main",
-    fields: [field("area", "name", "text", { required: true, placeholder: true }), field("area", "color", "color")],
   }),
   company: schema({
     key: "main",

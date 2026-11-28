@@ -156,6 +156,9 @@ function toInput(block: PageBlock, id: string): BlockInput {
   if (BLOCK_TYPE_RULES[block.type].hasDone) {
     input.done = block.done;
   }
+  if (BLOCK_TYPE_RULES[block.type].hasToggle) {
+    input.toggle = block.toggle;
+  }
   input.text = block.text;
   if (block.pageId !== null) {
     input.pageId = block.pageId;
@@ -280,7 +283,10 @@ export function moveBlocks(doc: Y.Doc, ids: readonly string[], afterId: string |
   }, origin);
 }
 
-/** Changes the type of each block and resets `done`; refuses any conversion from or to `page`. */
+/**
+ * Changes the type of each block and resets `done`; `toggle` stays when the new type carries it (a heading changing
+ * level) and is removed otherwise. Refuses any conversion from or to `page`.
+ */
 export function setType(doc: Y.Doc, ids: readonly string[], type: BlockType, origin?: unknown): void {
   if (!isBlockType(type)) {
     throw new BlockInputError([{ path: "type", code: "unknown_type", message: "unknown block type" }]);
@@ -306,13 +312,16 @@ export function setType(doc: Y.Doc, ids: readonly string[], type: BlockType, ori
       } else {
         block.delete("done");
       }
+      if (!BLOCK_TYPE_RULES[type].hasToggle) {
+        block.delete("toggle");
+      }
     }
   }, origin);
 }
 
 /**
  * Converts each selected block into a `page` block in place: id and position stay, `pageId` is
- * `pageIdFor(id)`, and the text stays as the plain-text title (attributes and `done` are dropped).
+ * `pageIdFor(id)`, and the text stays as the plain-text title (attributes, `done` and `toggle` are dropped).
  * Refuses a repeated id (`duplicate_block_id`), an unknown id (`block_not_found`) and an existing
  * page (`block_already_page`) before changing anything; one `doc.transact` then converts all.
  * `setType` still refuses every conversion to or from `page`.

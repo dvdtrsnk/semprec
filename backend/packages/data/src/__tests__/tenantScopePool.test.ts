@@ -7,7 +7,7 @@ import {
   runAsSystem,
   runInTenant,
   type TenantScope,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { createPool, runAfterCommit, withTransaction } from "../db/pool.js";
 
 const T = randomUUID();
@@ -17,7 +17,7 @@ type Reading = { setting: string | null; tenant: string | null };
 
 let pool: Pool;
 const extraPools: Pool[] = [];
-const originalMode = process.env.SEMPREC_TENANT_SCOPE;
+const originalMode = process.env.ALLDOTS_TENANT_SCOPE;
 
 function newPool(max?: number): Pool {
   const created = createPool(process.env.TEST_DATABASE_URL!);
@@ -54,8 +54,8 @@ beforeAll(() => {
 });
 
 afterEach(() => {
-  if (originalMode === undefined) delete process.env.SEMPREC_TENANT_SCOPE;
-  else process.env.SEMPREC_TENANT_SCOPE = originalMode;
+  if (originalMode === undefined) delete process.env.ALLDOTS_TENANT_SCOPE;
+  else process.env.ALLDOTS_TENANT_SCOPE = originalMode;
 });
 
 afterAll(async () => {
@@ -76,7 +76,7 @@ describe("tenant scope on the three pool paths", () => {
   });
 
   it("runs the three paths unchanged without a scope in warn mode", async () => {
-    process.env.SEMPREC_TENANT_SCOPE = "warn";
+    process.env.ALLDOTS_TENANT_SCOPE = "warn";
     const readings = await readAllPaths(pool);
     for (const reading of readings) expect(reading.setting).not.toBe(T);
     // No set_config ran: the setting is unset (NULL) or '' left by an earlier session, never a tenant.
@@ -181,7 +181,7 @@ describe("strict mode", () => {
   it("rejects all three paths with TenantScopeMissingError and takes no connection", async () => {
     const strict = newPool();
     await strict.query("SELECT 1"); // opens one idle connection (warn mode, set for this listed file by tenantScopeMode.ts)
-    process.env.SEMPREC_TENANT_SCOPE = "strict";
+    process.env.ALLDOTS_TENANT_SCOPE = "strict";
     const total = strict.totalCount;
 
     await expect(withTransaction(strict, async () => 1)).rejects.toBeInstanceOf(TenantScopeMissingError);

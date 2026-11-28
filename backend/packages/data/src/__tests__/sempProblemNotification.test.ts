@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createTenantZeroUser,
   getTenantZeroId,
@@ -20,9 +20,11 @@ import { raiseProblem, type RaiseProblemInput } from "../semp/sempProblemsStore.
 import { seedSystem } from "../seed/seedSystem.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
-import { handleSyncMailAccountTask } from "../mail/mailSyncJob.js";
+import { handleSyncMailAccountTask, type MailSyncAdapterFactory } from "../mail/mailSyncJob.js";
+import { storeCredential } from "../credentials/externalCredentialsStore.js";
 import { transitionTenantObservabilityCheck } from "../observability/observabilityChecksStore.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { elapseMailSyncBackoff } from "../testSupport/mailSyncBackoff.js";
 
 class RollbackSentinel extends Error {}
 
@@ -250,7 +252,16 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
       createItemWithClient(client, { databaseId: moduleIds.mailboxesDatabaseId, properties: { name: "Mailbox" } }),
     );
     await inZero((client) => ensureMailAccountSyncState(client, { itemId: mailbox.id, syncMode: "imap" }));
+    await inZero((client) =>
+      storeCredential(client, { itemId: mailbox.id, credentialType: "app_password", plaintext: "fixture" }),
+    );
     await inZero((client) => patchNotificationPreferences(client, userId, { problemsLevel: "all" }));
+    // Each pass fails at the provider with an ordinary error.
+    const unexpectedlyFailing: MailSyncAdapterFactory = {
+      createImapClient: async () => {
+        throw new Error("IMAP connection failed unexpectedly");
+      },
+    };
     const storage: BlobStorageWriter = {
       async writeStream() {
         throw new Error("Unexpected blob write");
@@ -263,13 +274,15 @@ describe("semp_problem notifications raised by raiseProblem (issue #1466)", () =
       },
     };
     for (let attempt = 1; attempt <= 4; attempt += 1) {
+      // Each pass runs once the backoff of the one before it ran out, as the sweep queues it.
+      await inZero((client) => elapseMailSyncBackoff(client, mailbox.id));
       await expect(
         runInTenant(tenantZero, () =>
-          handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, {}, moduleIds, storage, {
+          handleSyncMailAccountTask(pool, { mailboxItemId: mailbox.id }, unexpectedlyFailing, moduleIds, storage, {
             job: { id: `job-${attempt}` },
           }),
         ),
-      ).rejects.toThrow("has no stored credential");
+      ).rejects.toThrow("IMAP connection failed unexpectedly");
     }
     expect(await countInZero("SELECT count(*) FROM semp_problems WHERE source_id = $1", [mailbox.id])).toBe(1);
     expect(

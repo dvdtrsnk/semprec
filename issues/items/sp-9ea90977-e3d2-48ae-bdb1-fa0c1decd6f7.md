@@ -50,7 +50,7 @@ This issue introduces per-database grants for an agent's project and enforces th
 Decisions (record them in the ADR):
 - Default for an agent (decided by the product owner): only databases marked sensitive are denied by default. A sensitive database is denied for read and write unless the agent's project has a grant. Every non-sensitive database, system or user-created, stays allowed for read and write as today. A user can switch a user-created database off for a project (#1841); it is then denied like a sensitive database without a grant.
 - A grant row has access `none`, `read` or `write`; `write` includes `read`; `none` denies both. Without a row, a sensitive database has `none` and a user-created database has `write`; non-sensitive system databases are always allowed and never have a row. Grants apply to the run's project; a run without a project cannot call generic operations at all today.
-- Human and system writers are never checked here. An `/mcp` call with a human session is recorded as `writerKind: 'agent'` without `agentProjectItemId` (#1415); it is not checked against project grants here either. The check applies only when the writer carries an `agentProjectItemId` (an agent run or a run credential). The Inbox proposal computation is a system writer; it includes health data in its context only when the Semprec project has a grant (as #1987 implements).
+- Human and system writers are never checked here. An `/mcp` call with a human session is recorded as `writerKind: 'agent'` without `agentProjectItemId` (#1415); it is not checked against project grants here either. The check applies only when the writer carries an `agentProjectItemId` (an agent run or a run credential). The Inbox proposal computation is a system writer; it includes health data in its context only when the Alldots project has a grant (as #1987 implements).
 - A relation write needs `write` on both endpoint databases.
 - A refusal is a `ForbiddenError` with code `forbidden` and a message that carries no content of the item. An item that does not exist stays not found.
 - Who may grant: #1841. External AI clients using a human token on `/mcp` are denied sensitive databases by #1998, built on this check; in this issue human tokens behave as humans.
@@ -121,7 +121,7 @@ Load `state-writes`, `error-handling`, `adr-conventions`, `db-migrations` and `t
 
 Model tier rationale: This is a deliberate, scoped exception to an authorization boundary (read access without a grant) that must be tied exactly to one turn and to refs the user attached, so scope leaks or reuse across turns would silently weaken the grants.
 
-#1810 denies an agent access to sensitive databases, and to user-created databases the user switched off for the project, unless its project has a grant. A user who attaches a health record or a sleep night to a message to Semp has, by doing so, shown Semp that one object. #1682 validates and stores message refs, and #1733 expands refs into the turn context in `semprec-agents` (currently with direct tenant-scoped reads). The Semp agent must be able to read exactly the attached item during that turn, and not the rest of the database, not in later turns, and never write to it.
+#1810 denies an agent access to sensitive databases, and to user-created databases the user switched off for the project, unless its project has a grant. A user who attaches a health record or a sleep night to a message to Semp has, by doing so, shown Semp that one object. #1682 validates and stores message refs, and #1733 expands refs into the turn context in `alldots-agents` (currently with direct tenant-scoped reads). The Semp agent must be able to read exactly the attached item during that turn, and not the rest of the database, not in later turns, and never write to it.
 
 Builds on #1810, #1682 and #1733. #1853 builds on it for sleep night refs.
 
@@ -147,9 +147,9 @@ Load `state-writes`, `db-migrations`, `error-handling` and `testing`.
 - backend/packages/data/src/agentGrants/agentRunReadAllowancesStore.ts (new)
 - backend/packages/data/src/agentGrants/agentDatabaseAccess.ts
 - backend/packages/data/src/index.ts (new export line)
-- backend/services/semprec-agents/src/refExpansion.ts
-- backend/services/semprec-agents/src/agentRunTasks.ts (turn end cleanup hook, if the cleanup does not fit in the expander)
-- backend/services/semprec-agents/src/__tests__/ (new tests)
+- backend/services/alldots-agents/src/refExpansion.ts
+- backend/services/alldots-agents/src/agentRunTasks.ts (turn end cleanup hook, if the cleanup does not fit in the expander)
+- backend/services/alldots-agents/src/__tests__/ (new tests)
 - backend/packages/data/src/__tests__/ (new store and check tests)
 
 #### Scope
@@ -180,7 +180,7 @@ Load `state-writes`, `db-migrations`, `error-handling` and `testing`.
 
 Model tier rationale: This extends an authorization boundary to a second kind of caller on the MCP endpoint, so a missed read path or a wrongly classified caller leaks health data to an external model.
 
-`POST /mcp` (`backend/services/semprec-api/src/mcp/mcpHandler.ts`) derives its actor in one of two ways: a restricted run credential of a Semp agent run (`{ userId, runId, agentProjectItemId }`), or the verified human session or bearer identity from `authenticateRequest`, which today acts exactly like the user over REST (`{ userId }`). An external AI client (a desktop assistant, another agent framework) connected with the user's own token therefore reads every database the user can read, including health records and the sleep databases.
+`POST /mcp` (`backend/services/alldots-api/src/mcp/mcpHandler.ts`) derives its actor in one of two ways: a restricted run credential of a Semp agent run (`{ userId, runId, agentProjectItemId }`), or the verified human session or bearer identity from `authenticateRequest`, which today acts exactly like the user over REST (`{ userId }`). An external AI client (a desktop assistant, another agent framework) connected with the user's own token therefore reads every database the user can read, including health records and the sleep databases.
 
 #1808 marks databases as `sensitive` and #1810 enforces per-database access for agent actors inside the data layer, in the same transaction as the read or write. This issue applies the same default to the human-token branch of `/mcp`.
 
@@ -198,17 +198,17 @@ Load `state-writes`, `error-handling` and `testing`.
 2. In the access check of #1810 (`agentGrants/agentDatabaseAccess.ts`), treat an actor with `externalClient: true` like an agent without a project grant for sensitive databases: read and write of a database with `sensitive = true` are refused, every other database is allowed. The check runs in the same transaction as the read or write, on every path #1810 covers (item reads and writes, relation writes for both endpoints, `database.query`, `view.query`).
 3. `database.list`, `database.get` and the schema projection omit or refuse sensitive databases for such an actor, and relation targets in a sensitive database are returned as `{ id, hidden: true }`, as #1810 does for agents.
 4. Thread the actor from the gateway into the read paths where #1810 passes only the agent identity, if the marker does not already reach them.
-5. Tests: over `POST /mcp` with a human bearer token, `semprec.item.get` of a health record, `semprec.database.query` on `sleepNights` and an item create in Health records return 403 `forbidden`; the same token over REST `GET /api/items/:id` still returns the record; a non-sensitive system database and a user-created database stay readable over `/mcp`; `semprec.database.list` over `/mcp` omits the sensitive databases; a run credential keeps the behavior of #1810; no log line or error message carries item values.
+5. Tests: over `POST /mcp` with a human bearer token, `alldots.item.get` of a health record, `alldots.database.query` on `sleepNights` and an item create in Health records return 403 `forbidden`; the same token over REST `GET /api/items/:id` still returns the record; a non-sensitive system database and a user-created database stay readable over `/mcp`; `alldots.database.list` over `/mcp` omits the sensitive databases; a run credential keeps the behavior of #1810; no log line or error message carries item values.
 
 #### Touches
 
-- backend/services/semprec-api/src/mcp/mcpHandler.ts (actor marker in the human-token branch)
+- backend/services/alldots-api/src/mcp/mcpHandler.ts (actor marker in the human-token branch)
 - backend/packages/shared/src/genericOperations/port.ts (actor type, only if the actor type is declared there)
 - backend/packages/data/src/agentGrants/agentDatabaseAccess.ts
 - backend/packages/data/src/chokePoint/databaseOps.ts (database list and get for the marked actor)
 - backend/packages/data/src/manifest/schemaProjection.ts (filter for the marked actor)
 - backend/packages/application/src/genericApplicationService.ts (only if the marker is not passed through)
-- backend/services/semprec-api/src/__tests__/ (new `/mcp` sensitivity tests)
+- backend/services/alldots-api/src/__tests__/ (new `/mcp` sensitivity tests)
 
 #### Scope
 
@@ -225,7 +225,7 @@ Load `state-writes`, `error-handling` and `testing`.
 
 #### Acceptance criteria
 
-- When an external client with the user's bearer token calls `semprec.item.get` on a health record over `/mcp`, then the result is 403 `forbidden`.
+- When an external client with the user's bearer token calls `alldots.item.get` on a health record over `/mcp`, then the result is 403 `forbidden`.
 - When the same user reads the same record over REST, then it is returned unchanged.
 - When an external client lists databases over `/mcp`, then sensitive databases are absent and user-created databases are listed.
 - When an external client writes to a sensitive database over `/mcp`, then the result is 403 and nothing is written.
@@ -245,7 +245,7 @@ This issue classifies the page operations for agents, following the write policy
 - Every page operation carries capability `core.item.read` (reads) or `core.item.write` (writes), and approval metadata: `page.get` and `page.insert` run without approval; `page.replace` and any deletion require approval; the operations introduced by other issues (ensure, subpage create, duplicate, rename, restore, merge of duplicate journal entries) declare their metadata using the resolver added here.
 - Write permission equals the per-database write grant (#1810) on the database that owns the page: a page of an item, the item's own database; a subpage in Pages, the database of its root host item found through `parentItemId`; a Journal day, the Journal database. Reading follows the read grant. Databases flagged sensitive are denied by default; that default is enforced by #1810 and must apply here too.
 - The assistant's sprint-summary permission in a project's guidance (write to the journal) is the write grant on Journal for that project. System databases such as Journal are allowed unless a grant record restricts them (default allow, from the grants model).
-- Both the AgentTool and the MCP (`semprec.`-prefixed) exposure go through the same path.
+- Both the AgentTool and the MCP (`alldots.`-prefixed) exposure go through the same path.
 
 Decision: `page.replace` requires approval, also after version restore (#1617) exists, because it is a large destructive change.
 
@@ -256,7 +256,7 @@ Load `state-writes`, `error-handling`, `testing` and `canonical-keys`.
 1. Add `resolvePageOwnerDatabase(client, itemId)` in `docs/` or `application/` that returns the owning database by the three rules above (item page, subpage via `parentItemId` chain, Journal day), and use it from the page operations' agent authorization step.
 2. Extend `OPERATION_METADATA` (`capabilities.ts`) and `CAPABILITY_IDS` consumption so each page operation delivered by the blockers has its capability id and `requiresApproval` value; keep the compile-time exhaustiveness checks green.
 3. In `genericOperationGateway.ts` apply the per-database grant check to page operations for agent actors, with a 403 `forbidden` on a restricted database; a project without a grant record on a system database is allowed.
-4. Tests: page.get Markdown over notes of a project returns `[Release checklist](semprec://page/<id>)` links and block ids; a run whose project has Journal restricted to read gets 403 on a write to a day's page, and without a grant record the write passes; a subpage follows the grant on Projects; `page.replace` by an agent is held for approval while `page.insert` is not; a sensitive database is denied by default.
+4. Tests: page.get Markdown over notes of a project returns `[Release checklist](alldots://page/<id>)` links and block ids; a run whose project has Journal restricted to read gets 403 on a write to a day's page, and without a grant record the write passes; a subpage follows the grant on Projects; `page.replace` by an agent is held for approval while `page.insert` is not; a sensitive database is denied by default.
 
 #### Touches
 
@@ -283,7 +283,7 @@ Load `state-writes`, `error-handling`, `testing` and `canonical-keys`.
 
 #### Acceptance criteria
 
-- When `page.get` is called for an item whose page contains a subpage, then the Markdown contains `[title](semprec://page/<id>)` and the block ids.
+- When `page.get` is called for an item whose page contains a subpage, then the Markdown contains `[title](alldots://page/<id>)` and the block ids.
 - When a run of a project whose Journal grant is read-only writes to a day's page, then the response is 403 `forbidden`; without a grant record the write succeeds.
 - When an agent calls `page.replace` without approval, then it is held for approval; `page.insert` is not.
 - A subpage of a Pages item writes under the grant on the root host's database.
@@ -396,7 +396,7 @@ Load `state-writes`, `error-handling`, `canonical-keys` and `testing`.
 
 Model tier rationale: One new variant added to an existing closed ref schema, its date validation and one expander branch over a pure resolver, with existing ref-validation and expansion fixtures; the access rules come from blocking issues.
 
-A user can attach an object to a message to Semp, and Semp receives a reference and reads the object itself. The ref schema is the closed union defined by #1369; refs are validated and stored by the message endpoint (#1682, on the route of #1620); and before the model prompt of a turn, `semprec-agents` expands every ref into a context block (#1733). A night of sleep is not an item: it is the plan of a wake day merged with an optional exception, resolved by #1792, so it needs its own virtual ref kind. A sleep plan is a normal item and uses the existing `item` ref.
+A user can attach an object to a message to Semp, and Semp receives a reference and reads the object itself. The ref schema is the closed union defined by #1369; refs are validated and stored by the message endpoint (#1682, on the route of #1620); and before the model prompt of a turn, `alldots-agents` expands every ref into a context block (#1733). A night of sleep is not an item: it is the plan of a wake day merged with an optional exception, resolved by #1792, so it needs its own virtual ref kind. A sleep plan is a normal item and uses the existing `item` ref.
 
 This issue adds the `sleepNight` ref: the user drags the night strip of the calendar, the night circle or the bedtime-reminder marker onto Semp, and the agent gets the resolved night, its plan and its exception. The sleep databases are sensitive (#1808) and a run reads them only with a database grant (#1810); a ref the user attaches in the message can grant a one-run read of the referenced data (#1849).
 
@@ -411,7 +411,7 @@ Load `io-hardening`, `error-handling`, `canonical-keys` and `testing`.
 
 1. In the shared message-ref module (`backend/packages/shared/src/sempMessageRef.ts`, #1369) add the strict variant `{ kind: "sleepNight", night }` where `night` must be a real calendar date `YYYY-MM-DD` (`2026-13-01` is invalid), include it in the list of kinds, and make `messageRefKey` return the identity `sleepNight:<night>`.
 2. In the message endpoint's ref validation (#1682) accept the variant with no existence check (the ref is virtual); an invalid date is a 400 with `field` `context[i]`.
-3. In `backend/services/semprec-agents/src/refExpansion.ts` (#1733) add a `sleepNight` branch: call `loadSleepNights` (#1809) for that single date in the turn's tenant scope and render one section: the night, the plan name, bedtime, wake time, alarm, whether it differs from the plan (`changed`), the duration, the bedtime-reminder time, and the plan and exception item ids so the agent can edit them. When there is no plan and no exception, render "no sleep planned for this night". Apply the per-ref size cap of the expander.
+3. In `backend/services/alldots-agents/src/refExpansion.ts` (#1733) add a `sleepNight` branch: call `loadSleepNights` (#1809) for that single date in the turn's tenant scope and render one section: the night, the plan name, bedtime, wake time, alarm, whether it differs from the plan (`changed`), the duration, the bedtime-reminder time, and the plan and exception item ids so the agent can edit them. When there is no plan and no exception, render "no sleep planned for this night". Apply the per-ref size cap of the expander.
 4. Apply the access rule above: a run without grant and without the one-run access of #1849 renders the section as unavailable and expands nothing from the sleep databases.
 5. Tests: the shared schema accepts a valid night and rejects an invalid date and extra fields; two equal refs share one identity; the endpoint returns 400 `context[i]` for `2026-13-01`; expansion of `2026-10-16` with the weekend plan produces 00:00 to 08:30, weekend plan, no alarm; with a grant the sleep data is read; without a grant and without the one-run access the section is unavailable; no expanded text appears in `agent_runs.task` or run events.
 
@@ -420,8 +420,8 @@ Load `io-hardening`, `error-handling`, `canonical-keys` and `testing`.
 - backend/packages/shared/src/sempMessageRef.ts (new variant)
 - backend/packages/shared/src/__tests__/sempMessageRef.unit.test.ts
 - the ref validation of the Semp message endpoint introduced by #1682 (accept the variant)
-- backend/services/semprec-agents/src/refExpansion.ts (sleepNight branch)
-- backend/services/semprec-agents/src/__tests__/refExpansion.unit.test.ts
+- backend/services/alldots-agents/src/refExpansion.ts (sleepNight branch)
+- backend/services/alldots-agents/src/__tests__/refExpansion.unit.test.ts
 - the one-run read access of #1849 (one added kind)
 
 #### Scope
@@ -603,16 +603,16 @@ Load `error-handling` and `testing`.
 - backend/packages/data/src/agentGrants/agentRunReadAllowancesStore.ts (new)
 - backend/packages/data/src/agentGrants/agentDatabaseAccess.ts
 - backend/packages/data/src/index.ts (new export line)
-- backend/services/semprec-agents/src/refExpansion.ts
-- backend/services/semprec-agents/src/agentRunTasks.ts (turn end cleanup hook, if the cleanup does not fit in the expander)
-- backend/services/semprec-agents/src/__tests__/ (new tests)
+- backend/services/alldots-agents/src/refExpansion.ts
+- backend/services/alldots-agents/src/agentRunTasks.ts (turn end cleanup hook, if the cleanup does not fit in the expander)
+- backend/services/alldots-agents/src/__tests__/ (new tests)
 - backend/packages/data/src/__tests__/ (new store and check tests)
-- backend/services/semprec-api/src/mcp/mcpHandler.ts (actor marker in the human-token branch)
+- backend/services/alldots-api/src/mcp/mcpHandler.ts (actor marker in the human-token branch)
 - backend/packages/shared/src/genericOperations/port.ts (actor type, only if the actor type is declared there)
 - backend/packages/data/src/chokePoint/databaseOps.ts (database list and get for the marked actor)
 - backend/packages/data/src/manifest/schemaProjection.ts (filter for the marked actor)
 - backend/packages/application/src/genericApplicationService.ts (only if the marker is not passed through)
-- backend/services/semprec-api/src/__tests__/ (new `/mcp` sensitivity tests)
+- backend/services/alldots-api/src/__tests__/ (new `/mcp` sensitivity tests)
 - backend/packages/shared/src/genericOperations/capabilities.ts
 - backend/packages/shared/src/genericOperations/bindings.ts
 - backend/packages/application/src/genericOperationGateway.ts
@@ -629,8 +629,8 @@ Load `error-handling` and `testing`.
 - backend/packages/shared/src/sempMessageRef.ts (new variant)
 - backend/packages/shared/src/__tests__/sempMessageRef.unit.test.ts
 - the ref validation of the Semp message endpoint introduced by #1682 (accept the variant)
-- backend/services/semprec-agents/src/refExpansion.ts (sleepNight branch)
-- backend/services/semprec-agents/src/__tests__/refExpansion.unit.test.ts
+- backend/services/alldots-agents/src/refExpansion.ts (sleepNight branch)
+- backend/services/alldots-agents/src/__tests__/refExpansion.unit.test.ts
 - the one-run read access of #1849 (one added kind)
 - backend/packages/data/src/calendar/timelineBirthdaySource.ts (new)
 - backend/packages/data/src/calendar/timelineSources.ts (one registered source)

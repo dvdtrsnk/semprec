@@ -2,9 +2,10 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The calendars sheet: the calendars grouped by where they come from, each shown or hidden with one tap, and the
-/// settings of one calendar on a page inside the sheet, opened by the shared state's `detailId`. The sheet sits in the
-/// app's navigation stack and closes itself.
+/// The calendars sheet: the calendars grouped by where they come from, those of internet accounts under their account,
+/// each shown or hidden with one tap, and the settings of one calendar on a page inside the sheet, opened by the shared
+/// state's `detailId`. Pulling the list refreshes it and asks for the accounts' calendars to be synced. The sheet sits
+/// in the app's navigation stack and closes itself.
 struct CalendarListScreen: View {
 
     // MARK: - Dependencies
@@ -87,6 +88,7 @@ private extension CalendarListScreen {
     var list: some View {
         List {
             group(.own, title: Text("calendars.group.own", tableName: "Sheets", bundle: .module))
+            ForEach(state.accounts) { accountSection($0) }
             group(.system, title: Text("calendars.group.system", tableName: "Sheets", bundle: .module))
             group(.subscription, title: Text("calendars.group.subscription", tableName: "Sheets", bundle: .module))
             Section {
@@ -104,6 +106,7 @@ private extension CalendarListScreen {
                 Text("calendars.footer", tableName: "Sheets", bundle: .module)
             }
         }
+        .refreshable { send(.refresh) }
     }
 
     /// Adds a calendar with a default name; the shared ViewModel opens its settings once it exists.
@@ -123,6 +126,18 @@ private extension CalendarListScreen {
         }
     }
 
+    @ViewBuilder
+    func accountSection(_ account: CalendarAccountSection) -> some View {
+        let rows = state.calendars.filter { $0.group == .account && $0.accountId == account.id }
+        if !rows.isEmpty {
+            Section {
+                ForEach(rows) { CalendarListRow(calendar: $0, send: send) }
+            } header: {
+                CalendarAccountHeader(account: account)
+            }
+        }
+    }
+
     var title: Text {
         guard let detail else { return Text("calendars.title", tableName: "Sheets", bundle: .module) }
         guard detail.canRename else { return Text(detail.name) }
@@ -131,7 +146,7 @@ private extension CalendarListScreen {
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
         if detail == nil {
-            ToolbarItem(placement: .navigation) {
+            PlainToolbarItem(placement: .navigation) {
                 toggleAllButton
             }
             ToolbarItem(placement: .confirmationAction) {
@@ -139,7 +154,7 @@ private extension CalendarListScreen {
                     .accessibilityIdentifier(CalendarSheetIdentifiers.calendarsDone)
             }
         } else {
-            ToolbarItem(placement: .navigation) {
+            PlainToolbarItem(placement: .navigation) {
                 Button { send(.closeDetail) } label: {
                     Label {
                         Text("calendars.detail.back", tableName: "Sheets", bundle: .module)
@@ -196,6 +211,17 @@ private extension CalendarListScreen {
         CalendarListScreen(
             viewModel: CalendarListViewModel(
                 model: ScriptedCalendarListScreenModel(state: .previewList),
+                router: PreviewCalendarRouter()
+            )
+        )
+    }
+}
+
+#Preview("Accounts") {
+    NavigationStack {
+        CalendarListScreen(
+            viewModel: CalendarListViewModel(
+                model: ScriptedCalendarListScreenModel(state: .previewAccounts),
                 router: PreviewCalendarRouter()
             )
         )

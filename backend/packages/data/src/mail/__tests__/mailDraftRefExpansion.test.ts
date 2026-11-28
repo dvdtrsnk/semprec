@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { createViewTypeRegistry } from "../../chokePoint/viewTypeRegistry.js";
@@ -138,6 +138,8 @@ function receivedMessage(t: MailTenant): Promise<string> {
       return rows[0].id;
     };
     const { itemId } = await ingestEmailMessage(client, {
+      arrival: "live",
+      contentState: "full",
       emailsDatabaseId: ids.emailsDatabaseId,
       filesDatabaseId: ids.filesDatabaseId,
       folderRelationPropertyId: await property("folder"),
@@ -175,12 +177,12 @@ describe("the context of an item ref to a mail draft (issue gh-1948)", () => {
   beforeAll(async () => {
     admin = getTestPool();
     await resetDatabase(admin);
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );
     expect(role.rows).toEqual([{ rolsuper: false, rolbypassrls: false }]);
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-draft-ref-"));
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-draft-ref-"));
     tenant = await seededTenant();
     other = await seededTenant();
   });

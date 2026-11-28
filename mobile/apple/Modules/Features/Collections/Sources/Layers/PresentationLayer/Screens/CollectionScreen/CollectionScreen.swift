@@ -3,8 +3,9 @@ import DesignSystem
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// One collection of any database: a list, gallery or board of its items with search, quick filters, order and a
-/// filter sheet. Projects, People, Companies, Events and Files are this screen over different targets.
+/// One collection of any database: a list, gallery or board of its items with search, quick filters, order, a
+/// filter sheet and, where the database declares one, a bar of chips above the items. Projects, People, Companies,
+/// Events and Files are this screen over different targets.
 struct CollectionScreen: View {
 
     // MARK: - Dependencies
@@ -53,6 +54,13 @@ private extension CollectionScreen {
     var loaded: some View {
         let state = viewModel.state
         return items(state)
+            // A safe area bar joins the navigation bar and its scroll edge effect; an inset with a background of its
+            // own reached under the bar as an opaque slab and the edge effect hid its chips.
+            .safeAreaBar(edge: .top, spacing: 0) {
+                if let bar = state.facetBar {
+                    CollectionFacetBarView(bar: bar, send: viewModel.send)
+                }
+            }
             .searchable(
                 text: $query,
                 placement: Self.searchPlacement,
@@ -135,11 +143,11 @@ private extension CollectionScreen {
     @ToolbarContentBuilder
     func toolbar(_ state: CollectionState) -> some ToolbarContent {
         if state.header != nil || !state.quickFilters.isEmpty {
-            ToolbarItem(placement: .primaryAction) {
+            PlainToolbarItem(placement: .primaryAction) {
                 CollectionFilterMenu(state: state, send: viewModel.send)
             }
         }
-        ToolbarItem(placement: .primaryAction) {
+        PlainToolbarItem(placement: .primaryAction) {
             Menu {
                 if state.layouts.count > 1 {
                     Picker(selection: layoutBinding(state)) {
@@ -166,7 +174,7 @@ private extension CollectionScreen {
             .accessibilityIdentifier(CollectionsIdentifiers.layoutMenu)
         }
         if state.canCreate || state.canUpload {
-            ToolbarItem(placement: .primaryAction) {
+            PlainToolbarItem(placement: .primaryAction) {
                 addButton(state)
             }
         }

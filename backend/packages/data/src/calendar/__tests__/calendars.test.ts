@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
@@ -105,7 +105,7 @@ async function calendarEdges(tenantId: string): Promise<Array<[string, string]>>
 describe("calendars system database (issue #1600)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -166,6 +166,7 @@ describe("calendars system database (issue #1600)", () => {
       [calendarsId, eventsId],
     );
     expect(rows.map((row) => [row.database, row.key, row.type, row.owner, row.owner_process])).toEqual([
+      ["calendars", "account", "relation", "system", "calendar"],
       ["calendars", "color", "color", "user", null],
       ["calendars", "events", "relation", "user", null],
       ["calendars", "hidden", "checkbox", "user", null],
@@ -173,6 +174,9 @@ describe("calendars system database (issue #1600)", () => {
       ["calendars", "kind", "select", "system", "calendar"],
       ["calendars", "name", "title", "user", null],
       ["calendars", "notify", "checkbox", "user", null],
+      ["calendars", "readOnly", "checkbox", "system", "calendar"],
+      ["calendars", "remoteColor", "color", "system", "calendar"],
+      ["calendars", "remoteName", "text", "system", "calendar"],
       ["calendars", "subscribedEvents", "relation", "system", "calendar"],
       ["calendars", "subscriptionUrl", "url", "user", null],
       ["calendars", "systemKey", "text", "system", "calendar"],
@@ -204,7 +208,15 @@ describe("calendars system database (issue #1600)", () => {
     );
     const subscribedEventsId = await databaseId(tenantId, SUBSCRIBED_EVENTS_MODULE_ID);
     if (!subscribedEventsId) throw new Error("Seeded tenant has no subscribed events database");
+    const mailboxesId = await databaseId(tenantId, "mailboxes");
     expect(definitions).toEqual([
+      {
+        cardinality: "one_to_many",
+        a_database: mailboxesId,
+        a_key: "calendars",
+        b_database: calendarsId,
+        b_key: "account",
+      },
       { cardinality: "one_to_many", a_database: calendarsId, a_key: "events", b_database: eventsId, b_key: "calendar" },
       {
         cardinality: "one_to_many",

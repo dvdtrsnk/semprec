@@ -1,6 +1,6 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -65,7 +65,7 @@ async function waitForTransactionWaiter(): Promise<void> {
 describe("duplicate a calendar item (issue gh-1796)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -420,10 +420,9 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
   it("skips a relation the database does not have and an edge to a person in the Trash", () =>
     runInTenant(tenant, async () => {
       const f = await setup();
-      // Events and Tasks databases without the whitelisted `area` and `files` relations. The schema lock refuses the
+      // Events and Tasks databases without the whitelisted `files` relation. The schema lock refuses the
       // API, so it is lifted with raw SQL first; deleting a relation property also deletes its inverse.
       await admin.query(`UPDATE databases SET schema_locked = false WHERE system`);
-      await f.cp.deleteProperty((await f.property("events", "area")).id);
       await f.cp.deleteProperty((await f.property("events", "files")).id);
       await f.cp.deleteProperty((await f.property("tasks", "files")).id);
       const meeting = await f.eventIn("Work", MEETING);
@@ -441,20 +440,16 @@ describe("duplicate a calendar item (issue gh-1796)", () => {
       expect((await f.edgeMetadata(taskCopy.item.id, "people")).map((entry) => entry.targetItemId)).toEqual([live]);
     }));
 
-  it("copies the area and file edges of an Event", () =>
+  it("copies the file edges of an Event", () =>
     runInTenant(tenant, async () => {
       const f = await setup();
       const meeting = await f.eventIn("Work", MEETING);
-      const area = await f.create("areas", { name: "Clients" });
       const file = await f.create("files", { name: "agenda.pdf" });
-      await f.link("events", "area", meeting, area);
       await f.link("events", "files", meeting, file);
 
       const result = await duplicate(meeting, { date: "2026-10-19" });
 
-      expect(await f.edgesOf(result.item.id)).toEqual(
-        [`area:${area}`, `files:${file}`, `calendar:${f.calendar("Work")}`].sort(),
-      );
+      expect(await f.edgesOf(result.item.id)).toEqual([`files:${file}`, `calendar:${f.calendar("Work")}`].sort());
     }));
 
   it("links the participants of an Event copy without their invitations and keeps the organizer role", () =>

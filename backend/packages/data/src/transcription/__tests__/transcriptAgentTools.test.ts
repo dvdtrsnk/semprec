@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { setAgentDatabaseGrant } from "../../agentGrants/agentDatabaseGrantsAdminStore.js";
 import type { AgentDatabaseAccess } from "../../agentGrants/agentDatabaseGrantsStore.js";
 import { allowItemsForTurn } from "../../agentGrants/agentRunReadAllowancesStore.js";
@@ -95,7 +95,7 @@ const segmentResultSchema = z.object({
 describe("transcript read tools for Semp (issue #1832)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {

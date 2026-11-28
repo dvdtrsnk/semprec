@@ -7,7 +7,7 @@ import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import type { ItemRow } from "../types.js";
 import { occurrenceDatesInRange } from "./nextDueDate.js";
 import { parseTaskRecurrenceRule, TASK_RECURRENCE_MODES } from "./taskRecurrenceRule.js";
-import { parseTaskRecurrenceTemplate, publicTaskRecurrenceTemplate } from "./taskRecurrenceStore.js";
+import { parseTaskRecurrenceTemplate } from "./taskRecurrenceStore.js";
 
 /** Longest range, in days with both ends counted. */
 const MAX_RANGE_DAYS = 400;
@@ -57,10 +57,9 @@ function requireCalendarDate(value: string, field: keyof ProjectTaskOccurrencesI
 
 /**
  * Projects every recurring series over `[from, to]`. For each rule date in range and not before `anchor_date`,
- * returns the non-deleted materialized item, else a virtual occurrence from the template (without legacy
- * `persistent`) plus `date` and `status` (`missed` before `today`, else `notDone`). The anchor bounds virtual dates
- * only: materialized occurrences in range are always returned. An inactive series projects nothing after its last
- * materialized occurrence.
+ * returns the non-deleted materialized item, else a virtual occurrence from the template plus `date` and `status`
+ * (`missed` before `today`, else `notDone`). The anchor bounds virtual dates only: materialized occurrences in range
+ * are always returned. An inactive series projects nothing after its last materialized occurrence.
  *
  * At most two queries whatever the range. Ranges over 400 days, inverted ranges and non-dates are a
  * `ValidationError`. Writes nothing.
@@ -146,9 +145,8 @@ export async function projectTaskOccurrences(
         id,
         seriesId: entry.seriesId,
         occurrenceDate: date,
-        // The legacy `persistent` template field is no Tasks property.
         properties: {
-          ...publicTaskRecurrenceTemplate(entry.template),
+          ...entry.template,
           date,
           status: date < input.today ? "missed" : "notDone",
         },

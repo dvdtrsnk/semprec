@@ -85,7 +85,7 @@ async function twoTenants(client: PoolClient): Promise<{ tenantA: string; tenant
   const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ('active') RETURNING id");
   const tenantB = rows[0]?.id;
   if (!tenantB) throw new Error("second tenant was not inserted");
-  await client.query("SET LOCAL ROLE semprec_data");
+  await client.query("SET LOCAL ROLE alldots_data");
   return { tenantA: getTenantZeroId(), tenantB };
 }
 
@@ -182,6 +182,8 @@ describe("blobs are stored and deduplicated per tenant", () => {
     const result = await inTenantZero(() =>
       withTransaction(pool, (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: ids.filesDatabaseId,
           folderRelationPropertyId: folderProperty.id,
@@ -273,7 +275,7 @@ describe("blobs are stored and deduplicated per tenant", () => {
         { id: blobA.id, tenant_id: tenantA },
         { id: blobB.id, tenant_id: tenantB },
       ]);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
 
       await useTenant(client, tenantA);
       expect(await getBlobByContentHash(client, hash)).toEqual(blobA);
@@ -283,7 +285,7 @@ describe("blobs are stored and deduplicated per tenant", () => {
   });
 
   it("still serves a legacy blob whose storage key has no tenant prefix", async () => {
-    tmpBlobDir = await mkdtemp(join(tmpdir(), "semprec-blobs-per-tenant-"));
+    tmpBlobDir = await mkdtemp(join(tmpdir(), "alldots-blobs-per-tenant-"));
     const storage = new LocalFsBlobStorageWriter(tmpBlobDir);
     const legacyKey = `files/${randomUUID()}-legacy.pdf`;
     await storage.writeStream(legacyKey, Readable.from(Buffer.from("legacy-bytes")));

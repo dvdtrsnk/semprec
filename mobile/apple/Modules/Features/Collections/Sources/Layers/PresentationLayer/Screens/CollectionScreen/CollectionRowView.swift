@@ -77,10 +77,10 @@ struct StatusPill: View {
         CollectionRowView(
             row: CollectionRow(
                 id: "p1",
-                title: "Semprec iOS",
+                title: "Alldots iOS",
                 group: FieldOption(key: "inProgress", label: "In progress", color: "#007AFF"),
                 date: "2027-01-31",
-                subtitle: [.targets([FieldTarget(id: "a", databaseKey: "areas", title: "Work", color: nil)])],
+                subtitle: [.targets([FieldTarget(id: "c", databaseKey: "companies", title: "Novák Web", color: nil)])],
                 fileType: nil
             ),
             appearance: CollectionAppearance(databaseKey: "projects", color: "#AF52DE"),

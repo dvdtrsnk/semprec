@@ -1,5 +1,5 @@
 import "../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import type { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -7,6 +7,7 @@ import { updateItemWithClient } from "../chokePoint/itemWrites.js";
 import { withTransaction } from "../db/pool.js";
 import { ensureMailAccountSyncState, recordGmailActivity, recordSyncError } from "../mail/mailAccountSyncStateStore.js";
 import { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
+import { upsertMailMessageMeta } from "../mail/mailMessageMetaStore.js";
 import { createMailboxDetailRouteHandler, createMailboxListRouteHandler } from "../mail/mailboxRouteHandlers.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { createRuntimeRolePool, createTestTenant, getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -18,7 +19,7 @@ let foreign: string;
 describe("mailbox routes", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify mailbox role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -66,8 +67,8 @@ describe("mailbox routes", () => {
         await ensureMailAccountSyncState(client, { itemId: id, syncMode: "gmail_api" });
         await recordGmailActivity(client, {
           itemId: id,
-          historyId: "1",
           nextExpectedActivityAt: new Date("2030-01-01T00:00:00Z"),
+          completesInitialSync: true,
         });
       });
       const before = (await detail({ params: { id } })).body.lastSuccessfulSyncAt;
@@ -87,6 +88,49 @@ describe("mailbox routes", () => {
       expect(after.initialSyncInProgress).toBe(false);
       expect(after.reason).toBe("other");
       expect(JSON.stringify(after)).not.toContain("secret provider text");
+    });
+  });
+  it("counts the messages a mailbox has downloaded while its first sync runs, and no longer once it is done", async () => {
+    await runInTenant(tenant, async () => {
+      const id = await createMailbox();
+      const other = await createMailbox();
+      const cp = createChokePoint(runtime);
+      const emails = (await cp.listDatabases()).find((d) => d.ownerModuleId === "emails");
+      if (!emails) throw new Error("Missing emails database");
+      const ingest = async (mailboxItemId: string, messageId: string) => {
+        const email = await cp.createItem({ databaseId: emails.id, properties: {} });
+        await withTransaction(runtime, (client) =>
+          upsertMailMessageMeta(client, {
+            arrival: "live",
+            contentState: "full",
+            itemId: email.id,
+            mailboxItemId,
+            messageId,
+            envelope: {},
+          }),
+        );
+      };
+      await ingest(id, "<one@example.test>");
+      await ingest(id, "<two@example.test>");
+      await ingest(other, "<three@example.test>");
+      await withTransaction(runtime, (client) => ensureMailAccountSyncState(client, { itemId: id, syncMode: "imap" }));
+      const detail = createMailboxDetailRouteHandler(runtime);
+
+      expect((await detail({ params: { id } })).body).toMatchObject({
+        initialSyncInProgress: true,
+        syncedMessageCount: 2,
+      });
+      await withTransaction(runtime, (client) =>
+        recordGmailActivity(client, {
+          itemId: id,
+          nextExpectedActivityAt: new Date("2030-01-01"),
+          completesInitialSync: true,
+        }),
+      );
+      expect((await detail({ params: { id } })).body).toMatchObject({
+        initialSyncInProgress: false,
+        syncedMessageCount: null,
+      });
     });
   });
   it("reports Graph mode and excludes deleted mailboxes", async () => {

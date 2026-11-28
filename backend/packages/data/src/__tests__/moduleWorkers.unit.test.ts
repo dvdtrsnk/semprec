@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ModuleRegistry, ModuleWorkerProjection } from "@semprec/module-registry";
+import type { ModuleRegistry, ModuleWorkerProjection } from "@alldots/module-registry";
 import {
   createModuleWorkerInstanceReconciler,
   deriveDesiredWorkerInstances,
@@ -15,23 +15,23 @@ function fakeRegistry(workers: ModuleWorkerProjection[]): ModuleRegistry {
 
 const mailSyncWorker: ModuleWorkerProjection = {
   moduleId: "mail-sync",
-  name: "semprec-mailsync",
+  name: "alldots-mailsync",
   handlerExport: "runMailSyncWorker",
 };
 
 const singletonWorker: ModuleWorkerProjection = {
   moduleId: "library",
-  name: "semprec-library",
+  name: "alldots-library",
   handlerExport: "runLibraryWorker",
 };
 
 describe("workerInstanceId", () => {
   it("is just the worker name for a singleton", () => {
-    expect(workerInstanceId({ workerName: "semprec-library", rowId: null })).toBe("semprec-library");
+    expect(workerInstanceId({ workerName: "alldots-library", rowId: null })).toBe("alldots-library");
   });
 
   it("suffixes the worker name with the row id for a per-row instance", () => {
-    expect(workerInstanceId({ workerName: "semprec-mailsync", rowId: "mailbox-1" })).toBe("semprec-mailsync@mailbox-1");
+    expect(workerInstanceId({ workerName: "alldots-mailsync", rowId: "mailbox-1" })).toBe("alldots-mailsync@mailbox-1");
   });
 });
 
@@ -42,10 +42,10 @@ describe("deriveDesiredWorkerInstances", () => {
 
     const desired = await deriveDesiredWorkerInstances(registry, getActiveRowIds);
 
-    expect([...desired.keys()].sort()).toEqual(["semprec-mailsync@mailbox-1", "semprec-mailsync@mailbox-2"]);
-    expect(desired.get("semprec-mailsync@mailbox-1")).toEqual({
+    expect([...desired.keys()].sort()).toEqual(["alldots-mailsync@mailbox-1", "alldots-mailsync@mailbox-2"]);
+    expect(desired.get("alldots-mailsync@mailbox-1")).toEqual({
       moduleId: "mail-sync",
-      workerName: "semprec-mailsync",
+      workerName: "alldots-mailsync",
       handlerExport: "runMailSyncWorker",
       rowId: "mailbox-1",
     });
@@ -57,10 +57,10 @@ describe("deriveDesiredWorkerInstances", () => {
 
     const desired = await deriveDesiredWorkerInstances(registry, getActiveRowIds);
 
-    expect([...desired.keys()]).toEqual(["semprec-library"]);
-    expect(desired.get("semprec-library")).toEqual({
+    expect([...desired.keys()]).toEqual(["alldots-library"]);
+    expect(desired.get("alldots-library")).toEqual({
       moduleId: "library",
-      workerName: "semprec-library",
+      workerName: "alldots-library",
       handlerExport: "runLibraryWorker",
       rowId: null,
     });
@@ -87,11 +87,11 @@ describe("deriveDesiredWorkerInstances", () => {
   it("scopes row sources per worker, mixing singleton and per-row workers", async () => {
     const registry = fakeRegistry([mailSyncWorker, singletonWorker]);
     const getActiveRowIds: WorkerActiveRowIdsSource = async (worker) =>
-      worker.name === "semprec-mailsync" ? ["mailbox-1"] : null;
+      worker.name === "alldots-mailsync" ? ["mailbox-1"] : null;
 
     const desired = await deriveDesiredWorkerInstances(registry, getActiveRowIds);
 
-    expect([...desired.keys()].sort()).toEqual(["semprec-library", "semprec-mailsync@mailbox-1"]);
+    expect([...desired.keys()].sort()).toEqual(["alldots-library", "alldots-mailsync@mailbox-1"]);
   });
 });
 
@@ -121,12 +121,12 @@ describe("createModuleWorkerInstanceReconciler", () => {
     const reconciler = createModuleWorkerInstanceReconciler(registry, () => rowIds, supervisor);
 
     await reconciler.reconcileOnce();
-    expect(supervisor.started.map((i) => i.id)).toEqual(["semprec-mailsync@mailbox-1"]);
-    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["semprec-mailsync@mailbox-1"]));
+    expect(supervisor.started.map((i) => i.id)).toEqual(["alldots-mailsync@mailbox-1"]);
+    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["alldots-mailsync@mailbox-1"]));
 
     rowIds = ["mailbox-1", "mailbox-2"];
     await reconciler.reconcileOnce();
-    expect(supervisor.started.map((i) => i.id)).toEqual(["semprec-mailsync@mailbox-1", "semprec-mailsync@mailbox-2"]);
+    expect(supervisor.started.map((i) => i.id)).toEqual(["alldots-mailsync@mailbox-1", "alldots-mailsync@mailbox-2"]);
     expect(supervisor.stopped).toEqual([]);
   });
 
@@ -140,8 +140,8 @@ describe("createModuleWorkerInstanceReconciler", () => {
     rowIds = ["mailbox-1"];
     await reconciler.reconcileOnce();
 
-    expect(supervisor.stopped.map((i) => i.id)).toEqual(["semprec-mailsync@mailbox-2"]);
-    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["semprec-mailsync@mailbox-1"]));
+    expect(supervisor.stopped.map((i) => i.id)).toEqual(["alldots-mailsync@mailbox-2"]);
+    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["alldots-mailsync@mailbox-1"]));
   });
 
   it("is idempotent: reconciling twice against an unchanged desired set issues no further calls", async () => {
@@ -166,7 +166,7 @@ describe("createModuleWorkerInstanceReconciler", () => {
     workers = [];
     await reconciler.reconcileOnce();
 
-    expect(supervisor.stopped.map((i) => i.id)).toEqual(["semprec-mailsync@mailbox-1"]);
+    expect(supervisor.stopped.map((i) => i.id)).toEqual(["alldots-mailsync@mailbox-1"]);
     expect(reconciler.getHostedInstanceIds().size).toBe(0);
   });
 
@@ -192,8 +192,8 @@ describe("createModuleWorkerInstanceReconciler", () => {
     await first;
     await second;
 
-    expect(started.map((i) => i.id)).toEqual(["semprec-mailsync@mailbox-1"]);
-    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["semprec-mailsync@mailbox-1"]));
+    expect(started.map((i) => i.id)).toEqual(["alldots-mailsync@mailbox-1"]);
+    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["alldots-mailsync@mailbox-1"]));
   });
 
   it("rejects only the failing call's promise, and still runs and resolves the overlapping call's own pass", async () => {
@@ -216,7 +216,7 @@ describe("createModuleWorkerInstanceReconciler", () => {
     await expect(first).rejects.toBe(error);
     await expect(second).resolves.toBeUndefined();
 
-    expect(supervisor.started.map((i) => i.id)).toEqual(["semprec-mailsync@mailbox-1"]);
-    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["semprec-mailsync@mailbox-1"]));
+    expect(supervisor.started.map((i) => i.id)).toEqual(["alldots-mailsync@mailbox-1"]);
+    expect(reconciler.getHostedInstanceIds()).toEqual(new Set(["alldots-mailsync@mailbox-1"]));
   });
 });

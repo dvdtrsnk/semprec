@@ -54,13 +54,17 @@ jobs:
     # returns in minutes, and a non-Relay review finishes well inside it.
     timeout-minutes: 150
     steps:
-      - name: Checkout semprec
+      - name: Checkout alldots
         uses: actions/checkout@v4
         with:
           # Deliberately review the PR head in both trigger modes, rather than the
           # pull_request merge ref. The bot gets changed files from the PR API and
           # anchors its Check Run to that head, so agents must read the same tree.
           ref: ${{ github.event.pull_request.head.sha || format('refs/pull/{0}/head', inputs.pull_request) }}
+          # The bot reads the approved issue specification from the PR base commit
+          # (`git ls-tree <base> -- issues/...`); a depth-1 checkout of the head
+          # does not contain the base, and the review then fails before it starts.
+          fetch-depth: 0
 
       - name: Read owner review policy
         id: policy
@@ -134,7 +138,7 @@ jobs:
           repository: dvdtrsnk/code-review-bot
           # The code-review Check Run is required on `develop`; keep its producer
           # stable so a bot default-branch change cannot rename that context.
-          ref: eeb88558a9b6d65b0fc06e624c69c32d2794e6df
+          ref: 77a70ad95e70ca31a69d55f6ecf3d819fa83ea48
           token: ${{ secrets.CODE_REVIEW_BOT_TOKEN }}
           path: .code-review-bot
 

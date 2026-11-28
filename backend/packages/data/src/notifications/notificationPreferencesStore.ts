@@ -16,6 +16,7 @@ export interface NotificationPreferences {
   badgeApprovals: boolean;
   badgeInvites: boolean;
   badgeInbox: boolean;
+  calendarChanges: boolean;
   updatedAt: string | null;
 }
 
@@ -31,6 +32,7 @@ const DEFAULT_VALUES: Omit<NotificationPreferences, "updatedAt"> = {
   badgeApprovals: true,
   badgeInvites: true,
   badgeInbox: false,
+  calendarChanges: true,
 };
 
 interface NotificationPreferencesDbRow {
@@ -42,11 +44,12 @@ interface NotificationPreferencesDbRow {
   badge_approvals: boolean;
   badge_invites: boolean;
   badge_inbox: boolean;
+  calendar_changes: boolean;
   updated_at: Date;
 }
 
 const PREFERENCE_COLUMNS = `approvals, invites, reminders, problems_level, problems_summary,
-  badge_approvals, badge_invites, badge_inbox, updated_at`;
+  badge_approvals, badge_invites, badge_inbox, calendar_changes, updated_at`;
 
 function mapRow(row: NotificationPreferencesDbRow): NotificationPreferences {
   return {
@@ -58,6 +61,7 @@ function mapRow(row: NotificationPreferencesDbRow): NotificationPreferences {
     badgeApprovals: row.badge_approvals,
     badgeInvites: row.badge_invites,
     badgeInbox: row.badge_inbox,
+    calendarChanges: row.calendar_changes,
     updatedAt: row.updated_at.toISOString(),
   };
 }
@@ -98,6 +102,7 @@ export async function patchNotificationPreferences(
        badge_approvals = COALESCE($7::boolean, badge_approvals),
        badge_invites = COALESCE($8::boolean, badge_invites),
        badge_inbox = COALESCE($9::boolean, badge_inbox),
+       calendar_changes = COALESCE($10::boolean, calendar_changes),
        updated_at = now()
      WHERE user_id = $1
      RETURNING ${PREFERENCE_COLUMNS}`,
@@ -111,6 +116,7 @@ export async function patchNotificationPreferences(
       patch.badgeApprovals ?? null,
       patch.badgeInvites ?? null,
       patch.badgeInbox ?? null,
+      patch.calendarChanges ?? null,
     ],
   );
   requireAffectedRows(result, "notification preferences update");

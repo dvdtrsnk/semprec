@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { RISK_CLASSES, type RiskClass } from "@semprec/shared";
+import { RISK_CLASSES, type RiskClass } from "@alldots/shared";
 
 /**
  * The runtime a module task runs under: `'agents'` only for a handler that starts or continues an
- * agent session. Mirrors `@semprec/queue`'s `TaskAffinity`, kept local to avoid that dependency.
+ * agent session. Mirrors `@alldots/queue`'s `TaskAffinity`, kept local to avoid that dependency.
  */
 export const MODULE_TASK_AFFINITIES = ["api", "agents", "transcribe"] as const;
 export type ModuleTaskAffinity = (typeof MODULE_TASK_AFFINITIES)[number];
@@ -36,23 +36,6 @@ export interface ModuleRelatedOrderDescriptor {
   omit?: string[];
 }
 
-/** The slot of an area filter template that is replaced by the id of the area being filtered for. */
-export interface AreaFilterAreaValue {
-  areaValue: true;
-}
-
-/**
- * How one database's items are filtered by an area, declared as data: a filter-tree template with
- * `{ areaValue: true }` wherever the area id goes. A client substitutes the id and sends the tree as
- * an ordinary filter; `expandAreaFilter` in `@semprec/data` does the same on the server.
- */
-export type AreaFilterTemplate =
-  | { type: "relation_contains"; property: string; value: AreaFilterAreaValue }
-  | { type: "relation_path_contains"; path: [string, string]; value: AreaFilterAreaValue }
-  | { type: "relation_is_empty"; property: string }
-  | { type: "and"; nodes: AreaFilterTemplate[] }
-  | { type: "or"; nodes: AreaFilterTemplate[] };
-
 /** `defaultViewType` names the view type of the database's default view (e.g. Journal's `temporal-switcher`); absent means `"table"`. */
 export interface ModuleDatabaseDescriptor {
   key: string;
@@ -74,8 +57,6 @@ export interface ModuleDatabaseDescriptor {
   clientVisible?: boolean;
   /** Lets the user hide this database from the client overview; only `true` has an effect. */
   overviewHideable?: boolean;
-  /** How this database's items are filtered by an area; absent means the database is not area-filterable. */
-  areaFilter?: AreaFilterTemplate;
   /** The collection screen's quick-filter chips, in display order; absent means none. */
   quickFilters?: ModuleQuickFilterDescriptor[];
   /** The order a collection opens with when no chip sorts it. */
@@ -86,6 +67,12 @@ export interface ModuleDatabaseDescriptor {
   collectionFilter?: ModuleOpaqueFilter;
   /** The items a picker for this database offers by default; an opaque filter tree. */
   pickerFilter?: ModuleOpaqueFilter;
+  /**
+   * Key of the property whose values the collection screen shows as a bar of chips above its list;
+   * absent means no bar. The schema endpoint refuses to publish a key that is not a `select` or
+   * `multi_select` property of the database.
+   */
+  facetBarProperty?: string;
 }
 
 /**
@@ -163,7 +150,7 @@ export const CUSTOM_ROUTE_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as
 export type CustomRouteMethod = (typeof CUSTOM_ROUTE_METHODS)[number];
 
 /**
- * A custom route a module mounts into the flat `/api` namespace through the `semprec-api` REST
+ * A custom route a module mounts into the flat `/api` namespace through the `alldots-api` REST
  * adapter (shared auth, validation, status mapping and serialization). `path` is matched exactly,
  * with `:param` segments as path parameters; `handlerExport` names an export of the module file.
  */
@@ -173,6 +160,8 @@ export interface ModuleCustomRouteDescriptor {
   path: string;
   handlerExport: string;
   justification: CustomRouteJustification;
+  /** The largest request body the route reads, in bytes; the adapter's 1 MiB without it. */
+  maxBodyBytes?: number;
 }
 
 /** One end of a link rule: a property of a database. */
@@ -341,48 +330,6 @@ const moduleRelatedOrderSchema = z
     }
   });
 
-/** Bounds the template's nesting and fan-out; the declared trees are at most three levels deep. */
-const MAX_AREA_FILTER_DEPTH = 4;
-const MAX_AREA_FILTER_NODES_PER_LEVEL = 8;
-
-const areaFilterPropertyKey = z.string().min(1);
-const areaFilterAreaValueSchema = z.strictObject({ areaValue: z.literal(true) });
-
-/** Strict at every level, so a misspelled field is rejected; a `relation_path_contains` path is exactly two keys. */
-function buildAreaFilterTemplateSchema(remainingDepth: number): z.ZodType<AreaFilterTemplate> {
-  const relationContains = z.strictObject({
-    type: z.literal("relation_contains"),
-    property: areaFilterPropertyKey,
-    value: areaFilterAreaValueSchema,
-  });
-  const relationPathContains = z.strictObject({
-    type: z.literal("relation_path_contains"),
-    path: z.tuple([areaFilterPropertyKey, areaFilterPropertyKey]),
-    value: areaFilterAreaValueSchema,
-  });
-  const relationIsEmpty = z.strictObject({ type: z.literal("relation_is_empty"), property: areaFilterPropertyKey });
-  if (remainingDepth <= 1) return z.union([relationContains, relationPathContains, relationIsEmpty]);
-  const child = buildAreaFilterTemplateSchema(remainingDepth - 1);
-  const nodes = z.array(child).min(1).max(MAX_AREA_FILTER_NODES_PER_LEVEL);
-  return z.union([
-    relationContains,
-    relationPathContains,
-    relationIsEmpty,
-    z.strictObject({ type: z.literal("and"), nodes }),
-    z.strictObject({ type: z.literal("or"), nodes }),
-  ]);
-}
-
-function hasAreaValueSlot(node: AreaFilterTemplate): boolean {
-  if (node.type === "and" || node.type === "or") return node.nodes.some(hasAreaValueSlot);
-  return node.type !== "relation_is_empty";
-}
-
-/** A template that never takes the area id would filter every area the same way, so it is refused. */
-const areaFilterTemplateSchema = buildAreaFilterTemplateSchema(MAX_AREA_FILTER_DEPTH).refine(hasAreaValueSlot, {
-  message: "An area filter needs at least one { areaValue: true } slot",
-});
-
 /** The deepest nesting of objects and arrays an opaque filter may have; its root object is level 1. */
 const MAX_OPAQUE_FILTER_DEPTH = 32;
 
@@ -502,12 +449,12 @@ const moduleDatabaseDescriptorSchema = z
     switcherOrder: z.number().int().positive().nullable().optional(),
     clientVisible: z.boolean().optional(),
     overviewHideable: z.boolean().optional(),
-    areaFilter: areaFilterTemplateSchema.optional(),
     quickFilters: z.array(moduleQuickFilterDescriptorSchema).optional(),
     defaultSort: moduleSortDescriptorSchema.optional(),
     dateLabels: z.strictObject({ pastLabelKey: z.string().min(1), noDateLabelKey: z.string().min(1) }).optional(),
     collectionFilter: opaqueFilterSchema.optional(),
     pickerFilter: opaqueFilterSchema.optional(),
+    facetBarProperty: z.string().min(1).optional(),
   })
   .superRefine((database, ctx) => {
     const quickFilters = database.quickFilters ?? [];
@@ -573,6 +520,7 @@ const moduleCustomRouteDescriptorSchema = z.object({
   path: z.string().regex(/^\/api\/\S*$/, 'must be a path starting with "/api/"'),
   handlerExport: z.string().min(1),
   justification: z.enum(CUSTOM_ROUTE_JUSTIFICATIONS),
+  maxBodyBytes: z.number().int().positive().optional(),
 });
 
 const moduleLinkRuleEndpointSchema = z.strictObject({

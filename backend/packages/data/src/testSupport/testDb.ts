@@ -4,11 +4,14 @@ import { getTenantZeroId, tenantZeroSessionOptions } from "./tenantFixtures.js";
 // Test-only re-exports of production writers for cross-package fixtures, kept off the production entry point.
 export { storeCredential } from "../credentials/externalCredentialsStore.js";
 export { ensureMailAccountSyncState, recordProviderAccountAddress } from "../mail/mailAccountSyncStateStore.js";
+export { ensureMailFolderSyncState, recordBackfill, recordReconcile } from "../mail/mailFolderSyncStateStore.js";
 export { writeMailboxAddresses } from "../mail/mailboxAddresses.js";
 export { ensureFolderItem } from "../mail/folderDiscovery.js";
 export { ingestEmailMessage } from "../mail/ingest.js";
 export { createThreadTask } from "../mail/threadTasks.js";
 export { reconcileGmailAccount, type GmailMailClient } from "../mail/gmailReconcile.js";
+export { gmailHistory, recentGmailListing } from "./gmailListing.js";
+export { UNGUARDED_MAIL_SYNC_PASS } from "./mailSyncPass.js";
 export {
   bindToTenantZero,
   createRuntimeRolePool,

@@ -1,12 +1,12 @@
 import type { Pool } from "pg";
-import { labeledSempMessageRefSchema } from "@semprec/shared";
+import { labeledSempMessageRefSchema } from "@alldots/shared";
 import {
   getAgentRun,
   insertAgentRunEvent,
   listSessionAgentRunEventsFromLastCompaction,
   withTransaction,
   type SessionAgentRunsFilter,
-} from "@semprec/data";
+} from "@alldots/data";
 import type { CompactionAdapter } from "./compaction.js";
 import { redactReplayedToolCalls } from "./sensitiveMessageRedaction.js";
 import type { AgentMessage, AgentMessageKind, ConversationEntry } from "./types.js";

@@ -37,15 +37,10 @@ enum PreviewMail {
         reauthorization: [MailAccountNotice(id: "m1", name: "Gmail", since: "2026-10-20T09:12:00.000000Z")],
         facets: MailFacetsState(
             phase: .ready,
-            areaTotal: 9,
             projectTotal: 7,
-            areas: [
-                MailFilterOption(id: "a1", name: "Práce", color: "#5856D6", count: 5),
-                MailFilterOption(id: "a2", name: "Domácnost", color: "#FF9500", count: 4)
-            ],
             projects: [
-                MailFilterOption(id: "p1", name: "Web pro klienta", color: "#FF9500", count: 3, areaId: "a1"),
-                MailFilterOption(id: "p2", name: "Rekonstrukce koupelny", color: "#AF52DE", count: 2, areaId: "a2")
+                MailFilterOption(id: "p1", name: "Web pro klienta", color: "#FF9500", count: 3),
+                MailFilterOption(id: "p2", name: "Rekonstrukce koupelny", color: "#AF52DE", count: 2)
             ]
         )
     )
@@ -87,6 +82,7 @@ enum PreviewMail {
                 bodyText: "Dobrý den, Davide,\n\ndíky, rozpočet nám sedí. Můžeme začít v listopadu?\n\nPetr",
                 attachments: [
                     MailAttachmentItem(
+                        attachmentId: "a1",
                         filename: "logo_zdroj.svg",
                         contentType: "image/svg+xml",
                         byteSize: 1_200_000,
@@ -97,7 +93,8 @@ enum PreviewMail {
                                 sourceTitles: ["Re: Nabídka na web"],
                                 brokenByAgent: false
                             )
-                        )
+                        ),
+                        fileItemId: "f1"
                     )
                 ],
                 expanded: true
@@ -120,6 +117,73 @@ enum PreviewMail {
         ),
         canReply: true
     )
+
+    /// A thread of older messages the server holds only at the mail provider: one whose body failed, the newest one
+    /// being fetched, with an attachment that was not saved and one being saved.
+    static let remoteThread = MailThreadState(
+        phase: .content,
+        subject: "Smlouva 2023",
+        senderName: "Karel Zlatý",
+        senderAddress: "karel@zlaty.cz",
+        mailboxNames: ["Outlook"],
+        messageCount: 2,
+        messages: [
+            MailMessageItem(
+                emailId: "e1",
+                fromName: "Karel Zlatý",
+                fromAddress: "karel@zlaty.cz",
+                toNames: ["David Třešňák"],
+                date: "2023-03-02T08:10:00.000000Z",
+                preview: "Dobrý den, posílám návrh smlouvy k připomínkám.",
+                bodyPhase: .failed,
+                bodyFailure: .unavailable,
+                bodyUnavailable: .providerUnreachable,
+                expanded: true
+            ),
+            MailMessageItem(
+                emailId: "e2",
+                fromName: "Karel Zlatý",
+                fromAddress: "karel@zlaty.cz",
+                toNames: ["David Třešňák"],
+                date: "2023-03-04T15:20:00.000000Z",
+                preview: "Upravená verze je v příloze.",
+                bodyPhase: .loading,
+                attachments: [
+                    MailAttachmentItem(
+                        attachmentId: "a2",
+                        filename: "smlouva_v2.pdf",
+                        contentType: "application/pdf",
+                        byteSize: 240_000,
+                        project: MailLinkedValue(text: nil, link: nil),
+                        savePhase: .failed,
+                        saveFailure: .unavailable,
+                        saveUnavailable: .attachmentTooLarge
+                    ),
+                    MailAttachmentItem(
+                        attachmentId: "a3",
+                        filename: "priloha.docx",
+                        contentType: "application/msword",
+                        byteSize: 52_000,
+                        project: MailLinkedValue(text: nil, link: nil),
+                        savePhase: .saving
+                    )
+                ],
+                expanded: true
+            )
+        ],
+        canReply: true
+    )
+
+    /// The thread list of a search, with what the provider search added.
+    static let search: MailThreadsState = {
+        var state = threads
+        state.search = "nabídka"
+        state.remoteSearch = MailRemoteSearchSummary(
+            unindexed: 12,
+            failedAccounts: [MailMailboxChip(id: "m2", name: "Outlook")]
+        )
+        return state
+    }()
 
     // MARK: - Compose
     static let compose = MailComposeState(
@@ -160,37 +224,5 @@ enum PreviewMail {
                 folders: [MailFolderItem(id: "f4", name: "Doručená pošta", specialPurpose: "inbox", unreadCount: 2)]
             )
         ]
-    )
-
-    // MARK: - Accounts
-    static let accounts = MailAccountsState(
-        phase: .content,
-        accounts: [
-            MailAccountItem(
-                id: "m1",
-                name: "Gmail",
-                address: "david@gmail.com",
-                provider: "gmail",
-                status: .needsReauthorization
-            ),
-            MailAccountItem(id: "m2", name: "Outlook", address: "s@tresnak.cc", provider: "outlook", status: .ok)
-        ]
-    )
-
-    static let account = MailAccountState(
-        phase: .content,
-        account: MailAccountDetail(
-            id: "m2",
-            name: "Outlook",
-            address: "s@tresnak.cc",
-            provider: "outlook",
-            syncMode: "imap",
-            status: .ok,
-            lastSuccessfulSyncAt: "2026-10-20T12:30:00.000000Z",
-            failingSince: nil,
-            connectionLimit: 5,
-            connectionLimitApplies: true,
-            autonomousSendProjectCount: 1
-        )
     )
 }

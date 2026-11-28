@@ -117,16 +117,19 @@ describe("taskStateInEvent (issue #1801)", () => {
       ).toEqual({ kind: "done" });
     });
 
-    it("is done without an edge when completedOn equals the date of the event", () => {
-      expect(stateOf({ status: "done", completedOn: "2026-10-15" })).toEqual({ kind: "done" });
+    it("reports the day for a task completed from its own row on the day of the event, without an edge", () => {
+      expect(stateOf({ status: "done", completedOn: "2026-10-15" })).toEqual({
+        kind: "doneElsewhere",
+        completedOn: "2026-10-15",
+      });
     });
 
     it("is done without an edge when the task stores no completedOn", () => {
       expect(stateOf({ status: "done", completedOn: null })).toEqual({ kind: "done" });
     });
 
-    it("is done, not missed, once the event has ended", () => {
-      const task = { status: "done", completedOn: "2026-10-15" };
+    it("is done, not missed, once the event has ended, when it was completed in the event", () => {
+      const task = { status: "done", completedOn: "2026-10-16", completedIn: { eventId: "e1", eventName: "Planning" } };
       expect(stateOf(task, { now: AT_END })).toEqual({ kind: "done" });
     });
 

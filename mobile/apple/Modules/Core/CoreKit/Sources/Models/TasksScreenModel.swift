@@ -19,18 +19,16 @@ public enum TaskSectionKind: Equatable, Hashable, Sendable {
     case noDate
 }
 
-/// Where the Tasks screen starts: a tab and, for the lists an area or a project links to, a filter.
+/// Where the Tasks screen starts: a tab and, for the list a project links to, a filter.
 public struct TasksStart: Equatable, Hashable, Sendable {
 
     public let tab: TasksTab
     public let hideDone: Bool
-    public let areaId: String?
     public let projectId: String?
 
-    public init(tab: TasksTab = .today, hideDone: Bool = false, areaId: String? = nil, projectId: String? = nil) {
+    public init(tab: TasksTab = .today, hideDone: Bool = false, projectId: String? = nil) {
         self.tab = tab
         self.hideDone = hideDone
-        self.areaId = areaId
         self.projectId = projectId
     }
 }
@@ -100,14 +98,12 @@ public struct TaskFilterOption: Equatable, Sendable, Identifiable {
     public let title: String
     public let color: String?
     public let count: Int
-    public let areaId: String?
 
-    public init(id: String, title: String, color: String? = nil, count: Int, areaId: String? = nil) {
+    public init(id: String, title: String, color: String? = nil, count: Int) {
         self.id = id
         self.title = title
         self.color = color
         self.count = count
-        self.areaId = areaId
     }
 }
 
@@ -125,33 +121,27 @@ public struct TasksState: Equatable, Sendable {
     public var phase: TasksPhase
     public var tab: TasksTab
     public var hideDone: Bool
-    public var areaId: String?
     public var projectId: String?
     public var flaggedOnly: Bool
     public var groups: [TaskGroup]
     public var openCount: Int
-    public var areaOptions: [TaskFilterOption]
     public var projectOptions: [TaskFilterOption]
-    public var areaAllCount: Int
     public var projectAllCount: Int
     public var matchesNothing: Bool
     /// A write that failed; the list shows what the server holds again.
     public var notice: FailureKind?
 
-    public var filterActive: Bool { areaId != nil || projectId != nil || flaggedOnly }
+    public var filterActive: Bool { projectId != nil || flaggedOnly }
 
     public init(
         phase: TasksPhase = .loading,
         tab: TasksTab = .today,
         hideDone: Bool = false,
-        areaId: String? = nil,
         projectId: String? = nil,
         flaggedOnly: Bool = false,
         groups: [TaskGroup] = [],
         openCount: Int = 0,
-        areaOptions: [TaskFilterOption] = [],
         projectOptions: [TaskFilterOption] = [],
-        areaAllCount: Int = 0,
         projectAllCount: Int = 0,
         matchesNothing: Bool = false,
         notice: FailureKind? = nil
@@ -159,14 +149,11 @@ public struct TasksState: Equatable, Sendable {
         self.phase = phase
         self.tab = tab
         self.hideDone = hideDone
-        self.areaId = areaId
         self.projectId = projectId
         self.flaggedOnly = flaggedOnly
         self.groups = groups
         self.openCount = openCount
-        self.areaOptions = areaOptions
         self.projectOptions = projectOptions
-        self.areaAllCount = areaAllCount
         self.projectAllCount = projectAllCount
         self.matchesNothing = matchesNothing
         self.notice = notice
@@ -177,7 +164,6 @@ public enum TasksAction: Equatable, Sendable {
 
     case selectTab(TasksTab)
     case toggleHideDone
-    case setArea(String?)
     case setProject(String?)
     case setFlaggedOnly(Bool)
     case clearFilters

@@ -1,15 +1,13 @@
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { SUBSCRIBED_EVENTS_MODULE_ID } from "../seed/calendarsKeys.js";
 import { formatOccurrenceId } from "./eventOccurrenceId.js";
 import { MAX_OCCURRENCES_PER_SERIES } from "./eventOccurrences.js";
 import { readTime } from "./eventTime.js";
 import { isCalendarDate } from "./eventValidationHook.js";
 import { logger } from "./logger.js";
-import { expandSubscribedSeries, type SubscribedOccurrence } from "./subscribedEventOccurrences.js";
-import { parseRecurrenceRule } from "./subscribedEventRecurrence.js";
+import { expandRecurringSeries, parseRecurrenceRule, type RecurringOccurrence } from "./recurrenceExpansion.js";
 import { effectiveTo, type Schedule, type StoredRow } from "./timelineRead.js";
 import type { CalendarTimelineContext, CalendarTimelineItem } from "./timelineSources.js";
 
@@ -144,12 +142,12 @@ interface ScheduledRow extends ReadSchedule {
 function occurrencesOf(
   { row, schedule, starts, ends, recurrence }: ScheduledRow & { recurrence: StoredRecurrence },
   context: CalendarTimelineContext,
-): { occurrences: SubscribedOccurrence[]; expanded: boolean } {
+): { occurrences: Pick<RecurringOccurrence, "schedule" | "originalStart">[]; expanded: boolean } {
   const rule = parseRecurrenceRule(recurrence.ruleText);
   const expansion =
     rule === null
       ? null
-      : expandSubscribedSeries(
+      : expandRecurringSeries(
           {
             startsAt: starts,
             endsAt: ends,
@@ -178,7 +176,7 @@ export async function readSubscribedEventTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,
 ): Promise<CalendarTimelineItem[]> {
-  const database = await getDatabaseByModuleId(client, SUBSCRIBED_EVENTS_MODULE_ID);
+  const database = await context.lookups.database(SUBSCRIBED_EVENTS_MODULE_ID);
   if (!database) return [];
   const { rows } = await client.query<StoredRow>(SUBSCRIBED_EVENT_CANDIDATES_SQL, [
     database.id,

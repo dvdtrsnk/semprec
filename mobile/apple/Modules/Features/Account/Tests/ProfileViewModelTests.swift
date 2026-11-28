@@ -44,9 +44,9 @@ final class ProfileViewModelTests: XCTestCase {
         let observer = Task { await viewModel.observe() }
         defer { observer.cancel() }
         model.emit(.aiUsage)
-        model.emit(.mailAccounts)
+        model.emit(.internetAccounts)
         try await eventually { router.pages.count == 3 }
-        XCTAssertEqual(router.pages, [.devices, .aiUsage, .mailAccounts])
+        XCTAssertEqual(router.pages, [.devices, .aiUsage, .internetAccounts])
     }
 
     @MainActor
@@ -81,9 +81,19 @@ final class RouterSpy: AccountRouting {
 
     // MARK: - Properties
     private(set) var pages: [AccountPage] = []
+    private(set) var internetAccounts: [String] = []
+    private(set) var permissionRequests = 0
 
     // MARK: - Protocol conformance
     func show(_ page: AccountPage) {
         pages.append(page)
+    }
+
+    func showInternetAccount(accountId: String) {
+        internetAccounts.append(accountId)
+    }
+
+    func requestNotificationPermission() {
+        permissionRequests += 1
     }
 }

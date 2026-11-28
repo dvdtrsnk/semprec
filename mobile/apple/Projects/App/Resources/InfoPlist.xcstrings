@@ -1,18 +1,50 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
-    "NSMicrophoneUsageDescription" : {
+    "NSAlarmKitUsageDescription" : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec nahrává schůzky a hlasové poznámky, aby je Semp mohl přepsat."
+            "value" : "Alldots zvoní vaše budíky i v tichém režimu a během soustředění."
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Semprec records meetings and voice notes so that Semp can transcribe them."
+            "value" : "Alldots rings your alarms even in silent mode and through a Focus."
+          }
+        }
+      }
+    },
+    "NSCameraUsageDescription" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alldots čte čárové a QR kódy, kterými se zastavuje budík, a skenuje dokumenty do Inboxu."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alldots reads the barcodes and QR codes that stop your wake-up alarm, and scans documents into your Inbox."
+          }
+        }
+      }
+    },
+    "NSMicrophoneUsageDescription" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alldots nahrává schůzky a hlasové poznámky, aby je Semp mohl přepsat."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Alldots records meetings and voice notes so that Semp can transcribe them."
           }
         }
       }

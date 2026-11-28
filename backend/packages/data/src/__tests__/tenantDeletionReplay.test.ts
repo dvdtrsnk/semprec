@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createTestTenant, withTenantTransaction } from "../testSupport/tenantFixtures.js";
 import { createUser } from "../auth/usersStore.js";
@@ -80,7 +80,7 @@ function replay(ids: string[]) {
 describe("replayTenantDeletions (issue #1078)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -92,7 +92,7 @@ describe("replayTenantDeletions (issue #1078)", () => {
     await resetDatabase(adminPool);
     guardHook.failWith = null;
     notified = [];
-    const root = join(tmpdir(), `semprec-test-replay-${randomUUID()}`);
+    const root = join(tmpdir(), `alldots-test-replay-${randomUUID()}`);
     dirs = { files: join(root, "files"), mailAttachments: join(root, "mail") };
     listener = await adminPool.connect();
     listener.on("notification", (msg) => {

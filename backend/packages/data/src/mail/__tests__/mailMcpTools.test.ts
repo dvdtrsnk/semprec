@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
@@ -154,6 +154,8 @@ async function receive(t: MailTenant, subject: string): Promise<{ emailId: strin
     };
     const { itemId } = await withTransaction(runtime, (client) =>
       ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property("folder"),
@@ -251,9 +253,9 @@ async function countOf(table: "mail_drafts" | "approval_requests", t: MailTenant
 describe("the mail tools of a human /mcp session and of a run credential (issue gh-1956)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     registry = await loadFullModuleRegistry();
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-mail-mcp-tools-"));
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-mail-mcp-tools-"));
   });
 
   afterAll(async () => {
@@ -283,11 +285,12 @@ describe("the mail tools of a human /mcp session and of a run credential (issue 
   });
 
   describe("resolveModuleAgentToolsForUser on the full registry", () => {
-    it("offers the four mail tools and the four calendar tools that declare mcp, and no other module tool, whatever their capability", async () => {
+    it("offers the five mail tools and the four calendar tools that declare mcp, and no other module tool, whatever their capability", async () => {
       const tools = await resolveModuleAgentToolsForUser(runtime, registry, tenant.userId, {});
 
       expect(tools.map((tool) => tool.name)).toEqual([
         "mail.thread.get",
+        "mail.search",
         "mail.draft.create",
         "mail.draft.update",
         "mail.draft.send",
@@ -323,12 +326,16 @@ describe("the mail tools of a human /mcp session and of a run credential (issue 
 
       expect(await mailNames(tenant, runId, tenant.mailProjectId, all)).toEqual([
         "mail.thread.get",
+        "mail.search",
         "mail.draft.create",
         "mail.draft.update",
         "mail.draft.send",
       ]);
       expect(await mailNames(tenant, runId, tenant.mailProjectId, ["core.item.read"])).toEqual([]);
-      expect(await mailNames(tenant, runId, tenant.mailProjectId, ["mail.read"])).toEqual(["mail.thread.get"]);
+      expect(await mailNames(tenant, runId, tenant.mailProjectId, ["mail.read"])).toEqual([
+        "mail.thread.get",
+        "mail.search",
+      ]);
       expect(await mailNames(tenant, runId, tenant.mailProjectId, ["mail.send"])).toEqual(["mail.draft.send"]);
     });
 
@@ -338,7 +345,7 @@ describe("the mail tools of a human /mcp session and of a run credential (issue 
         [tenant.tenantId],
       );
       const inboxProjectId = inbox.rows[0]?.owner_project_item_id;
-      if (!inboxProjectId) throw new Error("Missing the Semprec project");
+      if (!inboxProjectId) throw new Error("Missing the Alldots project");
       const inboxRunId = await runOf(tenant, inboxProjectId);
 
       expect(await mailNames(tenant, inboxRunId, inboxProjectId, ["mail.read", "mail.draft", "mail.send"])).toEqual([]);

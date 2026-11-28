@@ -68,7 +68,7 @@ describe("person_email_index is keyed per tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const tenantA = await currentTenant(client);
       const tenantB = await addSecondTenant(client);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
       const p1 = randomUUID();
       const p2 = randomUUID();
 
@@ -91,7 +91,7 @@ describe("person_email_index is keyed per tenant", () => {
     await inRolledBackTransaction(async (client) => {
       const tenantA = await currentTenant(client);
       const tenantB = await addSecondTenant(client);
-      await client.query("SET LOCAL ROLE semprec_data");
+      await client.query("SET LOCAL ROLE alldots_data");
       const p1 = randomUUID();
       const p2 = randomUUID();
 

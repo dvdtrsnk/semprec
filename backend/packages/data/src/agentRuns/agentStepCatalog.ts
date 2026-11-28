@@ -1,5 +1,5 @@
-import type { ModuleCatalog } from "@semprec/module-registry";
-import type { GenericOperationName } from "@semprec/shared";
+import type { ModuleCatalog } from "@alldots/module-registry";
+import type { GenericOperationName } from "@alldots/shared";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { getAgentRunCatalogs } from "./agentRunErrorSummary.js";
 import { fill } from "./catalogFill.js";

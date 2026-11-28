@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5475686836",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5475686836",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5475686836",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5475686836",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5475686836,
     "node_id": "IC_kwDOUFuQ4c8AAAABRmBZtA",
     "user": {
@@ -28,11 +28,11 @@
     },
     "created_at": "2026-08-31T08:18:29Z",
     "updated_at": "2026-08-31T08:18:29Z",
-    "body": "Dvd — Semprec #119 reconstructs dormant conversations from ordered `agent_run_events`, compacts oversized history before the provider call, and requires deterministic resume after repeated restarts. I build AllSource, an event-sourced agent-memory and provenance layer. I can help test event projection at that boundary: restore message/tool invariants, record the compaction continuation, and replay the same pre-turn state without relying on process memory. Interested in a bounded comparison against Semprec’s Postgres event stream? I can offer hands-on integration or design-partner access. If not useful, reply “pass” and I will not follow up.",
+    "body": "Dvd — Alldots #119 reconstructs dormant conversations from ordered `agent_run_events`, compacts oversized history before the provider call, and requires deterministic resume after repeated restarts. I build AllSource, an event-sourced agent-memory and provenance layer. I can help test event projection at that boundary: restore message/tool invariants, record the compaction continuation, and replay the same pre-turn state without relying on process memory. Interested in a bounded comparison against Alldots’s Postgres event stream? I can offer hands-on integration or design-partner access. If not useful, reply “pass” and I will not follow up.",
     "author_association": "NONE",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5475686836/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5475686836/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -47,9 +47,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573647520",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5573647520",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573647520",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5573647520",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5573647520,
     "node_id": "IC_kwDOUFuQ4c8AAAABTDccoA",
     "user": {
@@ -79,7 +79,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573647520/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573647520/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -135,9 +135,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573722067",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5573722067",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573722067",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5573722067",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5573722067,
     "node_id": "IC_kwDOUFuQ4c8AAAABTDg_0w",
     "user": {
@@ -167,7 +167,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573722067/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573722067/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -223,9 +223,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573726571",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5573726571",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573726571",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5573726571",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5573726571,
     "node_id": "IC_kwDOUFuQ4c8AAAABTDhRaw",
     "user": {
@@ -255,7 +255,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573726571/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573726571/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -311,9 +311,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573726674",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5573726674",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573726674",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5573726674",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5573726674,
     "node_id": "IC_kwDOUFuQ4c8AAAABTDhR0g",
     "user": {
@@ -343,7 +343,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573726674/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573726674/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -399,9 +399,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573736783",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5573736783",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573736783",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5573736783",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5573736783,
     "node_id": "IC_kwDOUFuQ4c8AAAABTDh5Tw",
     "user": {
@@ -431,7 +431,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573736783/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573736783/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -487,9 +487,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573736912",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5573736912",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573736912",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5573736912",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5573736912,
     "node_id": "IC_kwDOUFuQ4c8AAAABTDh50A",
     "user": {
@@ -519,7 +519,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573736912/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573736912/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -575,9 +575,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573816972",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5573816972",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573816972",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5573816972",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5573816972,
     "node_id": "IC_kwDOUFuQ4c8AAAABTDmyjA",
     "user": {
@@ -607,7 +607,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5573816972/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5573816972/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -663,9 +663,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574137744",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5574137744",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574137744",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5574137744",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5574137744,
     "node_id": "IC_kwDOUFuQ4c8AAAABTD6XkA",
     "user": {
@@ -695,7 +695,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574137744/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574137744/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -751,9 +751,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574365164",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5574365164",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574365164",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5574365164",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5574365164,
     "node_id": "IC_kwDOUFuQ4c8AAAABTEIP7A",
     "user": {
@@ -783,7 +783,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574365164/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574365164/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -839,9 +839,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574503908",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5574503908",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574503908",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5574503908",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5574503908,
     "node_id": "IC_kwDOUFuQ4c8AAAABTEQt5A",
     "user": {
@@ -871,7 +871,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574503908/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574503908/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -927,9 +927,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574649626",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5574649626",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574649626",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5574649626",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5574649626,
     "node_id": "IC_kwDOUFuQ4c8AAAABTEZnGg",
     "user": {
@@ -959,7 +959,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574649626/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574649626/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1015,9 +1015,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574859131",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5574859131",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574859131",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5574859131",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5574859131,
     "node_id": "IC_kwDOUFuQ4c8AAAABTEmZew",
     "user": {
@@ -1047,7 +1047,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5574859131/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5574859131/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1103,9 +1103,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575001814",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5575001814",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575001814",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5575001814",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5575001814,
     "node_id": "IC_kwDOUFuQ4c8AAAABTEvG1g",
     "user": {
@@ -1135,7 +1135,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575001814/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575001814/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -1191,9 +1191,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575101758",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/119#issuecomment-5575101758",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/119",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575101758",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/119#issuecomment-5575101758",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/119",
     "id": 5575101758,
     "node_id": "IC_kwDOUFuQ4c8AAAABTE1NPg",
     "user": {
@@ -1223,7 +1223,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5575101758/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5575101758/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

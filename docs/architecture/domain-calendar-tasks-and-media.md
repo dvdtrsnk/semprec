@@ -15,16 +15,32 @@ agents, approvals and the AI gateway in [agents-approvals-and-ai.md](agents-appr
 ### Tenancy
 
 - Calendars, Events and invitations are private to their tenant: no cross-tenant reads, writes or calendar sharing.
-- Meetings arrive by email invitation (iMIP, `calendar/invitationIngestAction.ts`); external calendars arrive by ICS
-  subscription (`calendar/subscribedEventsImport.ts`). Both stay inside one tenant.
+- Meetings arrive by email invitation (iMIP, `calendar/invitationIngestAction.ts`), except for an internet account
+  with Calendars on, whose invitations come from its synced calendars (`calendar/sync/syncedInvitations.ts`) and whose
+  e-mails the iMIP ingest skips; external calendars arrive by ICS subscription (`calendar/subscribedEventsImport.ts`), read-only, and through internet accounts, synced both ways.
+  All stay inside one tenant.
+- An internet account's calendar is a Calendars row of `kind` `account` linked to its Mailboxes item by the
+  `Calendars.account` ↔ `Mailboxes.calendars` relation (one-to-many). Its remote identity lives in tenant side tables
+  keyed by item: `calendar_remote_state` (per calendar: `remote_id`, `remote_url`, `sync_token`, `ctag`,
+  `last_synced_at`, `last_error_code`) and `event_remote_state` (per Event: its calendar, `remote_id`, `remote_href`,
+  `etag`, `base_snapshot`, the field values of the last sync; `remote_id` unique per calendar). Both cascade with their
+  items and are exported with the tenant (they hold no secret).
+- The calendar sync is the system writer `CALENDAR_SYNC_WRITER` (`systemProcess: "calendarSync"`,
+  `chokePoint/writerKind.ts`). It alone creates `account` calendars and writes `remoteName`, `remoteColor` and
+  `readOnly` (system-owned, owner process `calendar`, checked against the writer in `calendarItemCreateHook` /
+  `calendarItemUpdateHook`, `403 owner_violation` otherwise) and the `account` relation.
 
 ### Calendars and the default mark
 
 Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts`, registered in `domainWriteHooks.ts`.
 
-- A calendar's `kind` is `own` (or empty), `system` or `subscription`. Only own calendars may be renamed, made default
-  or deleted; other kinds answer `403 forbidden` / `400 validation_failed`.
-- `color` must be `#RRGGBB`; `null` is refused.
+- A calendar's `kind` is `own` (or empty), `system`, `subscription` or `account`. Only own calendars may be made
+  default; only own and account calendars renamed. Own calendars may be deleted; an account calendar only by a
+  `system` writer (it leaves when the provider or the account removes it). Other cases answer `403 forbidden` /
+  `400 validation_failed`.
+- An account calendar's `name`, `color`, `notify` and `hidden` are the user's: `name` and `color` override the
+  provider's `remoteName` and `remoteColor`, and `null` means the provider's value.
+- `color` must be `#RRGGBB`, `name` a non-blank title; `null` is refused for both except on an account calendar.
 - Exactly one live own calendar holds `isDefault: true`. Marking one clears the others through `updateItemWithClient`;
   writing `isDefault` to anything else is refused unless another live own calendar holds the mark.
 - **Lock order:** every reader/writer of the mark takes the advisory lock
@@ -32,8 +48,8 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   calendar rows (`FOR UPDATE`, id order). An update takes it in `calendarItemUpdatePreLockHook`; delete and restore
   take it in `calendarItemDeletePreLockHook` / `calendarItemRestorePreLockHook` (pre-lock registries in
   `chokePoint/hooks.ts`), before the root row is locked.
-- Deleting a calendar: refused with `409 last_own_calendar` when no other live own calendar exists; when it was the
-  default, the oldest other own calendar becomes default (system writer); every live Event on it is trashed with the
+- Deleting an own calendar: refused with `409 last_own_calendar` when no other live own calendar exists; when it was
+  the default, the oldest other own calendar becomes default (system writer); every live Event on it is trashed with the
   calendar's deletion epoch. Restoring brings back exactly the Events of that epoch and clears the restored calendar's
   default mark.
 
@@ -43,8 +59,15 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   hooks, links every new Event that has no `calendar` edge to the chosen calendar or the live default calendar
   (lowest id if several). The edge is a system write in the create transaction.
 - A caller chooses a calendar with `createEventInCalendar` / `withChosenCalendar` (a module-private
-  `AsyncLocalStorage`). The chosen calendar must be a live own calendar of the tenant; anything else is the same
-  `validation_failed` on `calendarId`.
+  `AsyncLocalStorage`). The chosen calendar must be a live own or account calendar of the tenant; anything else is
+  the same `validation_failed` on `calendarId`. A read-only account calendar answers `403 calendar_read_only` unless
+  the writer is `system`.
+- The Events of a read-only account calendar follow the provider (`calendar/accountCalendarWriteGuard.ts`): a user's
+  or agent's update, trash, or move into or out of it (an `Events.calendar` edge written or deleted) answers
+  `403 calendar_read_only`; an agent's `item.delete` is refused the same way before an approval is stored. System
+  writers pass: the calendar sync, and the internal writers of derived fields (`nextOccurrenceDate`) and cascades
+  (a calendar trash). Lock order: the account calendar's row `FOR SHARE` before the Event's row, taken by the Events
+  update and delete pre-lock hooks, the order a calendar trash takes them in.
 - The hook reads the chosen or default calendar `FOR SHARE`; the default read is retried once when the mark moved
   while it waited. A missing default fails the create (`default_calendar_missing` log line).
 
@@ -67,6 +90,28 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
 - The invitation delivery job reads its pool and transports from a binding the API queue runtime sets
   (`setEventInvitationDelivery`, `calendar/eventInvitationJob.ts`); see [Adjacent rules](#adjacent-rules).
 
+### Event times and zones
+
+- An Event's `date`, `timeFrom`, `endDate` and `timeTo` are wall-clock values in its `timeZone` (an IANA name);
+  without one, in the tenant's zone (`getCalendarClock`). All-day days are not zoned.
+- `timeZone`, `recurrenceRule`, `exceptionDates` and `recurrenceId` are the provider fields of a synced Event:
+  system-owned with no owner process (the sync writes them together with `seriesId`, and an Events pre-write
+  transform clears the raw rule), written only by `CALENDAR_SYNC_WRITER`. `calendar/syncedEventFields.ts` refuses
+  any other writer naming them (`403 owner_violation`), except the calendar module's own two writes below, and
+  judges the values for every writer (`400 validation_failed`): a valid IANA zone (no fixed offsets), non-blank
+  RRULE text, a list of local starts, a local start; a raw rule never next to `recurrence` or on an occurrence item,
+  `recurrenceId` only on one. A local start is `YYYY-MM-DD` or `YYYY-MM-DDTHH:MM` in the Event's zone.
+- Readers convert to the tenant's wall clock before they compare or show anything (`scheduleInTenantZone`, applied
+  by `toTimelineItems`): the timeline and its consumers (agenda, agent tool) and the reminders feed. Their candidate
+  reads take one day more on each side for a zoned Event and filter the converted days. A stored zone that is no
+  IANA name leaves the row out with a log line (`property: timeZone`).
+- A user's or agent's edit of `date`, `endDate`, `timeFrom` or `timeTo` is the tenant's wall clock, as every client
+  shows it. On a timed Event whose zone differs from the tenant's, the Events pre-write transform
+  `zonedEventEditTransform` (`calendar/zonedEventEdit.ts`, after the time transform) lays the edited values over the
+  stored ones shown in the tenant's zone and stores the result in the Event's zone, so the Event keeps its zone and
+  its unedited times their instant. An all-day result is not moved. The calendar sync and other system writers store
+  their values as sent.
+
 ### Recurrence model (Tasks and Events)
 
 - A series is one rule plus one template. Only occurrences with state of their own (done, wontDo, missed, moved,
@@ -75,7 +120,7 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   is addressed as `<seriesId>@<occurrenceDate>`.
 - Editing a series updates the template and its open, unedited occurrences; done/wontDo/missed occurrences keep their
   values. Deleting a series keeps completed occurrences as history.
-- Dates and times are wall-clock values compared as text; a DST change moves nothing.
+- Dates and times are wall-clock values (an Event's in its zone) compared as text; a DST change there moves nothing.
 
 ### Event series and occurrences
 
@@ -91,6 +136,20 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   creates at most one item per occurrence. `POST /api/events/series/:seriesId/occurrences/:date` is idempotent (201
   then 200).
 - Cancelling an occurrence is trashing its item; readers treat a trashed occurrence item as cancelled.
+- A synced series may carry a raw `recurrenceRule` (RRULE text) and its `exceptionDates` instead of `recurrence`.
+  It is expanded by `expandRecurringSeries` (`calendar/recurrenceExpansion.ts`, shared with subscribed events) in
+  the series' zone, without the starts `exceptionDates` names; a rule outside the supported subset, or a zone that
+  cannot be read, shows the series row once. Rule days and `occurrenceDate` are days in the series' zone; virtual
+  ids are `<seriesId>@<that day>`.
+- An override is an occurrence item of a synced series: `seriesId` plus `recurrenceId`, the original start it
+  replaces (a day names that day's occurrence, a date-time the occurrence starting then). It replaces its occurrence
+  live or trashed, wherever its own days are. The sync stores provider overrides; materializing an occurrence of a
+  series with a raw rule, or of any series in an account calendar, creates one, copying `timeZone` and naming
+  `recurrenceId` (a date-time for a timed series), admitted by the create hook only inside
+  `withOverrideMaterialization`. A raw-rule date that the rule skips or excludes is `400 validation_failed`.
+- Editing rules (`syncedRecurrenceTransform`): a `recurrence` edit of an Event with a raw rule clears
+  `recurrenceRule` and `exceptionDates` in the same write, so the sync serializes the simple rule; edits that do not
+  name `recurrence` keep the raw rule. A user cannot edit the raw rule itself.
 
 ### Next occurrence date
 
@@ -112,12 +171,14 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   with the default calendar id, and caches nothing. The route bounds the range to 93 days.
 - Entry kinds:
   - stored Events/Tasks (`CalendarTimelineItem`);
-  - Event series expanded by `expandEventOccurrences` (`calendar/eventOccurrences.ts`): virtual entries
-    (`readOnly: true`, `overridden: false`) for rule dates without an item, real items (`overridden: true`) placed by
-    their own dates, trashed items give nothing; at most 100 entries per series;
+  - Event series (a `recurrence` rule or a raw `recurrenceRule`) expanded by `expandEventOccurrences`
+    (`calendar/eventOccurrences.ts`): virtual entries (`readOnly: true`, `overridden: false`) for rule dates without
+    an item, real items (`overridden: true`) placed by their own dates, trashed items give nothing; at most 100
+    entries per series;
   - derived entries (birthdays, holidays) with a non-item id and `readOnly: true`;
   - sleep nights: id `sleep:<night>`, `readOnly: false` (edited through the sleep module, never `/api/items`);
   - subscribed events: stored rows of `subscribedEvents`, `readOnly: true`, told apart by `databaseId`.
+- A stored Event of a read-only account calendar is `readOnly: true`; one of a writable account calendar is not.
 - `attachTaskInEventState` (`calendar/timelineTaskInEvent.ts`) runs once after the sources, batched, at the context's
   single instant `at`, using `taskStateInEvent` via `readEventsTasks` — the same function as the Event tasks route.
   The Tasks source places a task on `taskDisplayDay` and omits tasks still hidden in an Event or completed in one.
@@ -130,11 +191,243 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
 
 - A master row stores `recurrenceRule` (RRULE text), `exceptionDates`; an override row stores `recurrenceId`. Rows are
   identified by `(calendar, uid, recurrenceId)`.
-- Series are expanded on read in the subscribed source (`calendar/subscribedEventRecurrence.ts`,
-  `calendar/subscribedEventOccurrences.ts`); nothing of an occurrence is stored. Supported parts: `FREQ`, `INTERVAL`,
+- Series are expanded on read in the subscribed source by the shared `calendar/recurrenceExpansion.ts`; nothing of
+  an occurrence is stored. Supported parts: `FREQ`, `INTERVAL`,
   `COUNT`, `UNTIL`, `BYDAY`, `BYMONTHDAY`, `BYMONTH`; anything else is shown once and counted as `unsupportedRules`.
 - Days are computed in the series' zone and converted to tenant wall clock; at most 100 entries per series and 20,000
   rule periods per iteration. Occurrence ids are `<row id>@<date>`.
+
+### Internet account calendar sync
+
+Code under `calendar/sync/`; the owner of `calendar_account_sync_state`, `calendar_remote_state` and
+`event_remote_state` (`calendarSyncStore.ts` is their only writer), of `calendar_push_channels`
+(`calendarPushChannelsStore.ts`) and the only writer as `CALENDAR_SYNC_WRITER`.
+
+- **Adapters.** `adapter.ts` is the contract: `listCalendars`, `fetchChanges(calendar, cursor, { window, known })` →
+  `{ full, upserts, deletions, nextSyncState }` (`known`: the calendar's stored remote ids, hrefs and ETags, read with
+  the tracked calendars before the fetch), `putEvent` (a new override names its series' `seriesRef`),
+  `deleteEvent`, `getEvent` (one Event as the provider has it now) and the optional `moveEvent`, each honouring the
+  pass's deadline signal
+  (5 min for the whole pass). A conditional write the provider refuses (412, a changed ETag), and an update of an
+  Event the provider no longer has (404, 410), is the one `CalendarSyncEventConflictError` of every adapter, so the
+  push reads the provider's version and a provider deletion wins; a delete of an Event already gone succeeds. A new
+  Event's `icalUid` becomes its Google `iCalUID` or CalDAV `UID` (Graph assigns its own). A new Event also carries its
+  local Event's id (`createKey`): Google gets an event id (base32hex of a hash of calendar, Event and a generation; a
+  409 for a live event there writes the fields onto it with `If-Match`, a deleted one moves to the next generation)
+  and CalDAV a resource name (and, without an `icalUid`, a UID) from it, so a create repeated after a lost answer
+  finds what the first one made and writes onto it; Graph's `transactionId` repeats only for the same Event with the
+  same fields. The factory gets the account and the tenant's zone. An adapter holds no database
+  client; it does network and OAuth refreshes. The registry
+  (`adapters/index.ts`) has one factory per sync mode: `imap` CalDAV, `gmail_api` Google, `graph_api` Graph. Its answer
+  is validated and bounded (`parseRemoteCalendars`, `parseCalendarChanges`) before anything is written; a refused
+  answer is the provider error `invalidResponse`. Inside a fetch, an Event the provider sends that cannot be read
+  (a Graph or Google item outside its schema or with an unreadable time, a CalDAV resource ical.js cannot read) is
+  left out and logged without its content, and a Graph series with an unreadable master or instance is left out whole;
+  only an unusable page envelope fails the pass. A full fetch then treats a stored copy of a left-out Event as one the
+  provider no longer lists. Reading one Event (`getEvent`) still fails as `invalidResponse`.
+- **CalDAV** (`adapters/caldav/`, sync mode `imap`: iCloud and generic accounts). The protocol is `tsdav`'s request
+  builders and multistatus parser; every `tsdav` call gets the session fetch of `caldavHttp.ts`, built on
+  `createOutboundHttp()`: the stored user name and password as Basic credentials, 20 s per request, a 10 MiB body cap,
+  at most three redirects each vetted by the outbound policy, and a refused address and an unreachable server both
+  `providerUnavailable` with one message. The credential is scoped (`caldavCredentialScope`) to the origin discovery
+  starts at and, for iCloud only, to https hosts under `icloud.com` on the default port, where Apple's discovery
+  delegates; a request, a redirect or an address in an answer (principal, calendar home, resource) outside it is
+  refused as `invalidResponse` before anything is sent there, and a listed calendar outside it is left out. The one
+  exception is resolving the account's server (RFC 6764), only while it has none stored: at connect, for a body's
+  well-known `caldavUrl`, and in a pass of an account without `caldav_url`, whose discovery starts at its domain's
+  well-known address. There the session's first request, made to the well-known address, may follow redirects within
+  that address's origin (up to the redirect cap) and then one redirect off it, the delegation, to another server whose
+  address the account could have been set up with (`allowsWellKnownDelegation`: https, a DNS
+  name that is no local name, the default port, no userinfo; the outbound policy still refuses a private address).
+  The scope moves to that server for the rest of the session, so a second cross-origin hop (a domain's `www.` host
+  delegating on to its provider) is refused like any other: the `www.` host was the delegation. The server becomes the account's `caldav_url`: the
+  connect stores it instead of the body's address, the pass (`delegatedServerUrl`) right after the calendar listing
+  through mail's `recordResolvedCalDavUrl` (the Mailboxes item `FOR SHARE`, written only while `caldav_url` is
+  `null`). From then on every discovery starts there and a redirect off it is refused like any other; a password
+  replacement verifies the stored address without resolving. Discovery starts at `https://caldav.icloud.com/` for
+  iCloud, else at the account's `caldav_url` (`mail_account_server_settings`) or
+  `https://<address domain>/.well-known/caldav`:
+  `current-user-principal`, `calendar-home-set`, then the home's calendar collections that hold VEVENTs (remote id
+  the collection path, `readOnly` without `write`, `write-content` or `all` privilege, Apple colours as `#RRGGBB`).
+  A fetch with a sync token uses sync-collection; a deletion or a changed series in the delta, an expired token or a
+  server refusing the report makes it a full fetch (calendar-query of the window's ETags, then calendar-multiget in
+  batches of 50), because sync-collection names addresses only and an override that vanished cannot be named. A
+  server without a sync-token (Purelymail answers none, and no ctag either) is never asked to filter: an unchanged ctag
+  is no change, otherwise every resource is listed with its ETag by PROPFIND `Depth: 1` (a truncated listing is
+  `invalidResponse`), only a resource that is new or whose ETag differs from `known` is read by calendar-multiget, and
+  a stored Event whose resource is no longer listed, or no longer holds it, is a deletion (an incremental answer, so
+  the window does not bound it). A resource that holds no Event is stored nowhere and read again by every pass. Events are read and written with `ical.js`
+  (`caldavIcal.ts`): the remote id is the UID, an override's `["<uid>","<recurrence id>"]`; times are wall clock in
+  the IANA zone of the `TZID` (vendor prefixes stripped; a zone only a VTIMEZONE defines is converted to `UTC`);
+  the first display alarm before the start is `alertMinutes`. A write edits only the properties whose modelled value
+  changed in the resource as the server has it now (read by a plain GET and read whole first: a value ical.js cannot
+  read makes the write `invalidResponse` before anything is sent), adds a generated VTIMEZONE for a zone the resource lacks, and is
+  conditional (`If-None-Match: *` to create, `If-Match` to replace or delete); a 412 or an ETag other than the
+  stored one is `CalendarSyncEventConflictError`, not a provider error, except a create's 412 at the resource named
+  after the same local Event, which is read and replaced with the fields. Deleting an override cancels the occurrence
+  in its series' resource. The password connect route verifies a body's `caldavUrl` by the same discovery
+  (`caldav_auth_failed`, `caldav_server_unreachable`, `caldav_server_invalid`).
+- **Microsoft Graph adapter** (`adapters/graph/`). Its only database access is the token refresh through mail's
+  `refreshAndPersistAccessToken` (the credential's row lock, the rotated refresh token stored); the pool and the
+  Microsoft OAuth client reach it through `setGraphCalendarSyncRuntime`, set by the API queue runtime when
+  `MS_GRAPH_OAUTH_CLIENT_ID`/`_SECRET` are configured (without them every `graph_api` pass fails as `unexpected`).
+  Fetches are `calendarView/delta` rounds over the window a day wider on each side in UTC (`Prefer:
+  outlook.timezone="UTC"`); the cursor is the round's `deltaLink` with the window it was made for. A changed window
+  (daily), an expired link (410) and an incremental round with removals start a full round, because a removal names
+  only an instance. Each series seen in a round is read by id with its instances: the master's pattern becomes the
+  RRULE, a rule occurrence of the window without an instance or a cancelled one an exception date, an `exception`
+  instance an override. Zones are mapped from Windows ids to IANA (`graphTimeZones.ts`), the tenant's zone when it
+  shares the Windows id (a Prague tenant reads "Central Europe Standard Time" as `Europe/Prague`); an unknown one is
+  `Etc/UTC`. Every request refuses a redirect (`redirect: "error"`), so the bearer token stays on Graph. A 403 is
+  `CalendarSyncConsentRequiredError` (`needsConsent`) only for the account's own calendar listing or with an
+  `insufficient_scope` challenge; any other 403 (one shared calendar or Event) is `GraphCalendarRequestError`
+  (`unexpected`). Writes: `PATCH /me/events/{id}` with `If-Match` (412, 404 and 410 are
+  `CalendarSyncEventConflictError`), `POST /me/calendars/{id}/events` with a `transactionId` derived from calendar,
+  local Event and fields; an Event without its own zone is
+  written in the tenant's; RRULEs no Graph pattern expresses and a new override are refused
+  (`GraphCalendarWriteUnsupportedError`).
+- **Pass** (`calendarAccountSyncJob.ts`, task `calendarAccountSync`, key `calendar-account-sync:<accountId>`, 3
+  attempts, `api`). A short read transaction reads the account, its sync mode and grant, the tracked calendars (those
+  with a `calendar_remote_state` row) and the window; an account that is gone, trashed, has Calendars off or whose
+  OAuth grant lacks the calendar scope is skipped. Then, with no transaction open, the credential is decrypted
+  (`calendar_sync` in `credential_access_log`) and every calendar fetched. A calendar without a cursor is fetched in
+  full for one year back to two years ahead (tenant zone); later fetches are incremental.
+- **Apply** (`calendarSyncApply.ts`), in bounded transactions with no transaction held between them, each first
+  taking the account's calendar sync guard (`calendarAccountSyncGuard.ts`, advisory lock
+  `calendar-account-sync:v1:<tenant>:<account>`, at most 5 s, then the pass is skipped). *Prepare*: the account and
+  its tracked calendars re-read (Calendars off or gone: skipped; tracked calendars or cursors changed since the fetch:
+  the fetch is discarded), then the calendars: a new remote calendar becomes a Calendars row of `kind` `account` with
+  its `account` edge and a `calendar_remote_state` row without cursor, a known one gets changed
+  `remoteName`/`remoteColor`/`readOnly`, one no longer listed loses its remote state and the cleanup is queued. The
+  deletions are decided here (a deletion, or for a full fetch a stored Event of the window not listed), and the pass
+  claims the account (`calendar_account_sync_state.apply_pass_id`). *Batches* of at most 25 Event operations
+  (deletions, then masters, then overrides): each checks that the account is live with Calendars on (else skipped)
+  and still claimed by this pass (else superseded: a newer pass applies its own fetch), takes its calendars' share
+  locks, re-reads its Events' remote state and applies them by `(calendar, remote_id)`: a deletion is trashed and its
+  remote state deleted; an Event whose `base_snapshot` (fields, series, organizer, attendees, and the iCalendar UID,
+  `SEQUENCE` and the account's own answer where the provider reports them) equals the fetched one writes nothing, and
+  only its remote state when its href or etag changed; otherwise the fields the provider changed since the snapshot
+  are written and other fields keep local edits. Overrides follow their series (`seriesId`, `recurrenceId`). Each
+  Event runs in a savepoint: a `ValidationError` from an Event rule skips that Event. Event writes pass
+  `allowedSystemKeys` for the provider fields and `seriesId` and no `systemOwnerProcess`; calendar writes pass
+  `systemOwnerProcess: "calendar"`. An Event whose push is pending (read under its row lock, after the calendar's
+  share lock) is left as it is and its push re-queued: the push merges the provider's change in. *Final*, under the
+  same checks: the cursors of every calendar, the re-queue of the pushes that waited for a new sign-in or grant, the
+  change notifications, the `ok` state (clearing the claim) and the resolution of the account's problem. A pass that
+  ends early (a failure, a stop, a newer claim) keeps its committed batches and the old cursors, so the next pass
+  fetches the same changes and re-applies them by remote id and snapshot without duplicates. The result lists the
+  Events added, changed and cancelled and whether this was the account's initial sync, for notifications.
+- **Write-back** (`eventPushHooks.ts`, `eventPushJob.ts`, `eventMerge.ts`). A create, a change of a provider field
+  (`name`, times, `place`, `description`, `url`, `alertMinutes`, `recurrence`), a trash, a restore or a calendar edge
+  change of an Event by any writer but `calendarSync` (agents' writes after their usual approval included), in or out
+  of a writable tracked account calendar, records the desired state in `calendar_event_push_state` (`operation`
+  `create` | `update` | `delete` | `move`, a `desired_revision` every change raises, `status` `pending` | `sent` |
+  `conflict` | `failed`, `attempts`, `last_error_code`) in the write's transaction and queues `calendarEventPush` (key
+  `calendar-event-push:<event>`, replaced). One job runs per Event at a time: its first transaction takes the push's
+  lease (`lease_id`, `lease_until`: the adapter deadline plus 8 min; an expired one is taken over), and a job that
+  finds it held is queued again for the lease's end; the holder ends the lease when it settles and queues a change
+  recorded meanwhile at once. The job decides from the Event, its remote state and its calendar, with
+  no transaction open calls the adapter, and stores each result in its own transaction under the account's guard and
+  the Event's locks, setting the status only while its revision is current. A created provider Event that a pass
+  gave an Event of its own between the write and the store trashes that one only when it has no push state (nothing
+  here changed it); otherwise the push is `conflict` and both stay. What it sends: the Event's fields, a
+  timed Event without a zone in the tenant's, a `recurrence` rule as its RRULE; a new override as a change of its
+  series' occurrence (`seriesRef`); a cancelled occurrence the provider never had as an override as an exception date
+  of its series. After a push the sent fields are the new `base_snapshot`, so the next fetch of them is no change. A
+  move to another calendar of the account is the adapter's `moveEvent` (Google) and then the changes, otherwise a
+  delete and a create with the Event's remote id as UID; across accounts a delete and a create; a series or an
+  override is not moved (`failed`, `moveUnsupported`). A refused conditional write reads the provider's version
+  (`getEvent`) and merges per field against the base: the local value where the provider left it, the provider's
+  where it changed; a field changed on both sides to different values takes the provider's and writes one
+  `calendar_change_overwritten` notification (category `calendarChanges`, deduped by the provider's version). The
+  merge is applied here as `calendarSync`, then pushed once more; a second refusal is `conflict`. A provider deletion
+  wins over a local change (the Event is trashed). A provider or unexpected failure is retried by the queue and is
+  `failed` after 5 attempts; a write the provider cannot represent is `failed` (`unsupported`) at once; a refused
+  credential or grant keeps the push pending, records the account's status and Semp problem as a failed pass does,
+  and waits for a pass that reaches the provider.
+- **Change notifications** (`calendarChangeNotifications.ts`), collected over the batches and written in the apply's
+  final transaction; a pass that ends early writes none of them. Outside the
+  account's initial sync, the Events added, cancelled, or changed in `name`, date, time, `timeZone` or `place` in a
+  calendar that was tracked before the pass and has `notify` on become `calendar_event_added`, `calendar_event_changed`
+  or `calendar_event_cancelled` (category `calendarChanges`, preference `calendarChanges`), one per Event, or one
+  `calendar_event_changed` summary per calendar when a pass has more than three. A change that leaves those fields as
+  the Event already had them locally (the echo of a local edit) is not notified. The copy names the organizer unless
+  it is one of the account's addresses or has no name. The dedupe instance is the kind plus the provider's etag (else
+  a hash of the snapshot), so a replay writes nothing new. The APNs payload carries `event_id` (not for a summary)
+  and `calendar_id`.
+- **Invitations** (`syncedInvitations.ts`, `invitationRespondJob.ts`). In the apply batch that wrote its Event,
+  after the batch's Event writes, a master or single Event the pass wrote or whose snapshot changed, whose organizer
+  is not one of the account's addresses (`Mailboxes.addresses`, a password account's login name) and in which the account attends with
+  NEEDS-ACTION (the provider's own report: Google's `self` attendee, Graph's `responseStatus`; else the attendee with
+  an account address, no `PARTSTAT` counting as NEEDS-ACTION) gets an Invitations row (`kind` `invite`, `status`
+  `pending`, `uid` the provider's iCalendar UID, `sequence`) linked to the Event, the account and the Event's
+  calendar, under the same `UID` advisory lock as the iMIP ingest. An invitation of that `UID` that an e-mail
+  delivered and no Event holds yet is adopted instead. Its `calendar_invitation` notification is deduped per
+  invitation and `SEQUENCE` (`sequence:<n>`), is not written in the account's initial sync, and replaces the
+  Event's added or changed notice. The invitation's fields follow the Event; NEEDS-ACTION at a higher `SEQUENCE`
+  makes an answered invitation pending and notifies it again; a pending one the account answered at the provider
+  takes that answer. An Event the provider deletes cancels its pending, accepted or tentative invitation (a
+  declined one stays declined, since Graph removes a declined meeting). Answering an invitation whose Event an
+  account calendar holds (`POST /api/calendar/invitations/:id/respond`) writes only the invitation's `status` and
+  `respondedAt` and queues `calendarInvitationRespond` (key `calendar-invitation-respond:<invitation>`, replaced,
+  5 attempts, `api`) in that transaction; the Event is left to the provider, and an Event the provider no longer
+  has answers 409. The job, with no transaction open, calls the adapter's `respondToInvitation`: Google patches the
+  account's attendee `responseStatus` (`attendeesOmitted`, `sendUpdates=all`), Graph posts `accept`,
+  `tentativelyAccept` or `decline` with `sendResponse`, CalDAV writes the attendee's `PARTSTAT` (`If-Match`) for the
+  server's scheduling to reply; no iTIP e-mail is sent. Success queues a pass. An Event the provider no longer has,
+  one without the account as an attendee, or the last failed attempt makes the invitation pending again, while it
+  still holds that answer; a refused credential or grant also records the account's status and Semp problem.
+- **Status.** `calendar_account_sync_state` (`status` `ok` | `error` | `never` | `needsReauthorization` |
+  `needsConsent`, `last_successful_sync_at`, `failing_since`, `last_error_code`, `initial_sync_completed_at`,
+  `manual_sync_requested_at`, `apply_pass_id`). `calendarStatusOf` derives the rows' `calendarStatus`: `off` with Calendars off,
+  `needsConsent` while the OAuth grant lacks the calendar scope, else the stored status (`never` without a row). A
+  failed pass records, under the guard and only while Calendars is on, `needsReauthorization` for a refused credential
+  (or none stored), `needsConsent` for a refused calendar grant, otherwise `error` with the provider's code, `timeout`
+  or `unexpected`, and raises the account's Semp problem `calendarSyncError` (`calendar:<account>`, category `mail`,
+  critical for the first two). Calendars and Events stay as they were. Only `error` is rethrown for the queue's retry.
+- **Triggers.** An account created with Calendars on or switched on queues a pass; the sweep
+  `calendarAccountSyncSweep` (every 5 min) queues every account with Calendars on without a state row, `never` or
+  `error`, or `ok` and last synced 4 min ago or more; a `needsReauthorization` or `needsConsent` account is left out
+  until a new sign-in (a replaced password or OAuth grant) sets it back to `never` and queues its pass;
+  `POST /api/accounts/:id/calendars/sync` (202 `{ id, queued: true, runAt }`, 404 for another tenant's or an unknown id, 409 `calendars_disabled`) queues one, at most one per 15 s per account and never
+  dropping a request: `manual_sync_requested_at` is the run time of the latest requested pass, decided by one upsert
+  under the account row's share lock. With none in the last 15 s the pass runs now; a request inside the window of a
+  pass that started queues one at the window's end; while that one is still ahead it serves the request too. The
+  deferred pass is queued under the account's job key with that `run_at` and `jobKeyMode` `preserve_run_at`, so a pass
+  already waiting keeps its earlier time. Neither lock is waited for longer than 50 ms: while another writer holds
+  one, the request queues the pass now without recording itself. CalDAV accounts (`imap`) have
+  no provider push: the sweep and the app's foreground call of that route are their only triggers.
+- **Push channels** (`calendarPushChannelsJob.ts`, task `calendarPushChannels`, key
+  `calendar-push-channels:<account>`, 3 attempts, `api`; sweep `calendarPushChannelsSweep` hourly).
+  `calendar_push_channels` holds a Google `events.watch` channel per tracked calendar of a `gmail_api` account (`googleChannels.ts`: a server
+  chosen UUID, a random 32-byte token, 7 days asked for) and one Graph subscription on `/me/events` per `graph_api`
+  account (`graphCalendarSubscriptions.ts`: `created,updated,deleted`, a random `clientState`, 4230 minutes). The
+  table is left out of the tenant export. A channel is wanted while Calendars is on, the grant covers calendars, the
+  last pass ended `ok` and the API queue's runtime (`setCalendarPushRuntime`) has the provider's webhook URL; each
+  provider call and its row write are their own step, with no transaction open across the call. Within a day of its
+  expiry a Google channel is replaced (the new one first, then the old one stopped) and a Graph subscription extended
+  (a 404 subscribes anew). Every unwanted channel, also an older duplicate, is stopped and its row deleted even when
+  the stop fails, since the provider ends it at its expiry. Switching Calendars off queues the account's maintenance;
+  removing the account deletes its rows in the removal transaction and stops them after the commit with the refresh
+  token read before the credential went, before the mail cleanup can revoke the Google grant.
+- **Webhooks** (`calendarWebhookHandlers.ts` in the API, `calendarPushNotifications.ts`). `POST
+  /api/calendar/google/webhook` and `POST /api/calendar/graph/webhook` are public. The channel id names the tenant
+  through `route_google_calendar_channel` / `route_graph_calendar_subscription` (an id in more than one tenant names
+  none); inside that tenant the stored secret is compared in constant time (against a dummy when nothing is stored)
+  and a match queues `calendar-account-sync:<account>`. They never fetch. Google: 200 when accepted (a `sync` message
+  queues nothing), the same empty 404 for an unknown channel, a wrong or missing token or a malformed id, 413 over
+  16 KiB. Graph: the `validationToken` handshake echoed as `text/plain` first, then 202 for every batch (at most 100
+  notifications, 256 KiB), rejected notifications logged and dropped.
+- **Off and removal** (`calendarAccountSyncLifecycle.ts`). Switching Calendars off (`mail/mailboxServiceHooks.ts`) or
+  removing the account (`removeMailbox`) deletes the state row and every `calendar_remote_state` row of the account,
+  resolves the problem as `sourceDeleted` and queues `calendarAccountCleanup` (key
+  `calendar-account-cleanup:<account>`). Untracked calendars are no longer touched by a pass. The cleanup trashes, per
+  committed chunk under the guard, the live Events of the account's untracked calendars with their remote state, then
+  each calendar. Switching Calendars on again syncs the account anew into new calendars.
+- **Lock order.** The Calendars switch: calendar sync guard (at most 15 s, then 409 `calendar_sync_busy`) before the
+  Mailboxes row; with a Mail switch in the same write, mailbox sync guard → calendar sync guard → mail sync state row
+  → Mailboxes row, the order a removal takes them in. Each apply step: guard → state row → calendar rows → Event rows. A
+  cleanup chunk: guard → Event rows → calendar row.
 
 ### Reminders and resync pushes
 
@@ -142,8 +435,10 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   debounced job per tenant (`reminders-resync:<tenantId>` / `sleep-resync:<tenantId>`, `jobKeyMode: "replace"`, run
   time +30 s) on the write's own client, from hooks registered last (`calendar/remindersResyncHooks.ts`,
   `sleep/sleepWriteHooks.ts`).
+- The reminders feed (`GET /api/calendar/reminders`, `calendar/remindersFeedRouteHandler.ts`) lists stored rows and
+  the occurrences of raw-rule series; the virtual occurrences of a `recurrence` series are not listed.
 - Reminders hooks fire on a value change of `date`, `endDate`, `timeFrom`, `alertMinutes`, `travelMinutes`,
-  `notifications`, `status` on Events/Tasks (judged against the hook context's `previous`), on calendar `notify`, on
+  `notifications`, `status`, `timeZone`, `recurrenceRule`, `exceptionDates` on Events/Tasks (judged against the hook context's `previous`), on calendar `notify`, on
   tenant `timezone`, and on trash/restore. Defaults and transform-set `null`s on create are not changes.
 - Payload is `{ tenantId }` only; the handler checks it against the envelope tenant and sends a silent APNs push to
   active `ios` registrations, writing no `notifications` rows.
@@ -199,6 +494,13 @@ Rules live in `calendar/calendarRowHooks.ts` and `calendar/calendarTrashHooks.ts
   then tasks).
 - Trashing an Event recomputes its hosted tasks and keeps the edges. Restoring an Event locks every hosted task row
   (id order) and then deletes their `hostedTasks` edges as the Tasks process; the task is not put back.
+- A task is done in an Event through its `completedInEvent` edge: written by the status hook when the task is
+  completed while its last live dated host Event has not ended, or by
+  `PUT /api/tasks/:id/completed-in-event/:eventId`, which completes it in one of its host Events, ended or not,
+  replacing any edge to another Event, in the status write's
+  transaction. A task completed without the edge, from its own row on whatever day, reads `doneElsewhere` with that
+  day in every Event it sits in; a `done` task with neither the edge nor a completion day reads `done` in each
+  (`tasks/taskStateInEvent.ts`).
 
 ### Nightly rollover
 
@@ -226,7 +528,7 @@ Link rules declared in the `systemDatabases` manifest (engine: [data-model-and-w
 - People rules use `valueFilter: { omit: { databaseKey: "systemSettings", propertyKey: "selfPerson" } }`. Copies lock
   the System settings row `FOR SHARE`; `setSelfPersonId` (`selfPerson.ts`) and other writers of the relation lock it
   `FOR UPDATE` and queue recomputation.
-- Rules run in whichever process writes the via edge (`semprec-transcribe`, `semprec-api`, `semprec-agents`); later
+- Rules run in whichever process writes the via edge (`alldots-transcribe`, `alldots-api`, `alldots-agents`); later
   source changes go through `valueLinksPropagate` (`api` affinity). Only live sources are copied.
 - Removing the via edge detaches that Event from the target's links in any state (`tasks/taskSourceEventLinkDetach.ts`,
   `transcription/transcriptCompanyLinkRelease.ts`); removing a transcript's Event also deletes its `company` link.
@@ -235,7 +537,9 @@ Link rules declared in the `systemDatabases` manifest (engine: [data-model-and-w
 
 ## Event trash: lock order
 
-The Event delete hooks' order in the `itemDeleteHooks` list of `domainWriteHooks.ts` is part of the contract:
+The Event delete hooks' order in the `itemDeleteHooks` list of `domainWriteHooks.ts` is part of the contract. Before
+them, `accountCalendarEventDeletePreLockHook` locks an account calendar's row `FOR SHARE` before the Event's row, and
+`accountCalendarEventDeleteHook` runs first and reads `readOnly` under that lock.
 
 1. `valueLinkSourceDeleteHook`: locks the Tasks rows whose links the Event feeds (id order, `FOR UPDATE OF i`), then
    the links via `deleteValueLinkSourcesBySourceItem` ordered by item id, rule catalog position (`loadLinkRules`), link
@@ -286,15 +590,15 @@ never locked by an Event trash (it must not wait for an open transcription match
 
 ### Process placement
 
-- `services/semprec-transcribe` runs the media pipeline. It is the only process that runs `ffmpeg`/`ffprobe`, only from
+- `services/alldots-transcribe` runs the media pipeline. It is the only process that runs `ffmpeg`/`ffprobe`, only from
   `src/mediaNormalization.ts` (system packages, fixed argv, no shell, SIGKILL timeout, zod-validated output). Others
   hand media work to it as a task with `queueAffinity: 'transcribe'`.
-- `services/semprec-transcribe/src/queueRuntime.ts` runs one-slot runners: the pipeline (`transcriptionJob`), fast row
+- `services/alldots-transcribe/src/queueRuntime.ts` runs one-slot runners: the pipeline (`transcriptionJob`), fast row
   creation (`transcriptionCreate`), short model tasks (`transcriptCardRecompute`, `transcriptSpeakerSuggestion`, voice
   notes) and Inbox attachment metadata.
 - Graceful shutdown: the task polls `helpers.abortSignal` only between committed checkpoints
   (`throwIfShutdownRequested`), throws `TranscriptionInterruptedError`, re-enqueues by `fileItemId` and returns
-  normally. `TimeoutStopSec` (960 s, `deploy/systemd/semprec-transcribe.service`) is sized to one ASR chunk.
+  normally. `TimeoutStopSec` (960 s, `deploy/systemd/alldots-transcribe.service`) is sized to one ASR chunk.
 - The worker writes through the choke point only. Its write surface: Transcripts items and their system properties
   and checkpoints; the requested `project` and upload `event` edges at create; the match's `event` edge (and release of
   an edge to a trashed Event); `transcript` cards and their `sourceTranscript` edge; card rewrites of its own cards;
@@ -304,12 +608,12 @@ never locked by an Event trash (it must not wait for an open transcription match
 
 - The outer handler converts every escaping failure into a typed error with a fixed message and stable code, no cause
   or provider text. Diagnostics are stored first; a failure while storing them never replaces the original.
-- The streaming STT adapter (`services/semprec-ai-gateway/src/audioProviders/openAiStreamingTranscriptionProvider.ts`)
+- The streaming STT adapter (`services/alldots-ai-gateway/src/audioProviders/openAiStreamingTranscriptionProvider.ts`)
   refuses a frame when `bufferedAmount + frameBytes > 256 KiB` and fails the session with a content-free diagnostic.
 
 ### Pipeline locking
 
-- **Lock order** in `services/semprec-transcribe/src/transcriptionTask.ts`: source Files item `FOR UPDATE`, transcript
+- **Lock order** in `services/alldots-transcribe/src/transcriptionTask.ts`: source Files item `FOR UPDATE`, transcript
   item `FOR UPDATE`, then `item_automation` `FOR UPDATE`, for every guard, checkpoint write, attempt start and failure
   record. No lock is held across gateway, storage or media work.
 - A deleted source or transcript observed under these locks ends the job as a deleted stop (automation marked, items
@@ -354,7 +658,7 @@ never locked by an Event trash (it must not wait for an open transcription match
 - Diarization keys stay in `computed.segments`; who a key is lives on the user-owned `speakers` edge with metadata
   exactly `{ speaker }`. `assertSpeakerEdgeWritable` (choke point) enforces a real key and one person per key, locking
   the transcript.
-- Only `semprec-transcribe` creates `transcript` cards: the match step and the suggestion step
+- Only `alldots-transcribe` creates `transcript` cards: the match step and the suggestion step
   (`transcription/transcriptSpeakerSuggestion.ts`). Only a human confirm writes a `speakers` edge.
 - Confirm adds missing Event participants with `createRelationIfAbsentWithClient` (insert-only, no metadata
   replacement, records `addedRelations` in history).
@@ -369,7 +673,7 @@ never locked by an Event trash (it must not wait for an open transcription match
 
 - A user instruction on a card enqueues `transcriptCardRecompute` (key
   `transcript-card-recompute:<proposalId>:<instructionEntryId>`) in the revise transaction.
-- `semprec-transcribe` rewrites only its own `transcript` cards: snapshot, gateway call outside transactions, then a
+- `alldots-transcribe` rewrites only its own `transcript` cards: snapshot, gateway call outside transactions, then a
   locked write that fails if `aiVersion` moved. The model may only choose among existing candidates or edit the
   current new-item proposal; user-edited keys are preserved. Each instruction is answered by exactly one
   `threadRevision` entry. Logs carry ids and codes only.
@@ -436,8 +740,8 @@ never locked by an Event trash (it must not wait for an open transcription match
 Rules recorded with these domains that apply more broadly:
 
 - **Queue affinity:** every queue task declares `queueAffinity` (`TASK_AFFINITIES = ["api", "agents", "transcribe"]`
-  in `@semprec/queue`; module tasks in their manifest). `resolveTaskAffinitySets` (`moduleTasks.ts`) is the single
-  resolver; `@semprec/module-registry` keeps its own literal tuple and must not import `@semprec/queue`.
+  in `@alldots/queue`; module tasks in their manifest). `resolveTaskAffinitySets` (`moduleTasks.ts`) is the single
+  resolver; `@alldots/module-registry` keeps its own literal tuple and must not import `@alldots/queue`.
 - **Module task dependencies:** a module task needing composition-root objects exports `set<Name>Delivery(next | null)`;
   the runtime of its affinity binds before starting and unbinds on stop; an unbound handler throws (queue retries).
 - **Queue task as agent without a run:** a queue task may write one reversible user-owned relation edge as an agent

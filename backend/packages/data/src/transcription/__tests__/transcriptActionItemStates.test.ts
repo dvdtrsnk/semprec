@@ -1,6 +1,6 @@
 import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
@@ -192,7 +192,7 @@ const noted = (transcriptId: string, actionItemId: number) => ({
 describe("transcript action item states (issue #1754)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runAsSystem("verify action item state role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
@@ -734,8 +734,8 @@ describe("transcript action item states (issue #1754)", () => {
       expect(await runInTenant(tenant, () => storedStates())).toEqual(stored);
     });
 
-    it("lets semprec_side read the states and refuses its writes", async () => {
-      const side = await createRuntimeRolePool(admin, "semprec_side");
+    it("lets alldots_side read the states and refuses its writes", async () => {
+      const side = await createRuntimeRolePool(admin, "alldots_side");
       try {
         await runInTenant(tenant, async () => {
           const transcript = await createTranscript();

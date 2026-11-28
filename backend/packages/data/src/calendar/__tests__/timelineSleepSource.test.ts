@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { createChokePoint } from "../../chokePoint/chokePoint.js";
 import * as databasesStore from "../../chokePoint/databasesStore.js";
@@ -39,6 +39,9 @@ const sleepSchema = z
     wakeTime: z.string(),
     alarm: z.boolean(),
     changed: z.boolean(),
+    planBedTime: z.string().nullable(),
+    planWakeTime: z.string().nullable(),
+    goalMinutes: z.number().nullable(),
     bedAt: z.string(),
     wakeAt: z.string(),
     prepReminderAt: z.string().nullable(),
@@ -204,7 +207,7 @@ function world(tenantId: string) {
 describe("sleep timeline source (issue #1806)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -245,6 +248,9 @@ describe("sleep timeline source (issue #1806)", () => {
         wakeTime: "06:45",
         alarm: true,
         changed: false,
+        planBedTime: "23:00",
+        planWakeTime: "06:45",
+        goalMinutes: 480,
         bedAt: "2026-10-15T23:00:00+02:00",
         wakeAt: "2026-10-16T06:45:00+02:00",
         prepReminderAt: "2026-10-15T22:30:00+02:00",
@@ -259,6 +265,9 @@ describe("sleep timeline source (issue #1806)", () => {
         wakeTime: "08:30",
         alarm: false,
         changed: false,
+        planBedTime: "00:00",
+        planWakeTime: "08:30",
+        goalMinutes: 480,
         bedAt: "2026-10-17T00:00:00+02:00",
         wakeAt: "2026-10-17T08:30:00+02:00",
         prepReminderAt: "2026-10-16T23:30:00+02:00",
@@ -299,6 +308,29 @@ describe("sleep timeline source (issue #1806)", () => {
       ["2026-10-20", false, "23:00"],
     ]);
     expect(nights[0]).toMatchObject({ bedAt: "2026-10-15T23:30:00+02:00", wakeTime: "06:45", alarm: true });
+    // The plan's own times stay beside the changed ones, for the night to show what it departs from.
+    expect(nights.map(({ planBedTime, planWakeTime }) => [planBedTime, planWakeTime])).toEqual([
+      ["23:00", "06:45"],
+      ["00:00", "08:30"],
+      ["00:00", "08:30"],
+      ["23:00", "06:45"],
+      ["23:00", "06:45"],
+      ["23:00", "06:45"],
+    ]);
+  });
+
+  it("gives every night the goal of the settings, and none for a goal that is no whole number of minutes", async () => {
+    const w = world(await newTenant());
+    await w.updateSettings({ goalMinutes: 450 });
+    expect((await w.nights("2026-10-16")).map((night) => night.goalMinutes)).toEqual([450, 450]);
+    const settingsId = await w.settingsId();
+    for (const goal of [0, -30, 1.5, "480", null]) {
+      await w.storeRaw(SLEEP_SETTINGS_MODULE_ID, settingsId, { goalMinutes: goal });
+      expect(
+        (await w.nights("2026-10-16")).map((night) => night.goalMinutes),
+        String(goal),
+      ).toEqual([null, null]);
+    }
   });
 
   it("applies the exception of the last night of a multi-day range", async () => {

@@ -4,7 +4,7 @@
 import type { Pool, PoolClient } from "pg";
 import { DateTime } from "luxon";
 import { z } from "zod";
-import { CORE_TASK_NAMES, enqueueJob } from "@semprec/queue";
+import { CORE_TASK_NAMES, enqueueJob } from "@alldots/queue";
 import { eventEnd, getCalendarClock } from "../calendarTime.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -78,14 +78,18 @@ export interface HostEventsRelation {
 /** `null` without a Tasks database or the relation. */
 export async function loadHostEventsRelation(client: PoolClient): Promise<HostEventsRelation | null> {
   const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
-  const property = tasks && (await propertiesStore.getPropertyByKey(client, tasks.id, HOST_EVENTS_KEY));
+  return tasks && loadHostEventsRelationIn(client, tasks.id);
+}
+
+/** `loadHostEventsRelation` for a Tasks database the caller already resolved; `null` without the relation. */
+export async function loadHostEventsRelationIn(
+  client: PoolClient,
+  tasksDatabaseId: string,
+): Promise<HostEventsRelation | null> {
+  const property = await propertiesStore.getPropertyByKey(client, tasksDatabaseId, HOST_EVENTS_KEY);
   const definition = property && (await relationsStore.getRelationDefinitionByPropertyId(client, property.id));
-  if (!tasks || !property || !definition) return null;
-  return {
-    tasksDatabaseId: tasks.id,
-    definitionId: definition.id,
-    taskIsItemA: definition.propertyIdA === property.id,
-  };
+  if (!property || !definition) return null;
+  return { tasksDatabaseId, definitionId: definition.id, taskIsItemA: definition.propertyIdA === property.id };
 }
 
 function readCalendarDate(value: unknown): string | null {

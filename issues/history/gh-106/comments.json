@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559432718",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/106#issuecomment-5559432718",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/106",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559432718",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/106#issuecomment-5559432718",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/106",
     "id": 5559432718,
     "node_id": "IC_kwDOUFuQ4c8AAAABS142Dg",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559432718/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559432718/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559528767",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/106#issuecomment-5559528767",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/106",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559528767",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/106#issuecomment-5559528767",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/106",
     "id": 5559528767,
     "node_id": "IC_kwDOUFuQ4c8AAAABS1-tPw",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-06T13:27:37Z",
     "updated_at": "2026-09-06T13:27:37Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #290\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-106-inbox-pipeline-07-07-render-inbox-item-thr_88c3ic8mqn`.\n\n## Summary\n\nImplements issue #106: registers the `journal-inbox` view type and caches each Journal day's related Inbox items in `items.computed`, invalidating/recomputing after capture, proposal transitions, and deletion.\n\n- **`views/journalInboxViewType.ts`**: registers the `journal-inbox` view type (config: `inboxDatabaseId`, `journalDayRelationKey`, `computedKey`), following the same registration pattern as the existing `temporal-switcher`/`mailbox-client` view types.\n- **`inbox/journalInboxCompute.ts`**: the computed-cache mechanism — declares `JOURNAL_INBOX_COMPUTED_KEY = \"inboxItems\"`, builds a canonical, display-ready list of Inbox items scoped to one Journal day purely via the `journalDay` relation (excluding soft-deleted items, resolving each item's type and current proposal status as raw canonical values, not localized text), and writes/invalidates it through `writeComputed`/`notifyInvalidation` — mirroring the existing rollup engine's enqueue/recompute pattern with a new deduped `journalInboxRecompute` graphile-worker task.\n- Wired the new task into `@semprec/queue`'s `CORE_TASK_NAMES` and `worker.ts`; declared the computed key and registered the view type during seeding (`seedInboxPipeline.ts`/`seedSystem.ts`).\n- Hooked recompute triggers into all three required invalidation points: capture (`inboxStore.ts`), update/deletion (`inboxTickAction.ts`'s tick handler — a soft-deleted item's relation edge still resolves), and proposal transitions (`proposalActions.ts`'s confirm/reject/revise).\n- Deliberately did not persist a `journal-inbox` view row during seeding since no Journal frontend exists yet in this repo, and doing so would have collided with existing tests asserting exactly one view per seeded database.\n- Added `__tests__/journalInboxCompute.test.ts` (8 tests) covering view-type registration, computed-key collision guarding, day-scoping, type/status resolution, and cache updates after capture, confirm, reject, and deletion.\n\nVerified: full workspace build (`pnpm -r run build`) clean; full test suite (`npx vitest run`) 321/321 tests passed.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #290\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-106-inbox-pipeline-07-07-render-inbox-item-thr_88c3ic8mqn`.\n\n## Summary\n\nImplements issue #106: registers the `journal-inbox` view type and caches each Journal day's related Inbox items in `items.computed`, invalidating/recomputing after capture, proposal transitions, and deletion.\n\n- **`views/journalInboxViewType.ts`**: registers the `journal-inbox` view type (config: `inboxDatabaseId`, `journalDayRelationKey`, `computedKey`), following the same registration pattern as the existing `temporal-switcher`/`mailbox-client` view types.\n- **`inbox/journalInboxCompute.ts`**: the computed-cache mechanism — declares `JOURNAL_INBOX_COMPUTED_KEY = \"inboxItems\"`, builds a canonical, display-ready list of Inbox items scoped to one Journal day purely via the `journalDay` relation (excluding soft-deleted items, resolving each item's type and current proposal status as raw canonical values, not localized text), and writes/invalidates it through `writeComputed`/`notifyInvalidation` — mirroring the existing rollup engine's enqueue/recompute pattern with a new deduped `journalInboxRecompute` graphile-worker task.\n- Wired the new task into `@alldots/queue`'s `CORE_TASK_NAMES` and `worker.ts`; declared the computed key and registered the view type during seeding (`seedInboxPipeline.ts`/`seedSystem.ts`).\n- Hooked recompute triggers into all three required invalidation points: capture (`inboxStore.ts`), update/deletion (`inboxTickAction.ts`'s tick handler — a soft-deleted item's relation edge still resolves), and proposal transitions (`proposalActions.ts`'s confirm/reject/revise).\n- Deliberately did not persist a `journal-inbox` view row during seeding since no Journal frontend exists yet in this repo, and doing so would have collided with existing tests asserting exactly one view per seeded database.\n- Added `__tests__/journalInboxCompute.test.ts` (8 tests) covering view-type registration, computed-key collision guarding, day-scoping, type/status resolution, and cache updates after capture, confirm, reject, and deletion.\n\nVerified: full workspace build (`pnpm -r run build`) clean; full test suite (`npx vitest run`) 321/321 tests passed.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559528767/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559528767/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559673365",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/106#issuecomment-5559673365",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/106",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559673365",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/106#issuecomment-5559673365",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/106",
     "id": 5559673365,
     "node_id": "IC_kwDOUFuQ4c8AAAABS2HiFQ",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559673365/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559673365/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559788197",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/106#issuecomment-5559788197",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/106",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559788197",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/106#issuecomment-5559788197",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/106",
     "id": 5559788197,
     "node_id": "IC_kwDOUFuQ4c8AAAABS2OipQ",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559788197/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559788197/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559858379",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/106#issuecomment-5559858379",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/106",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559858379",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/106#issuecomment-5559858379",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/106",
     "id": 5559858379,
     "node_id": "IC_kwDOUFuQ4c8AAAABS2S0yw",
     "user": {
@@ -384,7 +384,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5559858379/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5559858379/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

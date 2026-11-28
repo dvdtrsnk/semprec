@@ -181,7 +181,7 @@ final class SharedSempActionMappingTests: XCTestCase {
 
     func testEveryTargetKindRoundTrips() {
         let kinds: [SempTargetKind] = [
-            .task, .event, .mail, .inbox, .journal, .project, .area, .person, .company, .file, .note, .recording,
+            .task, .event, .mail, .inbox, .journal, .project, .person, .company, .file, .note, .recording,
             .finance, .health, .recipe, .book, .movie, .run, .other
         ]
         for kind in kinds { XCTAssertEqual(SempTargetKind(kind.shared), kind) }

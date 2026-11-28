@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../auth/usersStore.js";
 import { ValidationError } from "../errors.js";
 import { getTestPool, resetDatabase } from "../testSupport/testDb.js";
@@ -35,12 +35,13 @@ const DEFAULTS = {
   badgeApprovals: true,
   badgeInvites: true,
   badgeInbox: false,
+  calendarChanges: true,
   updatedAt: null,
 };
 
 beforeAll(async () => {
   adminPool = getTestPool();
-  runtimePool = await createRuntimeRolePool(adminPool, "semprec_data");
+  runtimePool = await createRuntimeRolePool(adminPool, "alldots_data");
 });
 
 beforeEach(async () => {
@@ -123,6 +124,7 @@ describe("notification preferences (issue #1441)", () => {
       badgeApprovals: false,
       badgeInvites: false,
       badgeInbox: true,
+      calendarChanges: false,
     };
 
     const first = await patchPreferences(tenant, user, every);

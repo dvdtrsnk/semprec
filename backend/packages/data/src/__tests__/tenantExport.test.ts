@@ -7,9 +7,9 @@ import { inflateRawSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { escapeIdentifier, type Pool, type PoolClient, type QueryResult } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES } from "@semprec/queue";
-import { readJobPayloadsByIdentifier } from "@semprec/queue/testSupport";
+import { runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES } from "@alldots/queue";
+import { readJobPayloadsByIdentifier } from "@alldots/queue/testSupport";
 import { createUser } from "../auth/usersStore.js";
 import { createBlob } from "../blobs/blobsStore.js";
 import { ingestUploadedFile } from "../blobs/fileUploadStore.js";
@@ -151,6 +151,8 @@ async function seedTenant(tenantId: string, duplicateAttachment = false): Promis
         { allowedSystemKeys: ["name"] },
       );
       const ingested = await ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId,
         filesDatabaseId,
         folderRelationPropertyId: relationId("folder"),
@@ -221,7 +223,7 @@ async function expectedTableNames(): Promise<string[]> {
   const { rows } = await adminPool.query<{ relname: string }>(
     `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition
-        AND obj_description(c.oid, 'pg_class') = 'semprec:tenancy=tenant'
+        AND obj_description(c.oid, 'pg_class') = 'alldots:tenancy=tenant'
       ORDER BY 1`,
   );
   const excluded: readonly string[] = EXPORT_EXCLUDED_TABLES;
@@ -231,7 +233,7 @@ async function expectedTableNames(): Promise<string[]> {
 describe("tenant data export (issue #1043)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterAll(async () => {
@@ -246,7 +248,7 @@ describe("tenant data export (issue #1043)", () => {
     tenantB = await createTestTenant(adminPool, { status: "provisioning" });
     await provisionTenant(pool, tenantB);
 
-    const root = join(tmpdir(), `semprec-test-export-${randomUUID()}`);
+    const root = join(tmpdir(), `alldots-test-export-${randomUUID()}`);
     filesDir = join(root, "files");
     mailDir = join(root, "mail");
     filesStorage = new LocalFsBlobStorageWriter(filesDir);
@@ -269,7 +271,7 @@ describe("tenant data export (issue #1043)", () => {
     }
 
     async function requestAfterFinishingConflicts(userId: string, blockerIds: string[], conflictCount: number) {
-      const dedicated = await createRuntimeRolePool(adminPool, "semprec_data");
+      const dedicated = await createRuntimeRolePool(adminPool, "alldots_data");
       try {
         return await runInTenant(tenantA, () =>
           withTransaction(dedicated, async (client) => {

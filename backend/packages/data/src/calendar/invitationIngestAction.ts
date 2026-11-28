@@ -1,8 +1,10 @@
 // Turns the iMIP `REQUEST`/`CANCEL` of a new email into invitation writes. Mail ingest writes nothing to the
 // Invitations database: the calendar module reacts to the new Emails item instead, as `mail.linkPeopleByEmail` does.
+// An e-mail received by an account with Calendars on writes nothing: that account's calendar sync takes the same
+// invitation from the provider's calendar (`sync/syncedInvitations.ts`). A backfilled e-mail (imported history, not
+// new mail) still writes its invitation but notifies nobody, as a calendar's initial sync does.
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { getTenantUserId } from "../auth/usersStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { itemDeleteWithClient } from "../chokePoint/itemTrash.js";
 import { createItemWithClient, updateItemWithClient } from "../chokePoint/itemWrites.js";
@@ -15,12 +17,13 @@ import { withClient, withTransaction } from "../db/pool.js";
 import { ValidationError } from "../errors.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { getMailMessageMetaByItemId } from "../mail/mailMessageMetaStore.js";
+import { areCalendarsEnabled } from "../mail/mailboxServiceHooks.js";
 import { normalizeEmailAddress } from "../mail/personEmailIndexStore.js";
 import { resolveNotificationsBySource } from "../notifications/notificationsStore.js";
-import { writeNotification } from "../notifications/notify.js";
 import { createActionQueueAffinity, type ActionHandler } from "../scheduler/actions.js";
 import type { CreateHeartbeatInput } from "../scheduler/schedulerStore.js";
 import { CALENDARS_MODULE_ID } from "../seed/calendarsKeys.js";
+import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
 import { EVENTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { getSystemTimezone } from "../systemSettings.js";
 import { assertValidTimezone } from "../timezone.js";
@@ -30,9 +33,12 @@ import { readCalendarPartsOfEmail } from "./emailCalendarParts.js";
 import { deriveEventTimeProperties } from "./eventTime.js";
 import { parseICalendar, type ICalendarEvent } from "./icalendarParser.js";
 import { invitationEventFields } from "./invitationEventFields.js";
+import { lockInvitationOfUid, notifyInvitation } from "./invitationRows.js";
 import { logger } from "./logger.js";
 
-export const CALENDAR_INGEST_INVITATION_ACTION_ID = "calendar.ingestInvitation";
+import { CALENDAR_INGEST_INVITATION_ACTION_ID } from "./invitationActionKeys.js";
+
+export { CALENDAR_INGEST_INVITATION_ACTION_ID } from "./invitationActionKeys.js";
 
 /** Both database ids are resolved once at seed time. */
 const configSchema = z.object({ emailsDatabaseId: z.uuid(), invitationsDatabaseId: z.uuid() });
@@ -110,6 +116,8 @@ interface MessageContext {
   /** `envelope.from`, normalized. */
   senderAddress: string | null;
   timeZone: string;
+  /** The message arrived live; a backfilled one creates its invitation without a notification. */
+  notify: boolean;
 }
 
 async function linkInvitation(
@@ -128,40 +136,6 @@ async function linkInvitation(
     },
     CALENDAR_RELATION_CONTEXT,
   );
-}
-
-const NOTIFICATION_TITLE_MAX_CHARACTERS = 120;
-
-/**
- * Runs in the caller's transaction, so the notification commits or rolls back with the invitation. `link_href` is
- * `null`: the app opens the invitation from `payload.invitationId`.
- */
-async function notifyNewInvitation(
-  client: PoolClient,
-  emailItemId: string,
-  invitationItemId: string,
-  event: ICalendarEvent,
-): Promise<void> {
-  const userId = await getTenantUserId(client);
-  if (userId === null) {
-    logger.warn({ emailItemId, invitationItemId, reason: "no_tenant_user" }, "calendar invitation not notified");
-    return;
-  }
-  await writeNotification(client, {
-    userId,
-    kind: "calendar_invitation",
-    titleParams: {
-      organizer: event.organizer?.name ?? event.organizer?.address ?? "",
-      title: Array.from(event.summary ?? "")
-        .slice(0, NOTIFICATION_TITLE_MAX_CHARACTERS)
-        .join(""),
-    },
-    linkHref: null,
-    sourceTable: "items",
-    sourceId: invitationItemId,
-    transitionInstance: "created",
-    payload: { invitationId: invitationItemId },
-  });
 }
 
 async function createInvitation(client: PoolClient, context: MessageContext, event: ICalendarEvent): Promise<void> {
@@ -185,7 +159,16 @@ async function createInvitation(client: PoolClient, context: MessageContext, eve
   } else {
     await linkInvitation(client, context, invitation.id, "suggestedCalendar", calendarId);
   }
-  await notifyNewInvitation(client, context.emailItemId, invitation.id, event);
+  if (context.notify) {
+    await notifyInvitation(client, {
+      invitationItemId: invitation.id,
+      organizerName: event.organizer?.name ?? null,
+      organizerEmail: event.organizer?.address ?? null,
+      title: event.summary,
+      transitionInstance: "created",
+      logIds: { emailItemId: context.emailItemId },
+    });
+  }
   logger.info({ emailItemId: context.emailItemId, invitationItemId: invitation.id }, "calendar invitation created");
 }
 
@@ -309,22 +292,12 @@ async function updateAnsweredInvitation(
   }
 }
 
-/** The advisory lock serializes deliveries of one `UID`; trashed invitations count. */
-async function lockInvitationOfUid(client: PoolClient, context: MessageContext, uid: string): Promise<ItemRow | null> {
-  await client.query(
-    "SELECT pg_advisory_xact_lock(hashtextextended('invitationUid:' || app_tenant_default()::text || ':' || $1::text, 0))",
-    [uid],
-  );
-  const [existing] = await itemsStore.listItemsByTextProperty(client, context.invitationsDatabaseId, "uid", uid, true);
-  return existing ?? null;
-}
-
 /**
  * The advisory lock comes first so two deliveries of one `UID` cannot both find no invitation and both insert.
  * Only the create branch notifies, so the user is notified once.
  */
 async function applyRequest(client: PoolClient, context: MessageContext, event: ICalendarEvent): Promise<void> {
-  const existing = await lockInvitationOfUid(client, context, event.uid);
+  const existing = await lockInvitationOfUid(client, context.invitationsDatabaseId, event.uid);
   if (!existing) {
     await createInvitation(client, context, event);
     return;
@@ -348,7 +321,7 @@ async function applyRequest(client: PoolClient, context: MessageContext, event: 
 
 /** The linked Event is trashed, not deleted, so the user can restore it. */
 async function applyCancel(client: PoolClient, context: MessageContext, event: ICalendarEvent): Promise<void> {
-  const invitation = await lockInvitationOfUid(client, context, event.uid);
+  const invitation = await lockInvitationOfUid(client, context.invitationsDatabaseId, event.uid);
   if (!invitation || invitation.deletedAt !== null) return;
   const ignore = (reason: string) =>
     logger.warn(
@@ -374,6 +347,17 @@ async function applyCancel(client: PoolClient, context: MessageContext, event: I
   );
   await resolveNotificationsBySource(client, { sourceTable: "items", sourceId: invitation.id });
   logger.info({ emailItemId: context.emailItemId, invitationItemId: invitation.id }, "calendar invitation cancelled");
+}
+
+/**
+ * An account with Calendars on gets its invitations from the calendar sync. Its row is read `FOR SHARE`, so a
+ * Calendars switch commits before or after this message's writes, never between the check and them.
+ */
+async function calendarsSynced(client: PoolClient, mailboxItemId: string): Promise<boolean> {
+  const mailboxes = await databasesStore.getDatabaseByModuleId(client, MAILBOXES_MODULE_ID);
+  if (!mailboxes || !(await itemsStore.lockItemForShare(client, mailboxes.id, mailboxItemId))) return false;
+  const mailbox = await itemsStore.getItemById(client, mailboxes.id, mailboxItemId);
+  return mailbox !== null && mailbox.deletedAt === null && areCalendarsEnabled(mailbox.properties);
 }
 
 /**
@@ -405,6 +389,7 @@ export function createInvitationIngestAction(
       return {
         mailboxItemId: meta.mailboxItemId,
         senderAddress: sender === "" ? null : sender,
+        notify: meta.arrival === "live",
         texts,
         fallbackTimeZone,
       };
@@ -432,12 +417,17 @@ export function createInvitationIngestAction(
         logger.info({ emailItemId, reason: "email_gone" }, "calendar invitation skipped");
         return;
       }
+      if (prepared.mailboxItemId !== null && (await calendarsSynced(client, prepared.mailboxItemId))) {
+        logger.info({ emailItemId, reason: "calendars_synced" }, "calendar invitation skipped");
+        return;
+      }
       const messageContext: MessageContext = {
         invitationsDatabaseId: config.data.invitationsDatabaseId,
         emailItemId,
         mailboxItemId: prepared.mailboxItemId,
         senderAddress: prepared.senderAddress,
         timeZone: prepared.fallbackTimeZone,
+        notify: prepared.notify,
       };
       for (const { method, event } of instructions) {
         if (method === "REQUEST") await applyRequest(client, messageContext, event);

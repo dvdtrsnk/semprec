@@ -13,6 +13,7 @@ import { createRelationPropertyOps } from "./relationPropertyOps.js";
 import { createRelationOps } from "./relationOps.js";
 import { createItemWriteOps } from "./itemWrites.js";
 import { createItemWithRelationsOps } from "./itemCreateWithRelations.js";
+import { createPropertyOptionRemovalOps } from "./propertyOptionRemoval.js";
 import { createValueLinkOps } from "./valueLinkOps.js";
 import { createItemTrashOps } from "./itemTrash.js";
 import { getValueLinksForItems } from "./valueLinkReads.js";
@@ -21,7 +22,7 @@ import { listRelatedWithClient, type RelatedResolver } from "./relatedOps.js";
 import { withTransaction } from "../db/pool.js";
 import { getDerivedValuesForItems } from "../derived/derivedValueReads.js";
 import { runAutomationBatchReader } from "./hooks.js";
-import type { ItemAutomationReadPort } from "@semprec/shared";
+import type { ItemAutomationReadPort } from "@alldots/shared";
 import { getItemsByIds } from "./itemsStore.js";
 import { listUnreadableDatabaseIds, type DatabaseReader } from "../agentGrants/agentDatabaseAccess.js";
 
@@ -63,6 +64,7 @@ export function createChokePoint(
     createRelationOps(deps),
     createItemWriteOps(deps),
     createItemWithRelationsOps(deps),
+    createPropertyOptionRemovalOps(deps),
     createItemReadOps(deps),
     createItemTrashOps(deps),
     createValueLinkOps(deps),

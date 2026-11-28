@@ -7,8 +7,8 @@ import SwiftUI
 public enum MailScreenFactory {
 
     // MARK: - Screens
-    /// The thread list. Every start of it (all mail, an area, a project, a folder, a mailbox) is the same screen over a
-    /// model that was made for that start; `title` names the folder when the list is one.
+    /// The thread list. Every start of it (all mail, a project, a folder, a mailbox) is the same screen over a model
+    /// that was made for that start; `title` names the folder when the list is one.
     public static func threads(
         title: String?,
         makeModel: @escaping @MainActor () -> any MailThreadsScreenModel,
@@ -30,24 +30,19 @@ public enum MailScreenFactory {
         MailComposeScreen(viewModel: MailComposeViewModel(model: makeModel()))
     }
 
+    /// The mail signals of a project: which people, domains and keywords mark its threads, with the open threads they
+    /// match and the assignment of those threads to the project.
+    public static func projectSignals(
+        makeModel: @escaping @MainActor () -> any ProjectMailSignalsScreenModel
+    ) -> some View {
+        ProjectMailSignalsScreen(viewModel: ProjectMailSignalsViewModel(model: makeModel()))
+    }
+
     /// The mailboxes with their folders.
     public static func folders(
         makeModel: @escaping @MainActor () -> any MailFoldersScreenModel,
         router: any MailRouting
     ) -> some View {
         MailFoldersScreen(viewModel: MailFoldersViewModel(model: makeModel(), router: router))
-    }
-
-    /// The connected accounts and the form that adds one.
-    public static func accounts(
-        makeModel: @escaping @MainActor () -> any MailAccountsScreenModel,
-        router: any MailRouting
-    ) -> some View {
-        MailAccountsScreen(viewModel: MailAccountsViewModel(model: makeModel(), router: router))
-    }
-
-    /// One account with its settings and its removal.
-    public static func account(makeModel: @escaping @MainActor () -> any MailAccountScreenModel) -> some View {
-        MailAccountScreen(viewModel: MailAccountViewModel(model: makeModel()))
     }
 }

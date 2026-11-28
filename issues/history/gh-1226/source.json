@@ -1,10 +1,10 @@
 {
-  "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1226",
-  "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
-  "labels_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1226/labels{/name}",
-  "comments_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1226/comments",
-  "events_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1226/events",
-  "html_url": "https://github.com/dvdtrsnk/semprec/issues/1226",
+  "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1226",
+  "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
+  "labels_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1226/labels{/name}",
+  "comments_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1226/comments",
+  "events_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1226/events",
+  "html_url": "https://github.com/dvdtrsnk/alldots/issues/1226",
   "id": 5918270218,
   "node_id": "I_kwDOUFuQ4c8AAAABYMGjCg",
   "number": 1226,
@@ -76,7 +76,7 @@
     "site_admin": false
   },
   "reactions": {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1226/reactions",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1226/reactions",
     "total_count": 0,
     "+1": 0,
     "-1": 0,
@@ -87,7 +87,7 @@
     "rocket": 0,
     "eyes": 0
   },
-  "timeline_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1226/timeline",
+  "timeline_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1226/timeline",
   "performed_via_github_app": null,
   "state_reason": "completed",
   "pinned_comment": null

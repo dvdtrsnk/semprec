@@ -1,3 +1,4 @@
+import Foundation
 @preconcurrency internal import SharedSDK
 
 /// Creates the screen models from one Kotlin `HomeSDK`, which owns the data of one app scene.
@@ -5,12 +6,15 @@
 public final class SharedScreenModelFactory {
 
     // MARK: - Types
-    /// Where the session of the signed-in person is kept.
+    /// Where the session of the signed-in person, the id of this device's push subscription, the kept mail thread
+    /// lists and the kept offline data are kept.
     public enum SessionStore: Sendable {
-        /// The Keychain of the device, so the person stays signed in across launches.
+        /// The Keychain of the device, so the person stays signed in across launches; the subscription id lives in the
+        /// user defaults, the mail thread lists in the app's caches directory and the offline data in
+        /// `Application Support/Offline`.
         case keychain
-        /// The memory of this process only. Tests use it, so that a session another build stored on the same device
-        /// never reaches them.
+        /// The memory of this process only, with no mail thread lists and no offline data kept. Tests use it, so that
+        /// a session or a list another build stored on the same device never reaches them.
         case memory
     }
 
@@ -18,22 +22,54 @@ public final class SharedScreenModelFactory {
     let sdk: SharedSDK.HomeSDK
 
     // MARK: - Init
-    public init(sessionStore: SessionStore = .keychain) {
+    /// `deviceServices` are the process's, which every scene's factory is given by the owner of the process's
+    /// notifications; a factory creates none of its own.
+    public init(sessionStore: SessionStore = .keychain, deviceServices: DeviceServices) {
         let storage: any SharedSDK.SessionStorage = switch sessionStore {
         case .keychain: KeychainSessionStorage()
         case .memory: SharedSDK.InMemorySessionStorage()
+        }
+        let subscriptions: any SharedSDK.PushSubscriptionStorage = switch sessionStore {
+        case .keychain: DefaultsPushSubscriptionStorage()
+        case .memory: SharedSDK.InMemoryPushSubscriptionStorage()
+        }
+        let cacheDirectory: String? = switch sessionStore {
+        case .keychain: FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.path
+        case .memory: nil
+        }
+        let dataDirectory: String? = switch sessionStore {
+        case .keychain: OfflineDirectory.path()
+        case .memory: nil
         }
         sdk = SharedSDK.HomeSDK(
             sessionStorage: storage,
             device: DeviceIdentity.current(),
             recorder: DeviceAudioRecorder(),
-            player: DeviceAudioPlayer()
+            player: DeviceAudioPlayer(),
+            pushSubscriptions: subscriptions,
+            cacheDirectory: cacheDirectory,
+            dataDirectory: dataDirectory,
+            wake: deviceServices.wake,
+            sleepAlarms: deviceServices.sleepAlarms,
+            debugAlarms: deviceServices.debugAlarms
         )
     }
 }
 
 // MARK: - Protocol conformance
 extension SharedScreenModelFactory: ScreenModelFactory {
+
+    public func startLiveUpdates() {
+        sdk.sync.start()
+    }
+
+    public func stopLiveUpdates() {
+        sdk.sync.stop()
+    }
+
+    public func makeSyncStatus() -> any SyncStatusScreenModel {
+        SharedSyncStatusScreenModel(sdk.sync.statusViewModel())
+    }
 
     public func makeSession() -> any SessionScreenModel {
         SharedSessionScreenModel(sdk.sessionViewModel())
@@ -55,7 +91,6 @@ extension SharedScreenModelFactory: ScreenModelFactory {
         let shared = SharedSDK.TasksStart(
             tab: start.tab.shared,
             hideDone: start.hideDone,
-            areaId: start.areaId,
             projectId: start.projectId
         )
         return SharedTasksScreenModel(sdk.tasksViewModel(today: { IsoDay.today() }, start: shared))
@@ -70,8 +105,10 @@ extension SharedScreenModelFactory: ScreenModelFactory {
         SharedJournalScreenModel(sdk.journal.journalViewModel(initialDay: initialDay))
     }
 
-    public func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel {
-        SharedJournalSubpageScreenModel(sdk.journal.journalSubpageViewModel(itemId: itemId))
+    public func makeNoteEditor(source: NoteEditorSource) -> any NoteEditorScreenModel {
+        SharedNoteEditorScreenModel(
+            sdk.noteEditor.noteEditorViewModel(source: SharedNoteEditorScreenModel.source(source))
+        )
     }
 
     public func makeInboxCapture() -> any InboxCaptureScreenModel {
@@ -84,6 +121,18 @@ extension SharedScreenModelFactory: ScreenModelFactory {
 
     public func makeSleep(night: String?, startOnNight: Bool) -> any SleepScreenModel {
         SharedSleepScreenModel(sdk.sleep.sleepViewModel(night: night, startOnNight: startOnNight))
+    }
+
+    public func makeWakeSettings() -> any WakeSettingsScreenModel {
+        SharedWakeSettingsScreenModel(sdk.sleep.wakeSettingsViewModel())
+    }
+
+    public func makeWakeGuard() -> any WakeGuardScreenModel {
+        SharedWakeGuardScreenModel(sdk.sleep.wakeGuardViewModel())
+    }
+
+    public func makeDebugAlarms() -> any DebugAlarmScreenModel {
+        SharedDebugAlarmScreenModel(sdk.debugAlarmViewModel())
     }
 
     // Calendar slice

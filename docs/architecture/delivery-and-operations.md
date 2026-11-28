@@ -43,6 +43,18 @@ whose directory is the longest prefix of its path. `mobile/` is three platforms:
   that also updates branch protection, Relay's `wait-checks` and the release command. See
   [docs/operations/required-checks.md](../operations/required-checks.md).
 
+### Area-scoped verification
+
+- `.github/scripts/changed-areas.mjs` maps a change to the areas `backend`, `web`, `android` and
+  `apple` by its paths, compared from the merge base of a pull request or the `before` commit of
+  a push. A path no rule names counts for every area, and so does a comparison git cannot make.
+- CI runs the backend jobs and the backend and web steps of `ci` for a pull request only when it
+  touches their area, and every one of them on a push to `develop` or `main`, which the release
+  check needs. `ci` fails when the detection did not succeed, so a failed detection never becomes
+  a green skip. The mobile jobs follow the detection on pull requests and pushes.
+- Relay's `verify-*` steps and an agent before opening a pull request run a pipeline only when
+  the comparison with a freshly fetched `develop` includes its area.
+
 ## Releases
 
 - The monorepo has exactly one version: a `vMAJOR.MINOR.PATCH` annotated git tag on `main`. Every
@@ -64,7 +76,7 @@ Procedure: [docs/operations/releases.md](../operations/releases.md).
 `deploy/deploy.sh <tag>`, run as root on the host, is the only way code reaches production:
 
 1. **Immutable release per tag.** The tagged commit is exported with `git archive` into a hidden
-   staging directory under `/opt/semprec/releases/`, installed with `pnpm install --frozen-lockfile`
+   staging directory under `/opt/alldots/releases/`, installed with `pnpm install --frozen-lockfile`
    (copied packages) and built there. An existing `releases/<tag>` is never rebuilt or overwritten.
 2. **Native entrypoint check.** Every compiled entry the units start is run as plain `node`
    with no configuration (`backend/scripts/check-native-entrypoints.mjs`) and must reach its own
@@ -79,10 +91,12 @@ Procedure: [docs/operations/releases.md](../operations/releases.md).
 
 Rules that follow:
 
+- The database is expected to be empty: the operator wipes it before a deploy, and `deploy.sh`
+  never drops data ([migrations-and-seeding.md](migrations-and-seeding.md#one-baseline-no-versions)).
 - Any failure before activation removes the staging directory and changes nothing but the
-  (backward-compatible) schema.
+  database.
 - A failure after the swap exits non-zero but does not roll itself back.
-- Mail live-sync runs inside `semprec-api` and restarts, reports and shuts down with it; it is
+- Mail live-sync runs inside `alldots-api` and restarts, reports and shuts down with it; it is
   not a separately deployed service. A separate process would be a new decision.
 - Old releases stay on disk as complete directories.
 
@@ -96,7 +110,9 @@ Procedure: `deploy/README.md` ("Deploying a release").
   (semver order, staging directories excluded), its `release.env` must declare
   `APP_VERSION=<tag>`, and `current` must still name the newest release. Every refusal happens
   before anything changes; a second consecutive rollback is refused.
-- Schema is never unwound. A defect that needs a schema change is fixed forward in a new release.
+- The database is not touched, and nothing keeps its schema compatible with older code: a
+  rollback is safe only between releases with the same baseline. Otherwise the way forward is a
+  fixed release deployed onto a wiped database.
 
 Procedure: [docs/operations/migrations.md](../operations/migrations.md) and `deploy/README.md`
 ("Rolling back").
@@ -106,7 +122,7 @@ Procedure: [docs/operations/migrations.md](../operations/migrations.md) and `dep
 ### Secret groups
 
 - Every production key lives in exactly one group: a values-free template
-  `deploy/shared/env/<group>.env.example`, installed as `/opt/semprec/shared/env/<group>.env`
+  `deploy/shared/env/<group>.env.example`, installed as `/opt/alldots/shared/env/<group>.env`
   (`root:root 0600`, directory `0700`).
 - A unit's `EnvironmentFile=` lines are its allowlist; it loads only the groups it needs, with
   `current/release.env` last on long-running units.
@@ -123,13 +139,13 @@ Procedure: [docs/operations/migrations.md](../operations/migrations.md) and `dep
 application's outbound address checks
 ([edges-io-and-errors.md](edges-io-and-errors.md)):
 
-- The `output` chain (`policy accept`) jumps to `semprec_egress` for `meta skuid "semprec"` and to
-  `semprec_mcp_egress` for `semprec-mcp`. Root, Caddy, Docker and apt are untouched.
+- The `output` chain (`policy accept`) jumps to `alldots_egress` for `meta skuid "alldots"` and to
+  `alldots_mcp_egress` for `alldots-mcp`. Root, Caddy, Docker and apt are untouched.
 - The chains are deny-lists (tenants choose IMAP, SMTP and MCP ports): established/related
   accept, DNS to any address, then reject (`icmpx admin-prohibited`, rate-limited log as a
-  separate rule) for the `semprec_blocked_v4` / `semprec_blocked_v6` sets (loopback, RFC 1918,
+  separate rule) for the `alldots_blocked_v4` / `alldots_blocked_v6` sets (loopback, RFC 1918,
   link-local and metadata, CGNAT, ULA, NAT64, multicast and similar).
-- Only `semprec_egress` has a loopback exception, for Postgres `5432` and the gateway `3002`,
+- Only `alldots_egress` has a loopback exception, for Postgres `5432` and the gateway `3002`,
   matched on the conntrack original destination. `AI_GATEWAY_PORT` therefore stays `3002`.
 - Consequence: an SMTP, IMAP or MCP server on a private or loopback address is unreachable.
 
@@ -137,10 +153,10 @@ application's outbound address checks
 
 A `stdio` MCP server never runs as a child of the service that uses it:
 
-- It runs as system user `semprec-mcp` (own group, not in `semprec`), started per connection by
-  `semprec-mcp-launch.socket` (`/run/semprec-mcp-launch.sock`, `root:semprec 0660`, `Accept=yes`,
-  at most 16 connections) → `semprec-mcp-launch@.service`.
-- The launcher `deploy/bin/semprec-mcp-launch` reads exactly one JSON header line
+- It runs as system user `alldots-mcp` (own group, not in `alldots`), started per connection by
+  `alldots-mcp-launch.socket` (`/run/alldots-mcp-launch.sock`, `root:alldots 0660`, `Accept=yes`,
+  at most 16 connections) → `alldots-mcp-launch@.service`.
+- The launcher `deploy/bin/alldots-mcp-launch` reads exactly one JSON header line
   (`{"command", "args", "env"}`, at most 65536 bytes, strict validation) and refuses anything else
   with exit 64, running nothing and never echoing the header. Otherwise it `exec`s the command
   with only `PATH`, `HOME`, `LANG`, `USER`, `LOGNAME` plus the header's `env`.
@@ -151,7 +167,7 @@ A `stdio` MCP server never runs as a child of the service that uses it:
 - Client side, `SandboxedStdioClientTransport`
   (`backend/packages/data/src/mcp/sandboxedStdioTransport.ts`) writes the header (config `env` plus
   the decrypted credential, nothing from the service's environment). `mcpConnectionFactory.ts`
-  uses it when `SEMPREC_MCP_LAUNCH_SOCKET` is set, spawns in-process only under `NODE_ENV=test`,
+  uses it when `ALLDOTS_MCP_LAUNCH_SOCKET` is set, spawns in-process only under `NODE_ENV=test`,
   and otherwise refuses with `stdio_sandbox_unavailable` before decrypting the credential.
 - All `stdio` servers share one uid, which is acceptable only because `stdio` configs are
   confined to admin tenants
@@ -162,11 +178,11 @@ Procedure: `deploy/README.md` ("stdio MCP sandbox", "Host firewall").
 ### Host scripts that record results
 
 A host script that must record an outcome in Postgres runs a small Node entrypoint compiled into
-`@semprec/data`'s `dist/` in the current release, which calls data-layer functions (for example
+`@alldots/data`'s `dist/` in the current release, which calls data-layer functions (for example
 `backend/packages/data/src/observability/restoreTestResultCli.ts` for the monthly restore test).
 The script passes only non-secret, validated arguments within a closed contract; it never writes
 SQL itself and no HTTP endpoint is added for it. The entrypoint connects as the role its tables
-need (`semprec_side` for side tables) and is the single writer of its rows.
+need (`alldots_side` for side tables) and is the single writer of its rows.
 
 ## Issues
 
@@ -204,7 +220,7 @@ Format and commands: `issues/README.md`, `.github/ISSUE_FORMAT.md`,
 - Every implementation issue has a `## Touches` section listing the files or narrow areas it
   changes. Two issues that can be eligible at the same time must not overlap; an overlap becomes a
   `Blocked by:` edge or a shared change extracted into an earlier issue. `.github/ISSUE_FORMAT.md`
-  lists the known hotspots (migration ordinals, registries, barrels, catalogs).
+  lists the known hotspots (the baseline schema, registries, barrels, catalogs).
 - A batch's `NN/MM` is topological creation order, not execution order.
 
 ### Model tiers
@@ -312,9 +328,8 @@ The backend backlog in `issues/batches/backend/` is delivered by a controller-ru
   every publication, one full run on the host at a time. A failure that reproduces alone stops
   landings; a load-only failure is recorded with both logs, never reported as a pass. Timeouts
   are not raised.
-- **Shared files and migrations.** Registry, barrel, manifest and catalog conflicts keep both
-  sides and rerun that file's validating suites. A migration ordinal is final only at landing;
-  only an unmerged chain's own files are renumbered.
+- **Shared files.** Registry, barrel, manifest, catalog and baseline schema conflicts keep both
+  sides and rerun that file's validating suites.
 - **Authority and gates.** The controller acts under the owner's delegation: it approves exact
   specification hashes at dispatch, adjudicates findings and scope, and accepts results; no
   worker approves its own scope. Local acceptance is never production authorization: a criterion

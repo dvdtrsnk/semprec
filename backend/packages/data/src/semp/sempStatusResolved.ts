@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { ModuleCatalogs } from "@semprec/module-registry";
+import type { ModuleCatalogs } from "@alldots/module-registry";
 import { z } from "zod";
 import { getItemsByIds } from "../chokePoint/itemsStore.js";
 import { renderResolutionTitle, type ResolutionTitleParams } from "./sempResolutionTitles.js";
@@ -78,6 +78,8 @@ export async function readSempResolvedRecent(client: PoolClient, catalogs: Modul
 
   const itemIds = [
     ...ids(rows, "mailSyncError", (row) => row.source_id),
+    ...ids(rows, "mailSentCopyFailed", (row) => row.source_id),
+    ...ids(rows, "calendarSyncError", (row) => row.source_id),
     ...ids(rows, "transcriptionFailed", (row) => row.source_id),
     ...ids(rows, "guidanceDrift", (row) => row.project_item_id),
   ];
@@ -150,6 +152,8 @@ export async function readSempResolvedRecent(client: PoolClient, catalogs: Modul
   const paramsOf = (row: z.infer<typeof resolvedRowSchema>): ResolutionTitleParams => {
     switch (row.kind) {
       case "mailSyncError":
+      case "mailSentCopyFailed":
+      case "calendarSyncError":
         return { mailbox: itemName(row.source_id) };
       case "transcriptionFailed":
         return { name: itemName(row.source_id) };

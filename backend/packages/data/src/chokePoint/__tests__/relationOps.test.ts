@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createTestProjectItem, getTestPool, resetDatabase } from "../../testSupport/testDb.js";
 import { createRuntimeRolePool, createTestTenant, getTenantZeroId } from "../../testSupport/tenantFixtures.js";
 import { createViewTypeRegistry } from "../viewTypeRegistry.js";
@@ -103,7 +103,7 @@ describe("assertRelationTargetLinkableWithClient (issue #1426)", () => {
   it("treats another tenant's item as nonexistent", async () => {
     const otherTenant = await createTestTenant(pool);
     // A runtime-role pool, because the superuser pool bypasses row-level security and would find tenant zero's Projects database.
-    const runtimePool = await createRuntimeRolePool(pool, "semprec_data");
+    const runtimePool = await createRuntimeRolePool(pool, "alldots_data");
     const foreignProject = await runInTenant(otherTenant, () => createTestProjectItem(runtimePool)).finally(() =>
       runtimePool.end(),
     );
@@ -115,24 +115,25 @@ describe("assertRelationTargetLinkableWithClient (issue #1426)", () => {
   });
 
   it("reports a one-to-one target that already holds its edge as a cardinality violation", async () => {
-    const companyProperty = await propertyId("areas", "company");
+    const companyProjects = await propertyId("companies", "projects");
+    const project = await createItem("projects", { name: "Website" });
     const company = await createItem("companies", { name: "Acme" });
-    const area = await createItem("areas", { name: "Work" });
-    await withTransaction(pool, (client) =>
-      createRelationWithClient(client, {
-        relationPropertyId: companyProperty,
-        callerItemId: area,
-        targetItemId: company,
-      }),
+    // A Projects.company edge feeds the link rules, which need a tenant scope.
+    await runInTenant(getTenantZeroId(), () =>
+      withTransaction(pool, (client) =>
+        createRelationWithClient(client, {
+          relationPropertyId: companyProjects,
+          callerItemId: company,
+          targetItemId: project,
+        }),
+      ),
     );
 
-    const error = await checkTarget(companyProperty, company).catch((e: unknown) => e);
+    const error = await checkTarget(companyProjects, project).catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(CardinalityViolationError);
-    expect((error as CardinalityViolationError).details).toMatchObject({ field: "company" });
-    await expect(
-      checkTarget(companyProperty, await createItem("companies", { name: "Free" })),
-    ).resolves.toBeUndefined();
+    expect((error as CardinalityViolationError).details).toMatchObject({ field: "projects" });
+    await expect(checkTarget(companyProjects, await createItem("projects", { name: "Free" }))).resolves.toBeUndefined();
   });
 
   it("reports a one-to-many target on the single-valued side, but not on the many side", async () => {

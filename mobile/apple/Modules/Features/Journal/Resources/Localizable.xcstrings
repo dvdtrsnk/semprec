@@ -97,6 +97,38 @@
         }
       }
     },
+    "journal.attachment.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přílohu se nepodařilo otevřít"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachment could not be opened"
+          }
+        }
+      }
+    },
+    "journal.attachment.opening" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevírá se příloha"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opening the attachment"
+          }
+        }
+      }
+    },
     "journal.axis.label" : {
       "localizations" : {
         "cs" : {
@@ -253,6 +285,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Remove the attachment"
+          }
+        }
+      }
+    },
+    "journal.capture.scan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat dokument"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan document"
           }
         }
       }
@@ -529,178 +577,18 @@
         }
       }
     },
-    "journal.kind.bullet" : {
+    "journal.inbox.status.waiting" : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Odrážky"
+            "value" : "Čeká na odeslání"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Bulleted list"
-          }
-        }
-      }
-    },
-    "journal.kind.heading1" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nadpis 1"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Heading 1"
-          }
-        }
-      }
-    },
-    "journal.kind.heading2" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nadpis 2"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Heading 2"
-          }
-        }
-      }
-    },
-    "journal.kind.heading3" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nadpis 3"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Heading 3"
-          }
-        }
-      }
-    },
-    "journal.kind.number" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Číslovaný seznam"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Numbered list"
-          }
-        }
-      }
-    },
-    "journal.kind.page" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stránka"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Page"
-          }
-        }
-      }
-    },
-    "journal.kind.quote" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Citace"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Quote"
-          }
-        }
-      }
-    },
-    "journal.kind.text" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Text"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Text"
-          }
-        }
-      }
-    },
-    "journal.kind.todo" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Úkol"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "To-do"
-          }
-        }
-      }
-    },
-    "journal.newBlock.add" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Přidat"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Add"
-          }
-        }
-      }
-    },
-    "journal.newBlock.kind" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Typ nového bloku"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Type of the new block"
+            "value" : "Waiting to be sent"
           }
         }
       }
@@ -721,86 +609,6 @@
         }
       }
     },
-    "journal.placeholder.day" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Jak se dnes máš?"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "How are you today?"
-          }
-        }
-      }
-    },
-    "journal.placeholder.quarter" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Cíle a shrnutí kvartálu…"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Goals and summary of the quarter…"
-          }
-        }
-      }
-    },
-    "journal.placeholder.subpage" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Napiš něco…"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Write something…"
-          }
-        }
-      }
-    },
-    "journal.placeholder.week" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Co tě tento týden čeká…"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "What does this week hold…"
-          }
-        }
-      }
-    },
-    "journal.placeholder.year" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Co od roku čekáš?"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "What do you expect from the year?"
-          }
-        }
-      }
-    },
     "journal.problem.dismiss" : {
       "localizations" : {
         "cs" : {
@@ -817,66 +625,18 @@
         }
       }
     },
-    "journal.problem.failed" : {
+    "journal.quarter" : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Změnu se nepodařilo uložit."
+            "value" : "%lld. kvartál"
           }
         },
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The change could not be saved."
-          }
-        }
-      }
-    },
-    "journal.problem.reload" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Načíst znovu"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Load again"
-          }
-        }
-      }
-    },
-    "journal.problem.stale" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stránka se mezitím změnila. Načti ji znovu, ať vidíš, co na ní je teď."
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "The page changed in the meantime. Load it again to see what is there now."
-          }
-        }
-      }
-    },
-    "journal.subpage.untitled" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Stránka"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Page"
+            "value" : "Q%lld"
           }
         }
       }
@@ -973,38 +733,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Today"
-          }
-        }
-      }
-    },
-    "journal.todo.done" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Splněno"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Done"
-          }
-        }
-      }
-    },
-    "journal.todo.open" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Nesplněno"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Not done"
           }
         }
       }

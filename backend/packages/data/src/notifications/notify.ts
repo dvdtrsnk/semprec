@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { getUserById } from "../auth/usersStore.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { markManagedTransactionRollbackOnly, requireManagedTransaction, runAfterCommit } from "../db/pool.js";
@@ -52,6 +52,8 @@ export interface WriteNotificationInput {
   bodyKey?: string;
   /** A `null` value renders as the unnamed label. */
   bodyParams?: Readonly<Record<string, string | number | null>>;
+  /** Body parameters whose value is a catalog key, rendered as that key's label in the recipient's locale. */
+  bodyParamKeys?: Readonly<Record<string, string>>;
   bodySuffixKey?: string;
   /** Resolved by the producer (e.g. `?page=agent-run&id=...`); the writer has no routing knowledge. */
   linkHref: string | null;
@@ -100,7 +102,15 @@ export async function writeNotification(client: PoolClient, input: WriteNotifica
       ? null
       : renderBody(
           resolveCatalogLabel(null, localeCatalog, catalogs.en, input.bodyKey),
-          input.bodyParams ?? {},
+          {
+            ...input.bodyParams,
+            ...Object.fromEntries(
+              Object.entries(input.bodyParamKeys ?? {}).map(([name, key]) => [
+                name,
+                resolveCatalogLabel(null, localeCatalog, catalogs.en, key),
+              ]),
+            ),
+          },
           resolveCatalogLabel(null, localeCatalog, catalogs.en, UNNAMED_LABEL_KEY),
           input.bodyKey === "approval.itemDelete" || input.bodyKey === ITEM_DELETE_IMPACT_BODY_KEY,
         );

@@ -25,7 +25,6 @@ extension MailListStart {
 
     init(_ start: SharedSDK.MailListStart) {
         self.init(
-            areaId: start.areaId,
             projectId: start.projectId,
             box: MailListBox(start.box),
             mailboxId: start.mailboxId,
@@ -35,7 +34,6 @@ extension MailListStart {
 
     var shared: SharedSDK.MailListStart {
         SharedSDK.MailListStart(
-            areaId: areaId,
             projectId: projectId,
             box: box.shared,
             mailboxId: mailboxId,
@@ -99,6 +97,50 @@ extension MailSendPhase {
         case .sending: self = .sending
         case .sent: self = .sent
         case .failed: self = .failed
+        }
+    }
+}
+
+// MARK: - Refusals
+extension SharedSDK.MailRefusal {
+
+    /// The Swift value of the reason the server gave, case by case, so that a new Kotlin case fails the build here.
+    var refusal: CoreKit.MailRefusal {
+        switch self {
+        case .draftsFolderMissing: .draftsFolderMissing
+        case .sentFolderMissing: .sentFolderMissing
+        case .archiveFolderMissing: .archiveFolderMissing
+        case .trashFolderMissing: .trashFolderMissing
+        case .inboxFolderMissing: .inboxFolderMissing
+        case .reauthorizationRequired: .reauthorizationRequired
+        case .mailDisabled: .mailDisabled
+        case .recipientRejected: .recipientRejected
+        case .loginRejected: .loginRejected
+        case .serverUnreachable: .serverUnreachable
+        case .attachmentTooLarge: .attachmentTooLarge
+        case .draftAlreadySent: .draftAlreadySent
+        case .draftNotEditable: .draftNotEditable
+        case .noReceivedMessage: .noReceivedMessage
+        case .moveSourceUnverified: .moveSourceUnverified
+        case .alreadyTrashed: .alreadyTrashed
+        case .notArchivedOrTrashed: .notArchivedOrTrashed
+        }
+    }
+}
+
+// MARK: - Provider fetches
+extension SharedSDK.MailContentUnavailable {
+
+    /// The Swift value of why the provider's copy could not be fetched, case by case, so that a new Kotlin case fails
+    /// the build here.
+    var unavailable: CoreKit.MailContentUnavailable {
+        switch self {
+        case .reauthorizationRequired: .reauthorizationRequired
+        case .providerUnreachable: .providerUnreachable
+        case .messageNotFound: .messageNotFound
+        case .mailboxUnavailable: .mailboxUnavailable
+        case .attachmentTooLarge: .attachmentTooLarge
+        case .rateLimited: .rateLimited
         }
     }
 }

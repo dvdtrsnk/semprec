@@ -1,13 +1,11 @@
 // Maps the projection of `projectTaskOccurrences` to timeline entries; computes no recurrence itself.
 import { DateTime } from "luxon";
 import type { PoolClient } from "pg";
-import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { TASKS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import { projectTaskOccurrences, type ProjectedTaskOccurrence } from "../tasks/projectTaskOccurrences.js";
 import { logger } from "./logger.js";
 import {
   effectiveTo,
-  readCalendarIds,
   readOrphanedSeriesTaskRows,
   readSchedule,
   toShownTaskItems,
@@ -128,7 +126,7 @@ export async function readTaskOccurrenceTimelineItems(
   client: PoolClient,
   context: CalendarTimelineContext,
 ): Promise<CalendarTaskOccurrence[]> {
-  const tasks = await getDatabaseByModuleId(client, TASKS_MODULE_ID);
+  const tasks = await context.lookups.database(TASKS_MODULE_ID);
   if (!tasks) return [];
   const projected: ProjectedTaskOccurrence[] = [];
   for (const window of projectionWindows(context.from, context.to)) {
@@ -139,7 +137,7 @@ export async function readTaskOccurrenceTimelineItems(
 
   const entries: CalendarTaskOccurrence[] = [];
   if (virtual.length > 0) {
-    const { tasksCalendarId } = await readCalendarIds(client);
+    const tasksCalendarId = (await context.lookups.calendarIds()).systemCalendarIds.get("tasks") ?? null;
     for (const occurrence of virtual) {
       const entry = virtualEntry(occurrence, tasks.id, tasksCalendarId, context);
       if (entry !== null) entries.push(entry);

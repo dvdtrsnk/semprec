@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import pg, { type Pool, type PoolClient } from "pg";
 import type * as Y from "yjs";
-import { moveBlocks, readPageBlocks } from "@semprec/block-model";
-import { runInTenant } from "@semprec/shared";
+import { moveBlocks, readPageBlocks } from "@alldots/block-model";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabase } from "../chokePoint/databasesStore.js";
@@ -24,7 +24,7 @@ import { PAGES_MODULE_ID } from "../docs/pagesDatabase.js";
 import { collectSubpageTree, hostItemDeleteHook, hostItemRestoreHook, pageItemDeleteHook } from "../docs/pageTrash.js";
 import { createActionQueueAffinity, type ActionQueueAffinity } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
-import { AREAS_MODULE_ID, EVENTS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
+import { EVENTS_MODULE_ID, PROJECTS_MODULE_ID } from "../seed/tenDatabaseKeys.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -62,7 +62,7 @@ registerItemRestoreHook(async ({ item, rootItemId, writerKind, agentRunId, actin
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
   chokePoint = createChokePoint(runtime);
 });
 beforeEach(async () => {
@@ -574,10 +574,10 @@ describe("host trash and restore hooks (issue #1763)", () => {
 
   it.each<{ name: string; create: () => Promise<{ host: string; page: Subpage }> }>([
     {
-      name: "an area",
+      name: "a project",
       create: async () => {
-        const host = await moduleItem(AREAS_MODULE_ID, { name: "Health" });
-        return { host, page: await createSubpage(host, "Area notes") };
+        const host = await moduleItem(PROJECTS_MODULE_ID, { name: "Health" });
+        return { host, page: await createSubpage(host, "Project notes") };
       },
     },
     {

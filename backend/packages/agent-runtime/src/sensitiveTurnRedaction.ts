@@ -1,5 +1,5 @@
 import { Pool, type PoolClient } from "pg";
-import { createChokePoint, type ChokePoint } from "@semprec/data";
+import { createChokePoint, type ChokePoint } from "@alldots/data";
 import { logger } from "./logger.js";
 import {
   redactAssistantMessage,

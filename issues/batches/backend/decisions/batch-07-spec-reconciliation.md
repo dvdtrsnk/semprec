@@ -198,7 +198,7 @@ with the explicit additions above.
 The frozen `b455631b` integration run confirms two existing fixtures no longer
 reach the behavior they describe. Authorize these exact gh-1401 test paths:
 
-- `backend/services/semprec-api/src/__tests__/blobsPerTenant.test.ts`: create a
+- `backend/services/alldots-api/src/__tests__/blobsPerTenant.test.ts`: create a
   legitimate tenant B Files item, then inject only its deliberately historical
   foreign blob reference through a typed, tenant-scoped fixture with checked
   affected rows. Preserve the real successful tenant A download and blob-ID

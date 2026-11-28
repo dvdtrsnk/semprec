@@ -2,7 +2,7 @@
   {
     "id": 33939800210,
     "node_id": "LE_lADOUFuQ4c8AAAABZEwwvc8AAAAH5vhAkg",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33939800210",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33939800210",
     "actor": {
       "login": "github-actions[bot]",
       "id": 41898282,
@@ -38,7 +38,7 @@
   {
     "id": 33939800528,
     "node_id": "LE_lADOUFuQ4c8AAAABZEwwvc8AAAAH5vhB0A",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33939800528",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33939800528",
     "actor": {
       "login": "github-actions[bot]",
       "id": 41898282,
@@ -72,9 +72,9 @@
     "performed_via_github_app": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6338713174",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1244#issuecomment-6338713174",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1244",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6338713174",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/1244#issuecomment-6338713174",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1244",
     "id": 6338713174,
     "node_id": "IC_kwDOUFuQ4c8AAAABedEWVg",
     "user": {
@@ -104,7 +104,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6338713174/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6338713174/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -213,17 +213,17 @@
         "node_id": "I_kwDOUFuQ4c8AAAABZFCnXg",
         "number": 1245,
         "title": "[followups-1244] Close the remaining reviewed fixture and attribution gaps — epic",
-        "html_url": "https://github.com/dvdtrsnk/semprec/issues/1245",
-        "repository_url": "https://api.github.com/repos/dvdtrsnk/semprec",
+        "html_url": "https://github.com/dvdtrsnk/alldots/issues/1245",
+        "repository_url": "https://api.github.com/repos/dvdtrsnk/alldots",
         "state": "closed",
         "bodySha256": "6c8b8de13ad9fa6715485a2aa8fcb38cb25aa602fbe921af32f8d19368c784d1"
       }
     }
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6339069324",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/1244#issuecomment-6339069324",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/1244",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6339069324",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/1244#issuecomment-6339069324",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/1244",
     "id": 6339069324,
     "node_id": "IC_kwDOUFuQ4c8AAAABedaFjA",
     "user": {
@@ -253,7 +253,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/6339069324/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/6339069324/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -333,7 +333,7 @@
   {
     "id": 33941427253,
     "node_id": "UNLE_lADOUFuQ4c8AAAABZEwwvc8AAAAH5xEUNQ",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33941427253",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33941427253",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,
@@ -369,7 +369,7 @@
   {
     "id": 33941428615,
     "node_id": "CE_lADOUFuQ4c8AAAABZEwwvc8AAAAH5xEZhw",
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/events/33941428615",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/events/33941428615",
     "actor": {
       "login": "bb-agent-relay[bot]",
       "id": 324208905,

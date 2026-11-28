@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { runAsSystem } from "@semprec/shared";
+import { runAsSystem } from "@alldots/shared";
 import { runAfterCommit, withSavepoint, withTransaction } from "../db/pool.js";
 import { getTestPool } from "../testSupport/testDb.js";
 

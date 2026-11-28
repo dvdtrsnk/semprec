@@ -60,9 +60,9 @@ async function sentByInvite(locale: string, inviteUrl = PLAIN_URL) {
 
 describe("auth mail catalog (issue #1356)", () => {
   it("retries catalog loading after a transient failure", async () => {
-    const registry = await vi.importActual<typeof import("@semprec/module-registry")>("@semprec/module-registry");
+    const registry = await vi.importActual<typeof import("@alldots/module-registry")>("@alldots/module-registry");
     const load = vi.fn(registry.loadModuleCatalogs).mockRejectedValueOnce(new Error("catalog temporarily unavailable"));
-    vi.doMock("@semprec/module-registry", () => ({ ...registry, loadModuleCatalogs: load }));
+    vi.doMock("@alldots/module-registry", () => ({ ...registry, loadModuleCatalogs: load }));
     vi.resetModules();
     try {
       const { renderAuthMail: freshRenderer } = await import("../auth/authMailCatalog.js");
@@ -70,12 +70,12 @@ describe("auth mail catalog (issue #1356)", () => {
         "catalog temporarily unavailable",
       );
       const rendered = await freshRenderer("invite", "en", PLAIN_URL, (value) => value);
-      expect(rendered.subject).toBe("You have been invited to Semprec");
+      expect(rendered.subject).toBe("You have been invited to Alldots");
       expect(rendered.text).toContain(PLAIN_URL);
       await freshRenderer("passwordReset", "cs", PLAIN_URL, (value) => value);
       expect(load).toHaveBeenCalledTimes(2);
     } finally {
-      vi.doUnmock("@semprec/module-registry");
+      vi.doUnmock("@alldots/module-registry");
       vi.resetModules();
     }
   });
@@ -105,12 +105,12 @@ describe("auth mail catalog (issue #1356)", () => {
 
   it("renders the English invitation email with today's wording", async () => {
     const mail = await sentByInvite("en");
-    expect(mail.subject).toBe("You have been invited to Semprec");
+    expect(mail.subject).toBe("You have been invited to Alldots");
     expect(mail.text).toBe(
-      `You have been invited to Semprec. Open this link to create your account:\n\n${PLAIN_URL}\n\nThis link expires in 7 days and can only be used once.`,
+      `You have been invited to Alldots. Open this link to create your account:\n\n${PLAIN_URL}\n\nThis link expires in 7 days and can only be used once.`,
     );
     expect(mail.html).toBe(
-      `<p>You have been invited to Semprec. Open the link below to create your account. This link expires in 7 days and can only be used once.</p><p><a href="${PLAIN_URL}">${PLAIN_URL}</a></p>`,
+      `<p>You have been invited to Alldots. Open the link below to create your account. This link expires in 7 days and can only be used once.</p><p><a href="${PLAIN_URL}">${PLAIN_URL}</a></p>`,
     );
     expect(count(mail.text, PLAIN_URL)).toBe(1);
     expectOneAnchor(mail.html, PLAIN_URL);
@@ -118,7 +118,7 @@ describe("auth mail catalog (issue #1356)", () => {
 
   it("renders the Czech invitation email", async () => {
     const mail = await sentByInvite("cs");
-    expect(mail.subject).toBe("Byli jste pozváni do Semprecu");
+    expect(mail.subject).toBe("Byli jste pozváni do Alldotsu");
     expect(mail.text).toContain("Účet si vytvoříte");
     expect(mail.html).toContain("Účet si vytvoříte");
     expect(count(mail.text, PLAIN_URL)).toBe(1);
@@ -137,7 +137,7 @@ describe("auth mail catalog (issue #1356)", () => {
 
   it("falls back to English for an unknown locale", async () => {
     expect((await sentByReset("de")).subject).toBe("Reset your password");
-    expect((await sentByInvite("")).subject).toBe("You have been invited to Semprec");
+    expect((await sentByInvite("")).subject).toBe("You have been invited to Alldots");
   });
 
   it("keeps $ sequences in the URL literal", async () => {

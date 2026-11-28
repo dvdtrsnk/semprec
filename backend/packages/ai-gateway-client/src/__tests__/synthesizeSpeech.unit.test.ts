@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AiGatewayFailedError, runInTenant } from "@semprec/shared";
+import { AiGatewayFailedError, runInTenant } from "@alldots/shared";
 import { SpeechSynthesisCapacityError, synthesizeSpeech } from "../httpAiGatewayClient.js";
 import * as publicClient from "../index.js";
 
@@ -62,7 +62,7 @@ describe("synthesizeSpeech", () => {
     expect(await collect(audio)).toBe(150);
     expect(JSON.parse(seen?.body ?? "")).toEqual({ text: "Hello.", voice: "nova" });
     expect(seen?.headers.authorization).toBe("Bearer secret");
-    expect(seen?.headers["x-semprec-tenant-id"]).toBe(TENANT_ID);
+    expect(seen?.headers["x-alldots-tenant-id"]).toBe(TENANT_ID);
   });
 
   it("sends the run and message attribution headers only for the ids it is given", async () => {
@@ -79,18 +79,18 @@ describe("synthesizeSpeech", () => {
         { text: "Hello.", voice: "nova", agentRunId: runId, sempMessageId: messageId },
       ),
     );
-    expect(seen?.headers["x-semprec-agent-run-id"]).toBe(runId);
-    expect(seen?.headers["x-semprec-semp-message-id"]).toBe(messageId);
+    expect(seen?.headers["x-alldots-agent-run-id"]).toBe(runId);
+    expect(seen?.headers["x-alldots-semp-message-id"]).toBe(messageId);
 
     await collect(
       await synthesizeSpeech({ port, token: "t" }, { text: "Hello.", voice: "nova", sempMessageId: messageId }),
     );
-    expect(seen?.headers["x-semprec-agent-run-id"]).toBeUndefined();
-    expect(seen?.headers["x-semprec-semp-message-id"]).toBe(messageId);
+    expect(seen?.headers["x-alldots-agent-run-id"]).toBeUndefined();
+    expect(seen?.headers["x-alldots-semp-message-id"]).toBe(messageId);
 
     await collect(await synthesizeSpeech({ port, token: "t" }, { text: "Hello.", voice: "nova" }));
-    expect(seen?.headers["x-semprec-agent-run-id"]).toBeUndefined();
-    expect(seen?.headers["x-semprec-semp-message-id"]).toBeUndefined();
+    expect(seen?.headers["x-alldots-agent-run-id"]).toBeUndefined();
+    expect(seen?.headers["x-alldots-semp-message-id"]).toBeUndefined();
   });
 
   it("rejects with budget_exceeded for the gateway's budget refusal", async () => {

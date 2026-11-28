@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { currentTenantScope, runInTenant } from "@semprec/shared";
+import { currentTenantScope, runInTenant } from "@alldots/shared";
 import { normalizeEmail } from "../auth/emailNormalization.js";
 import { getFailureStreak, recordLoginAttempt } from "../auth/loginAttemptsStore.js";
 import { lockoutDurationSeconds } from "../auth/loginLockout.js";

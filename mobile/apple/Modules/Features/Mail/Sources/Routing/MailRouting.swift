@@ -16,13 +16,17 @@ public protocol MailRouting: AnyObject {
     /// The editor of a new message, a reply or a saved draft.
     func showCompose(_ start: MailComposeStart)
 
-    /// The connected accounts.
+    /// The internet accounts, which live in the settings.
     func showAccounts()
 
+    /// One internet account; an account is a mailbox, so `mailboxId` names it.
     func showAccount(mailboxId: String)
 
     /// The Podrobnosti sheet of a task made from a thread.
     func showTask(taskId: String)
+
+    /// The Files item of a saved attachment, which previews the file and hands it to other apps.
+    func showFile(fileItemId: String)
 }
 
 /// A router for previews: it goes nowhere.
@@ -43,4 +47,6 @@ final class PreviewMailRouter: MailRouting {
     func showAccount(mailboxId: String) {}
 
     func showTask(taskId: String) {}
+
+    func showFile(fileItemId: String) {}
 }

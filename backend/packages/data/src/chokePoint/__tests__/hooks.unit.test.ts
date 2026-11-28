@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client, type PoolClient } from "pg";
-import type { Item } from "@semprec/shared";
+import type { Item } from "@alldots/shared";
 import {
   clearHooksForTests,
   getItemCascadeExpansion,

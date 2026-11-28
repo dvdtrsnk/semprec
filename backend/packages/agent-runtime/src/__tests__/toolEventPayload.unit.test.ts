@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GENERIC_OPERATION_NAMES, parseToolEventPayload as sharedParser } from "@semprec/shared";
+import { GENERIC_OPERATION_NAMES, parseToolEventPayload as sharedParser } from "@alldots/shared";
 import { parseToolEventPayload } from "../toolEventPayload.js";
 
 const use = { toolCallId: "call-1", name: "item_patch", arguments: { itemId: "item-1" } };

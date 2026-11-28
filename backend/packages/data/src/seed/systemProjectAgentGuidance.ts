@@ -12,7 +12,7 @@ import { RECIPES_MODULE_ID } from "./recipesModuleKeys.js";
  */
 export const SYSTEM_PROJECT_AGENT_GUIDANCE_SEED_TEXTS = {
   [SYSTEM_SETTINGS_MODULE_ID]:
-    "Purpose: supervise Semprec, the personal life-organization system, and delegate to project agents.\n" +
+    "Purpose: supervise Alldots, the personal life-organization system, and delegate to project agents.\n" +
     "Allowed: read the schema-derived permission manifest for any project and delegate tasks to its agent.\n" +
     "Not allowed: write any property whose owner is 'system', or change a locked/schema_locked database.\n" +
     "General instructions: keep delegated tasks and their results terse; the manifest is the source of truth for what is allowed.",

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { bootstrapFirstAccount } from "../../auth/authActions.js";
 import { createUser } from "../../auth/usersStore.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
@@ -40,7 +40,7 @@ const BOOKS_MARKDOWN =
 
 const EXPECTED_MARKDOWN: Record<string, string> = {
   [SYSTEM_SETTINGS_MODULE_ID]:
-    "## Purpose\nsupervise Semprec, the personal life-organization system, and delegate to project agents.\n\n## Allowed\nread the schema-derived permission manifest for any project and delegate tasks to its agent.\n\n## Not allowed\nwrite any property whose owner is 'system', or change a locked/schema_locked database.\n\n## General instructions\nkeep delegated tasks and their results terse; the manifest is the source of truth for what is allowed.\n",
+    "## Purpose\nsupervise Alldots, the personal life-organization system, and delegate to project agents.\n\n## Allowed\nread the schema-derived permission manifest for any project and delegate tasks to its agent.\n\n## Not allowed\nwrite any property whose owner is 'system', or change a locked/schema_locked database.\n\n## General instructions\nkeep delegated tasks and their results terse; the manifest is the source of truth for what is allowed.\n",
   [MCP_SERVERS_MODULE_ID]:
     "## Purpose\nhost MCP (Model Context Protocol) server connections as a system resource.\n\n## Allowed\npropose a new MCP server's name and connectionConfig via the standard database proposal/confirm path; a human supplies the credential (if any) and confirms.\n\n## Not allowed\nwriting connectionConfig fields that carry a credential (rejected outright, never stored on the item), writing syncStatus/lastSynced/syncError (owner: 'system', written only by the human-triggered Synchronize tools action), or triggering a sync itself — that action has no agent-reachable path at all.\n\n## General instructions\nthis project exists only to host MCP server items; tool discovery/grants/invocation are later issues.\n",
   [MAILBOXES_MODULE_ID]:
@@ -161,7 +161,7 @@ describe("system project guidance seeding (issue #1449)", () => {
   it("seeds the guidance in the tenant's scope when the setup route creates the account under the system scope", async () => {
     // The setup route runs bootstrapFirstAccount under runAsSystem on the runtime role, where tenant system databases
     // look absent; a superuser pool would bypass that RLS.
-    const dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    const dataPool = await createRuntimeRolePool(pool, "alldots_data");
     try {
       const account = await runAsSystem("setup", () =>
         bootstrapFirstAccount(dataPool, SETUP_TOKEN, SETUP_TOKEN, { email: "admin@example.test", password: PASSWORD }),
@@ -187,14 +187,14 @@ describe("system project guidance seeding (issue #1449)", () => {
 
   it("gives a renamed system project its guidance row from the seed text of its module", async () => {
     const projects = await systemProjectIds();
-    const semprecProjectId = projects.get(SYSTEM_SETTINGS_MODULE_ID);
-    if (!semprecProjectId) throw new Error("the Semprec system project is missing");
-    await patchProject(semprecProjectId, { name: "Renamed after seeding" });
+    const alldotsProjectId = projects.get(SYSTEM_SETTINGS_MODULE_ID);
+    if (!alldotsProjectId) throw new Error("the Alldots system project is missing");
+    await patchProject(alldotsProjectId, { name: "Renamed after seeding" });
 
     await bootstrap();
 
-    const row = (await allGuidance()).find((entry) => entry.project_item_id === semprecProjectId);
-    expect(row?.markdown.startsWith("## Purpose\nsupervise Semprec, the personal life-organization system")).toBe(true);
+    const row = (await allGuidance()).find((entry) => entry.project_item_id === alldotsProjectId);
+    expect(row?.markdown.startsWith("## Purpose\nsupervise Alldots, the personal life-organization system")).toBe(true);
   });
 
   it("gives no guidance row to a user project that carries a system project's name", async () => {
@@ -308,7 +308,7 @@ describe("system project guidance for an invited account (issue #1449)", () => {
         tenantId: getTenantZeroId(),
         role: "admin",
       });
-      const dataPool = await createRuntimeRolePool(pool, "semprec_data");
+      const dataPool = await createRuntimeRolePool(pool, "alldots_data");
       try {
         const created = await runAsSystem("acceptInvitationTest", () =>
           withTransaction(dataPool, (client) =>

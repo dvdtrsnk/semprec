@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel, type ModuleCatalogs } from "@alldots/module-registry";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { withTransaction } from "../db/pool.js";
@@ -29,8 +29,8 @@ const folderRow = z.object({
 type MailFolder = z.infer<typeof folderRow>;
 
 /**
- * Every listed folder of mailbox `$1` with both counts. `unreadCount` uses the thread list's own CTEs and predicates
- * (`$2` null: list mode), so it equals what `GET /api/mail/threads?folderId=<id>&unread=true` returns. `totalCount`
+ * Every listed folder of mailbox `$1` with both counts. `unreadCount` uses the thread list's own CTEs and its unread
+ * predicate (`$2` null: list mode), so it equals what `GET /api/mail/threads?folderId=<id>&unread=true` returns. `totalCount`
  * counts live Emails items in the folder, drafts included.
  */
 const MAIL_FOLDER_LIST_SQL = `
@@ -47,10 +47,14 @@ WITH ${mailThreadCopyCtes(2)}, mailbox_folders AS (
   WHERE p.tenant_id = app_tenant_default() AND p.database_id = (SELECT folders FROM schema_ids)
     AND p.key = 'mailbox' AND COALESCE(f.properties->>'specialPurpose', 'none') <> 'all'
 ), unread_threads AS (
-  SELECT mf.id AS folder_id, count(*)::int AS n
-  FROM mailbox_folders mf CROSS JOIN copy_stats cs CROSS JOIN LATERAL (SELECT cs.thread_id) l
-  WHERE ${mailThreadPredicates.unread} AND ${mailThreadPredicates.inFolderRow}
-  GROUP BY mf.id
+  -- A thread is in a folder when one of its copies is: one pass over the copies and their folders, joined once to
+  -- the threads that are unread.
+  SELECT folder.id AS folder_id, count(DISTINCT c.thread_id)::int AS n
+  FROM copies c
+  CROSS JOIN LATERAL unnest(c.folder_ids) AS folder(id)
+  JOIN copy_stats cs ON cs.thread_id = c.thread_id
+  WHERE ${mailThreadPredicates.unread} AND folder.id IN (SELECT id FROM mailbox_folders)
+  GROUP BY folder.id
 ), folder_messages AS (
   SELECT mf.id AS folder_id, count(DISTINCT e.id)::int AS n
   FROM mailbox_folders mf

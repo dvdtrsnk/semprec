@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createBlob, tenantBlobStorageKey } from "../blobs/blobsStore.js";
 import { createChokePoint } from "../chokePoint/chokePoint.js";
@@ -51,7 +51,7 @@ import {
   resetDatabase,
   stubDnsLookup,
 } from "../testSupport/testDb.js";
-import { CORE_TASK_NAMES, runOnce } from "@semprec/queue";
+import { CORE_TASK_NAMES, runOnce } from "@alldots/queue";
 import { createCoreTaskList } from "../worker.js";
 
 const IMAGE_BYTES = Uint8Array.from([0xff, 0xd8, 0x01, 0xff, 0xd9]);
@@ -166,14 +166,14 @@ async function runJob(
 describe("library cover candidates (issue gh-1812)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {
     await resetDatabase(admin);
     tenantId = await createTestTenant(admin);
     library = await seedTenantLibrary(tenantId);
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-cover-candidates-"));
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-cover-candidates-"));
   });
 
   afterEach(async () => {

@@ -26,8 +26,3 @@ export function assertNoDerivedRelations(targetDatabase: DatabaseRow, envelope: 
     }
   }
 }
-
-/** Refuses a `journalEntry` with both `projectId` and `areaId`: the area derives from the project (`details.field` `area`). */
-export function assertJournalEntryAreaNotDerived(properties: { areaId?: string; projectId?: string }): void {
-  if (properties.areaId !== undefined && properties.projectId !== undefined) throw derivedRelationError("area");
-}

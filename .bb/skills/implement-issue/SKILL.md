@@ -1,6 +1,6 @@
 ---
 name: implement-issue
-description: "The execution contract for implementing one Semprec issue, or a chain of sources of the parallel backend delivery program, end to end - read the issue, check docs/architecture, load the topic skills the Task touches, build exactly the Task, self-review the diff against the review-rules of every platform it touches (the three mobile platforms included), and verify locally before pushing, with mobile/scripts/verify for any change under mobile/. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: execution:batch-source, a chain of the parallel backend delivery program, an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository, in backend/, web/ or mobile/."
+description: "The execution contract for implementing one Alldots issue, or a chain of sources of the parallel backend delivery program, end to end - read the issue, check docs/architecture, load the topic skills the Task touches, build exactly the Task, self-review the diff against the review-rules of every platform it touches (the three mobile platforms included), and verify locally before pushing, with mobile/scripts/verify for any change under mobile/. Load this FIRST in any issue-driven change in this repository, before reading the code, whether the issue was dispatched automatically by relay or started by hand. Triggers on: execution:batch-source, a chain of the parallel backend delivery program, an issue number, a Task section, Acceptance criteria, Out of scope, a relay dispatch prompt, or any instruction to implement, fix or extend something in this repository, in backend/, web/ or mobile/."
 ---
 
 # Implementing one issue
@@ -13,7 +13,7 @@ When the issue has `execution:batch-source`, it belongs to the program in
 `docs/architecture/delivery-and-operations.md`).
 You implement the sources of your chain in the given order, one contiguous
 commit segment per source, in your own worktree and branch. The base for your
-diff, for a rebase and for migration ordinals is the integration branch
+diff and for a rebase is the integration branch
 `feature/backend-parallel`, wherever the steps below name `origin/develop`. A
 blocker that the issue text marks as `Shared-file ordering` does not have to be
 delivered before you start; read its handover if it exists. If something the
@@ -90,7 +90,7 @@ means to "remember them as it goes" reliably does not.
 | `state-writes` | creating, updating or deleting persisted state — items, relations, blocks, rows in any table, or a `NOTIFY` that follows one |
 | `io-hardening` | a new HTTP route, handler, WebSocket upgrade, `LISTEN` consumer, pooled-connection consumer, or any network call |
 | `error-handling` | a `catch`, an error mapping, a rollback path, or any decision about what happens on failure |
-| `db-migrations` | a schema change, constraint, index, or backfill |
+| `db-migrations` | a schema change, constraint, index, or the seed |
 | `canonical-keys` | a stored key, option value, view type, or any string a user will see |
 | `ai-gateway` | any model call, provider SDK, or provider credential |
 | `adr-conventions` | changing a rule `docs/architecture/` states, or adding or superseding a mobile/web ADR |
@@ -147,8 +147,7 @@ that ends early.
 
 ## 4. Self-review, then verify
 
-Steps 1–4 in this order, because each is cheaper than the one after it; step 5
-comes last because anything committed after it can make it stale again:
+Steps 1–4 in this order, because each is cheaper than the one after it:
 
 1. **Read your own diff** (`git diff origin/develop`) in the role of a strict
    reviewer applying `review-rules/rules.md` and `review-rules/tasks/*.md` of
@@ -176,8 +175,11 @@ comes last because anything committed after it can make it stale again:
    callers. A false sentence is executed by the next agent that reads it.
 3. **Sweep for leftovers** — debug prints, commented-out code, files unrelated
    to this issue.
-4. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`. This
-   is the same sequence CI runs, in the same order. The host is shared — read
+4. **Run the pipeline**: `pnpm run verify` in `backend/`, then in `web/`, for
+   each of the two that `node .github/scripts/changed-areas.mjs --base
+   origin/develop --json` reports as `true` after you commit. On a pull
+   request, CI and Relay run each pipeline only when the change touches its
+   area, in this order. The host is shared — read
    `.bb/AGENTS.md` before you wait on, kill or log a process. In a Relay
    `implement-issue` run, run a partial check instead, because Relay reviews
    the draft pull request first and then runs the full verify itself, so a
@@ -198,20 +200,11 @@ comes last because anything committed after it can make it stale again:
    `bb device-lab` (load `mobile-verify`):
    `mobile/scripts/verify --ios-simulator <UDID> --android-serial <serial>`.
    CI reports the non-required `mobile-android` and `mobile-apple` jobs for
-   changes under `mobile/`. Relay runs `verify-mobile` after `verify-web`,
-   with the full mobile pipeline but without devices. In a Relay worker,
+   the app areas your change touches. Relay runs `verify-mobile` after
+   `verify-web`, with the steps of those areas but without devices. In a Relay worker,
    leave that device-free run to Relay instead of duplicating it. Before a
    manual pull request, run the full pipeline with reserved devices as above.
    Report any device step you could not run as NOT RUN.
-5. **Take the migration ordinal last.** Before the first production release a
-   schema change edits the baseline (`db-migrations`). If the diff adds a migration, run
-   `git fetch origin` and compare your number against
-   `backend/packages/data/src/db/migrations/` on `origin/develop` after the
-   pipeline and any fixes it led to, right before your final commit. Renumber
-   only your own file if it collides, then re-run
-   `pnpm --filter @semprec/data run check-migration-numbering` in `backend/`. Why: parallel
-   issues pick the same next number, and the collision surfaces only after the
-   other pull request merges (see `db-migrations`).
 
 Fix what each step finds and commit it before moving on.
 

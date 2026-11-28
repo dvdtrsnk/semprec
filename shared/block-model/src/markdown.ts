@@ -1,4 +1,12 @@
-import { BLOCK_TYPE_RULES, MAX_INDENT, MIN_INDENT, isBlockType, type BlockType } from "./blockTypes.js";
+import {
+  BLOCK_TYPE_RULES,
+  MAX_INDENT,
+  MIN_INDENT,
+  isBlockType,
+  isColorKey,
+  type BlockType,
+  type ColorKey,
+} from "./blockTypes.js";
 import { BlockInputError, validateBlockInput, type BlockIssue, type TextRun } from "./pageBlocks.js";
 
 /*
@@ -8,12 +16,18 @@ import { BlockInputError, validateBlockInput, type BlockIssue, type TextRun } fr
  *
  * Raw outer line whitespace is normalized; canonical content whitespace is escaped.
  * A number block is always written as `1.`.
+ *
+ * Inline marks nest, outermost first: link, `<span data-color>` (color), `<mark data-color>`
+ * (highlight), `<u>` (underline), `~~` (strike), bold, italic, and the code span innermost. Each
+ * of these is split at the boundaries of the marks outside it, so the output always nests;
+ * bold and italic keep splitting only at links and fall back to `<strong>`/`<em>` when they
+ * overlap. The parser accepts these marks in any order.
  */
 
-const PAGE_LINK_PREFIX = "semprec://page/";
-const ITEM_LINK_PREFIX = "semprec://items/";
+const PAGE_LINK_PREFIX = "alldots://page/";
+const ITEM_LINK_PREFIX = "alldots://items/";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const COMMENT_PATTERN = /^<!-- semprec:block (.*) -->$/;
+const COMMENT_PATTERN = /^<!-- alldots:block (.*) -->$/;
 const LIST_TYPES: ReadonlySet<string> = new Set(["bullet", "number", "todo"]);
 const WORD_CHAR = /[\p{L}\p{N}]/u;
 const PUNCTUATION = /[!-/:-@[-`{-~]/;
@@ -25,6 +39,8 @@ export interface SerializableBlock {
   type: string;
   indent: number;
   done?: boolean;
+  /** A toggle heading; written only for `h1`-`h3`. */
+  toggle?: boolean;
   text?: readonly TextRun[];
   pageId?: string | null;
 }
@@ -35,7 +51,7 @@ export interface SerializeOptions {
    * block itself, so two page blocks that share one page id can keep their own captions.
    */
   resolvePageTitle?: (pageId: string, block: SerializableBlock) => string;
-  /** Write the `semprec:block` id comment before every block. */
+  /** Write the `alldots:block` id comment before every block. */
   withIds?: boolean;
 }
 
@@ -52,6 +68,8 @@ export interface ParsedBlock {
   type: string;
   indent: number;
   done?: boolean;
+  /** Present, as `true`, only on a toggle heading. */
+  toggle?: true;
   /** Always runs: the parser never produces the plain-string form of `BlockInput.text`. */
   text?: TextRun[];
   pageId?: string;
@@ -68,6 +86,10 @@ interface Marks {
   italic: boolean;
   code: boolean;
   href: string | null;
+  strike: boolean;
+  underline: boolean;
+  color: ColorKey | null;
+  highlight: ColorKey | null;
 }
 
 interface Piece {
@@ -76,24 +98,55 @@ interface Piece {
   marks: Marks;
 }
 
+type SpanKind = "link" | "color" | "highlight" | "underline" | "strike" | "bold" | "italic";
+
 interface Span {
-  kind: "link" | "bold" | "italic";
+  kind: SpanKind;
   start: number;
   end: number;
-  href: string;
+  /** The marks this span is split at; a new span starts where the key changes. */
+  key: string;
+  /** The href of a link, the color key of a color or highlight span, otherwise empty. */
+  value: string;
   html: boolean;
 }
 
-const KIND_RANK = { link: 0, bold: 1, italic: 2 } as const;
+const KIND_RANK: Readonly<Record<SpanKind, number>> = {
+  link: 0,
+  color: 1,
+  highlight: 2,
+  underline: 3,
+  strike: 4,
+  bold: 5,
+  italic: 6,
+};
+
+/** Joins neighbouring runs with equal attributes, which a `Y.Text` delta can split at format boundaries. */
+function mergeRuns(runs: readonly TextRun[]): TextRun[] {
+  const merged: TextRun[] = [];
+  for (const run of runs) {
+    const last = merged[merged.length - 1];
+    if (last !== undefined && sameAttributes(last.attributes, run.attributes)) {
+      merged[merged.length - 1] = { ...last, insert: last.insert + run.insert };
+    } else {
+      merged.push(run);
+    }
+  }
+  return merged;
+}
 
 function toPieces(runs: readonly TextRun[]): Piece[] {
   const pieces: Piece[] = [];
-  for (const run of runs) {
+  for (const run of mergeRuns(runs)) {
     const marks: Marks = {
       bold: run.attributes?.bold === true,
       italic: run.attributes?.italic === true,
       code: run.attributes?.code === true,
       href: run.attributes?.link?.href ? run.attributes.link.href : null,
+      strike: run.attributes?.strike === true,
+      underline: run.attributes?.underline === true,
+      color: isColorKey(run.attributes?.color) ? run.attributes.color : null,
+      highlight: isColorKey(run.attributes?.highlight) ? run.attributes.highlight : null,
     };
     const segments = run.insert.split("\n");
     segments.forEach((segment, index) => {
@@ -108,33 +161,49 @@ function toPieces(runs: readonly TextRun[]): Piece[] {
   return pieces;
 }
 
+/** The values of the marks outside `kind` that split a span of that kind; bold does not split italic. */
+function outerKey(kind: SpanKind, marks: Marks): string {
+  const parts: string[] = [marks.href ?? ""];
+  if (KIND_RANK[kind] > KIND_RANK.color) parts.push(marks.color ?? "");
+  if (KIND_RANK[kind] > KIND_RANK.highlight) parts.push(marks.highlight ?? "");
+  if (KIND_RANK[kind] > KIND_RANK.underline) parts.push(marks.underline ? "u" : "");
+  if (KIND_RANK[kind] > KIND_RANK.strike) parts.push(marks.strike ? "s" : "");
+  return parts.join("\u0000");
+}
+
 function buildSpans(pieces: readonly Piece[]): Span[] {
   const spans: Span[] = [];
-  const collect = (kind: Span["kind"], applies: (marks: Marks) => boolean): void => {
+  const collect = (kind: SpanKind, valueOf: (marks: Marks) => string | null): void => {
     let current: Span | null = null;
     pieces.forEach((piece, index) => {
-      if (!applies(piece.marks)) {
+      const value = valueOf(piece.marks);
+      if (value === null) {
         current = null;
         return;
       }
-      // Bold and italic spans are split at link boundaries so that a link is always outermost.
-      const href = piece.marks.href ?? "";
-      if (current !== null && current.href === href) {
+      // A span is split where an outer mark changes, so the marks outside it always enclose it whole.
+      const key = `${outerKey(kind, piece.marks)}\u0000${value}`;
+      if (current !== null && current.key === key) {
         current.end = index + 1;
       } else {
-        current = { kind, start: index, end: index + 1, href, html: false };
+        current = { kind, start: index, end: index + 1, key, value, html: false };
         spans.push(current);
       }
     });
   };
-  collect("link", (marks) => marks.href !== null);
-  collect("bold", (marks) => marks.bold);
-  collect("italic", (marks) => marks.italic);
+  collect("link", (marks) => marks.href);
+  collect("color", (marks) => marks.color);
+  collect("highlight", (marks) => marks.highlight);
+  collect("underline", (marks) => (marks.underline ? "" : null));
+  collect("strike", (marks) => (marks.strike ? "" : null));
+  collect("bold", (marks) => (marks.bold ? "" : null));
+  collect("italic", (marks) => (marks.italic ? "" : null));
   return spans;
 }
 
+/** Bold and italic spans that `**` and `*`/`_` cannot express are written as `<strong>` and `<em>`. */
 function markHtmlSpans(spans: Span[], pieces: readonly Piece[]): void {
-  const formatting = spans.filter((span) => span.kind !== "link");
+  const formatting = spans.filter((span) => span.kind === "bold" || span.kind === "italic");
   for (const span of formatting) {
     const text = pieces
       .slice(span.start, span.end)
@@ -154,7 +223,11 @@ function markHtmlSpans(spans: Span[], pieces: readonly Piece[]): void {
   }
 }
 
-function escapePlain(text: string, offset: number, whole: string): string {
+/**
+ * Escapes `text`, the plain piece at `offset` of `whole`. A `~` is escaped next to another `~`, and at a piece edge
+ * that a `~~` strike delimiter touches (`strikeBefore`, `strikeAfter`), so it can never form a delimiter.
+ */
+function escapePlain(text: string, offset: number, whole: string, strikeBefore = false, strikeAfter = false): string {
   let out = "";
   const leading = /^[^\S\n]*/u.exec(whole)?.[0].length ?? 0;
   const trailing = whole.length - (/[^\S\n]*$/u.exec(whole)?.[0].length ?? 0);
@@ -169,6 +242,13 @@ function escapePlain(text: string, offset: number, whole: string): string {
       out += "\\&";
     } else if (char === "\\" || char === "*" || char === "`" || char === "[" || char === "]" || char === "<") {
       out += `\\${char}`;
+    } else if (char === "~") {
+      const tilde =
+        whole[position - 1] === "~" ||
+        whole[position + 1] === "~" ||
+        (i === 0 && strikeBefore) ||
+        (i === text.length - 1 && strikeAfter);
+      out += tilde ? "\\~" : char;
     } else if (char === "_") {
       const before = whole[offset + i - 1];
       const after = whole[offset + i + 1];
@@ -257,13 +337,35 @@ export function serializeInline(runs: readonly TextRun[]): string {
     }
   }
   const tokenFor = (span: Span): string => {
-    if (span.kind === "bold") return span.html ? "<strong>" : "**";
-    return italicToken.get(span) as string;
+    switch (span.kind) {
+      case "link":
+        return "[";
+      case "color":
+        return `<span data-color="${span.value}">`;
+      case "highlight":
+        return `<mark data-color="${span.value}">`;
+      case "underline":
+        return "<u>";
+      case "strike":
+        return "~~";
+      case "bold":
+        return span.html ? "<strong>" : "**";
+      case "italic":
+        return italicToken.get(span) as string;
+    }
   };
   const closeFor = (span: Span): string => {
+    if (span.kind === "link") return `](${linkDestination(span.value)})`;
     const open = tokenFor(span);
-    return open.startsWith("<") ? `</${open.slice(1)}` : open;
+    return open.startsWith("<") ? `</${/^<(\w+)/.exec(open)?.[1] ?? ""}>` : open;
   };
+  const strikeBoundaries = new Set<number>();
+  for (const span of spans) {
+    if (span.kind === "strike") {
+      strikeBoundaries.add(span.start);
+      strikeBoundaries.add(span.end);
+    }
+  }
 
   let out = "";
   for (let index = 0; index <= pieces.length; index += 1) {
@@ -271,13 +373,13 @@ export function serializeInline(runs: readonly TextRun[]): string {
       .filter((span) => span.end === index)
       .sort((a, b) => b.start - a.start || KIND_RANK[b.kind] - KIND_RANK[a.kind]);
     for (const span of closing) {
-      out += span.kind === "link" ? `](${linkDestination(span.href)})` : closeFor(span);
+      out += closeFor(span);
     }
     const opening = spans
       .filter((span) => span.start === index)
       .sort((a, b) => b.end - a.end || KIND_RANK[a.kind] - KIND_RANK[b.kind]);
     for (const span of opening) {
-      out += span.kind === "link" ? "[" : tokenFor(span);
+      out += tokenFor(span);
     }
     const piece = pieces[index];
     if (piece === undefined) continue;
@@ -286,7 +388,13 @@ export function serializeInline(runs: readonly TextRun[]): string {
     } else if (piece.marks.code) {
       out += codeSpan(piece.text);
     } else {
-      out += escapePlain(piece.text, offsets[index] as number, whole);
+      out += escapePlain(
+        piece.text,
+        offsets[index] as number,
+        whole,
+        strikeBoundaries.has(index),
+        strikeBoundaries.has(index + 1),
+      );
     }
   }
   return out;
@@ -371,15 +479,25 @@ export function serializeBlocks(blocks: readonly SerializableBlock[], options: S
         line = withMarker(">", content);
         break;
       default:
+        // `text`, `toggle` and an unknown type; the comment tells the last two apart.
         line = escapeLineStart(content);
     }
 
+    const toggleHeading = type !== "unknown" && BLOCK_TYPE_RULES[type].hasToggle && block.toggle === true;
     const needsComment =
-      options.withIds === true || type === "unknown" || (!isList && indent !== 0) || (line === "" && type !== "page");
+      options.withIds === true ||
+      type === "unknown" ||
+      type === "toggle" ||
+      toggleHeading ||
+      (!isList && indent !== 0) ||
+      (line === "" && type !== "page");
     const entry: string[] = [];
     if (needsComment) {
       const typeKey = type === "unknown" ? (block.type === "" ? '""' : encodeCommentField(block.type)) : type;
-      entry.push(`<!-- semprec:block id=${encodeCommentField(block.id)} type=${typeKey} indent=${indent} -->`);
+      const toggleField = toggleHeading ? " toggle=true" : "";
+      entry.push(
+        `<!-- alldots:block id=${encodeCommentField(block.id)} type=${typeKey} indent=${indent}${toggleField} -->`,
+      );
     }
     if (line !== "") {
       entry.push(line);
@@ -399,7 +517,24 @@ interface InlineState {
   bold: boolean;
   italic: boolean;
   href: string | null;
+  strike: boolean;
+  underline: boolean;
+  color: ColorKey | null;
+  highlight: ColorKey | null;
 }
+
+const INITIAL_STATE: InlineState = {
+  bold: false,
+  italic: false,
+  href: null,
+  strike: false,
+  underline: false,
+  color: null,
+  highlight: null,
+};
+
+/** `<span data-color="red">` or `<mark data-color="red">`, either quote; group 1 is the tag, 2 or 3 the key. */
+const COLOR_TAG = /^<(span|mark) data-color=(?:"([^"<>]*)"|'([^'<>]*)')>/i;
 
 function isWordChar(char: string | undefined): boolean {
   return char !== undefined && WORD_CHAR.test(char);
@@ -521,11 +656,24 @@ function runAttributes(state: InlineState, code: boolean): TextRun["attributes"]
   if (state.italic) attributes.italic = true;
   if (code) attributes.code = true;
   if (state.href !== null) attributes.link = { href: state.href };
+  if (state.strike) attributes.strike = true;
+  if (state.underline) attributes.underline = true;
+  if (state.color !== null) attributes.color = state.color;
+  if (state.highlight !== null) attributes.highlight = state.highlight;
   return Object.keys(attributes).length > 0 ? attributes : undefined;
 }
 
 function sameAttributes(a: TextRun["attributes"], b: TextRun["attributes"]): boolean {
-  return a?.bold === b?.bold && a?.italic === b?.italic && a?.code === b?.code && a?.link?.href === b?.link?.href;
+  return (
+    a?.bold === b?.bold &&
+    a?.italic === b?.italic &&
+    a?.code === b?.code &&
+    a?.link?.href === b?.link?.href &&
+    a?.strike === b?.strike &&
+    a?.underline === b?.underline &&
+    a?.color === b?.color &&
+    a?.highlight === b?.highlight
+  );
 }
 
 function parseInlineInto(source: string, initial: InlineState, runs: TextRun[]): void {
@@ -575,16 +723,40 @@ function parseInlineInto(source: string, initial: InlineState, runs: TextRun[]):
         i += "<code><br></code>".length;
         continue;
       }
-      const tag = /^<(\/?)(strong|b|em|i)>/i.exec(source.slice(i));
-      if (tag) {
+      const tag = /^<(\/?)(strong|b|em|i|u|s|del|span|mark)>/i.exec(source.slice(i));
+      // `<span>` and `<mark>` only open with a `data-color`; bare, only their closing tags are markup.
+      const name = tag?.[2]?.toLowerCase();
+      if (tag && name !== undefined && (tag[1] === "/" || (name !== "span" && name !== "mark"))) {
         flush();
         const open = tag[1] === "";
-        if ((tag[2] as string).toLowerCase() === "strong" || (tag[2] as string).toLowerCase() === "b") {
+        if (name === "strong" || name === "b") {
           state.bold = open;
-        } else {
+        } else if (name === "em" || name === "i") {
           state.italic = open;
+        } else if (name === "u") {
+          state.underline = open;
+        } else if (name === "s" || name === "del") {
+          state.strike = open;
+        } else if (name === "span") {
+          state.color = null;
+        } else {
+          state.highlight = null;
         }
         i += tag[0].length;
+        continue;
+      }
+      const colorTag = COLOR_TAG.exec(source.slice(i));
+      if (colorTag) {
+        flush();
+        // An unknown color key is dropped: the tag is consumed and the text keeps no color.
+        const key = colorTag[2] ?? colorTag[3];
+        const color = isColorKey(key) ? key : null;
+        if ((colorTag[1] as string).toLowerCase() === "span") {
+          state.color = color;
+        } else {
+          state.highlight = color;
+        }
+        i += colorTag[0].length;
         continue;
       }
       const br = /^<br\s*\/?>/i.exec(source.slice(i));
@@ -601,6 +773,16 @@ function parseInlineInto(source: string, initial: InlineState, runs: TextRun[]):
         flush();
         parseInlineInto(source.slice(i + 1, end), { ...state, href: withScheme(destination.href) }, runs);
         i = destination.next;
+        continue;
+      }
+    }
+    if (char === "~" && source[i + 1] === "~") {
+      // Any unescaped `~~` is a delimiter (the writer escapes literal tildes); it opens when a closing one follows.
+      const opens = !state.strike && findDelimiter(source, i + 2, "~~") !== -1;
+      if (state.strike || opens) {
+        flush();
+        state.strike = opens;
+        i += 2;
         continue;
       }
     }
@@ -653,7 +835,7 @@ function withAttributes(insert: string, attributes: TextRun["attributes"]): Text
 
 function parseInline(source: string): TextRun[] {
   const raw: TextRun[] = [];
-  parseInlineInto(source, { bold: false, italic: false, href: null }, raw);
+  parseInlineInto(source, INITIAL_STATE, raw);
   const merged: TextRun[] = [];
   for (const run of raw) {
     const last = merged[merged.length - 1];
@@ -672,6 +854,7 @@ interface CommentAttributes {
   id?: string;
   type?: string;
   indent?: number;
+  toggle?: boolean;
 }
 
 function parseComment(body: string): CommentAttributes {
@@ -684,6 +867,7 @@ function parseComment(body: string): CommentAttributes {
       attributes.type = value === '""' ? "" : decodeUtf16Escapes(value);
     }
     if (key === "indent" && /^\d+$/.test(value)) attributes.indent = clampIndent(Number(value));
+    if (key === "toggle") attributes.toggle = value === "true";
   }
   return attributes;
 }
@@ -700,7 +884,7 @@ interface ParsedLine {
 function parseLine(raw: string): ParsedLine {
   const spaces = /^ */.exec(raw)?.[0].length ?? 0;
   const line = raw.trim();
-  const page = /^\[(?:\\.|[^\]\\])*\]\(semprec:\/\/page\/([^)\s]+)\)$/.exec(line);
+  const page = /^\[(?:\\.|[^\]\\])*\]\(alldots:\/\/page\/([^)\s]+)\)$/.exec(line);
   if (page && page[1] !== undefined) {
     return { type: "page", lineIndent: null, pageId: decodeUtf16Escapes(page[1]) };
   }
@@ -733,13 +917,15 @@ interface DraftBlock {
   type: string;
   indent: number;
   done?: boolean;
+  toggle?: boolean;
   text?: TextRun[];
   pageId?: string;
 }
 
 /**
- * Block inputs for `markdown`. Block types come from the line markers; only a type key the
- * registry does not know is read from a `semprec:block` comment, on a plain line. Throws
+ * Block inputs for `markdown`. Block types come from the line markers; only `toggle` and a type
+ * key the registry does not know are read from a `alldots:block` comment, on a plain line. The
+ * comment's `toggle=true` applies to a heading and is ignored on every other type. Throws
  * `BlockInputError` when a known block fails registry validation or a page link appears
  * while `allowPage` is false.
  */
@@ -763,6 +949,7 @@ export function parseMarkdown(markdown: string, options: ParseOptions = {}): Par
       indent: attributes.indent ?? 0,
       text: [],
       ...(attributes.type === "todo" ? { done: false } : {}),
+      ...(attributes.toggle === true ? { toggle: true } : {}),
     });
     lineNumbers.push(lineNumber);
     pending = null;
@@ -790,13 +977,18 @@ export function parseMarkdown(markdown: string, options: ParseOptions = {}): Par
         { path: `line ${lineNumber}`, code: "page_not_allowed", message: "page links are not allowed here" },
       ]);
     }
-    const preservedType =
-      parsed.type === "text" && attributes.type !== undefined && !isBlockType(attributes.type) ? attributes.type : null;
+    const commentType =
+      parsed.type === "text" &&
+      attributes.type !== undefined &&
+      (attributes.type === "toggle" || !isBlockType(attributes.type))
+        ? attributes.type
+        : null;
     drafts.push({
       id: attributes.id,
-      type: preservedType ?? parsed.type,
+      type: commentType ?? parsed.type,
       indent: parsed.lineIndent ?? attributes.indent ?? 0,
       ...(parsed.done === undefined ? {} : { done: parsed.done }),
+      ...(attributes.toggle === true ? { toggle: true } : {}),
       ...(parsed.text === undefined ? {} : { text: parsed.text }),
       ...(parsed.pageId === undefined ? {} : { pageId: parsed.pageId }),
     });
@@ -836,6 +1028,7 @@ export function parseMarkdown(markdown: string, options: ParseOptions = {}): Par
       // A page link carries no title text here; the title is resolved separately from the block's own text.
       if (!rule.hasPageId) block.text = draft.text ?? [];
       if (rule.hasDone) block.done = draft.done === true;
+      if (rule.hasToggle && draft.toggle === true) block.toggle = true;
       if (rule.hasPageId) block.pageId = draft.pageId;
       const issues: BlockIssue[] = validateBlockInput(block).map((issue) => ({
         ...issue,
@@ -863,7 +1056,7 @@ export function stripMarkdown(markdown: string, maxChars: number): string {
   // Parse page links as ordinary links here so their visible labels survive; page-model parsing
   // deliberately discards those labels because the page title is resolved separately.
   const withVisiblePageLabels = markdown.replace(
-    /^([ \t]*\[(?:\\.|[^\]\\])*\])\(semprec:\/\/page\/[^)\s]+\)([ \t]*\r?)$/gm,
+    /^([ \t]*\[(?:\\.|[^\]\\])*\])\(alldots:\/\/page\/[^)\s]+\)([ \t]*\r?)$/gm,
     "$1(https://example.invalid)$2",
   );
   const text = parseMarkdown(withVisiblePageLabels)
@@ -879,14 +1072,14 @@ export function stripMarkdown(markdown: string, maxChars: number): string {
 
 /** Item references found in parsed blocks. */
 export interface ItemLinks {
-  /** Distinct lower-cased ids of `semprec://items/<uuid>` links, in order of first appearance. */
+  /** Distinct lower-cased ids of `alldots://items/<uuid>` links, in order of first appearance. */
   ids: string[];
-  /** True when some `semprec://items/` link carries something that is not a UUID. */
+  /** True when some `alldots://items/` link carries something that is not a UUID. */
   malformed: boolean;
 }
 
 /**
- * Collects the item references (`[Title](semprec://items/<uuid>)`) from the link attributes of
+ * Collects the item references (`[Title](alldots://items/<uuid>)`) from the link attributes of
  * parsed blocks. Pure: it neither checks that an item exists nor writes a relation; a server
  * checks the ids against the caller's tenant before it persists the blocks.
  */

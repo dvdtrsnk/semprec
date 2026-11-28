@@ -26,7 +26,8 @@ const SUBSCRIBED_EVENT_PROPERTIES: readonly PropSpec[] = [
   ...SUBSCRIBED_EVENT_RECURRENCE_KEYS.map((key): PropSpec => ({ key, type: "text" })),
 ];
 
-async function insertCalendarOwnedRelationProperty(
+/** A relation property system-owned by the calendar module, configured once its definition exists. */
+export async function insertCalendarOwnedRelationProperty(
   client: PoolClient,
   databaseId: string,
   key: string,

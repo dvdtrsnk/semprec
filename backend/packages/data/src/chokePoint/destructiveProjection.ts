@@ -11,7 +11,7 @@ import {
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError, type PoolClient } from "pg";
-import { canonicalizeJson, currentTenantScope } from "@semprec/shared";
+import { canonicalizeJson, currentTenantScope } from "@alldots/shared";
 import { ApprovalResourceBusyError, ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../errors.js";
 import { markManagedTransactionRollbackOnly, requireManagedTransaction } from "../db/pool.js";
 import * as databasesStore from "./databasesStore.js";
@@ -422,7 +422,8 @@ export async function computeDestructiveResourceProjection(
       // the refusal one of them would answer an agent with; it comes last, as the hooks do.
       const guard = database.ownerModuleId ? getItemDeleteApprovalGuard(database.ownerModuleId) : undefined;
       const refusal = guard ? await guard({ client, database, item }) : null;
-      if (refusal !== null) throw new ForbiddenError(refusal, { currentResource: projected });
+      if (typeof refusal === "string") throw new ForbiddenError(refusal, { currentResource: projected });
+      if (refusal !== null) throw new ForbiddenError(refusal.message, { currentResource: projected }, refusal.code);
       return { snapshot: buildResourceSnapshot("item_delete", item.id, projected), currentResource: projected };
     }
     case "relation.delete": {

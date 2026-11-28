@@ -1,6 +1,10 @@
 import type { Pool } from "pg";
-import { currentTenantScope, TenantScopeMissingError } from "@semprec/shared";
-import { getDecryptedCredential, storeCredential } from "../credentials/externalCredentialsStore.js";
+import { currentTenantScope, TenantScopeMissingError } from "@alldots/shared";
+import {
+  getDecryptedCredential,
+  storeCredential,
+  type CredentialActorType,
+} from "../credentials/externalCredentialsStore.js";
 import { withTransaction } from "../db/pool.js";
 import { logger } from "./logger.js";
 import { refreshAccessToken } from "./oauthTokenExchange.js";
@@ -11,8 +15,10 @@ export interface RefreshAndPersistAccessTokenInput {
   clientId: string;
   clientSecret: string;
   scope?: string;
-  /** Names the sync mode in `credential_access_log`, e.g. `gmail_api_sync`. */
+  /** Names the use in `credential_access_log`, e.g. `gmail_api_sync` or `gmail_api_content`. */
   purpose: string;
+  /** Who reads the stored refresh token, in `credential_access_log`; the sync worker unless a user or an agent run asks. */
+  actor?: { actorType: CredentialActorType; actorId?: string };
   fetchImpl?: typeof fetch;
 }
 
@@ -60,7 +66,8 @@ export async function refreshAndPersistAccessToken(
     }
     const refreshToken = await getDecryptedCredential(client, {
       itemId: input.mailboxItemId,
-      actorType: "sync_worker",
+      actorType: input.actor?.actorType ?? "sync_worker",
+      ...(input.actor?.actorId !== undefined ? { actorId: input.actor.actorId } : {}),
       purpose: input.purpose,
     });
     if (refreshToken === null) {

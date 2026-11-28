@@ -1,4 +1,4 @@
-plugins { id("semprec.kmp") }
+plugins { id("alldots.kmp") }
 kotlin {
     sourceSets {
         commonMain.dependencies {
@@ -6,6 +6,7 @@ kotlin {
             implementation(project(":shared:domain"))
             api(libs.lifecycle.viewmodel)
             api(libs.coroutines.core)
+            implementation(libs.kotlinx.datetime)
         }
         commonTest.dependencies { implementation(libs.coroutines.test) }
     }

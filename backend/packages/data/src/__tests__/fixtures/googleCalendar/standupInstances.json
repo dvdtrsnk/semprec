@@ -1,0 +1,37 @@
+{
+  "kind": "calendar#events",
+  "etag": "\"p32vrmrsl4bpj41g\"",
+  "summary": "me@example.test",
+  "timeZone": "Europe/Prague",
+  "accessRole": "owner",
+  "defaultReminders": [],
+  "items": [
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234568000\"",
+      "id": "standup_20261118T140000Z",
+      "status": "confirmed",
+      "summary": "Standup",
+      "start": { "dateTime": "2026-11-18T09:00:00-05:00", "timeZone": "America/New_York" },
+      "end": { "dateTime": "2026-11-18T09:30:00-05:00", "timeZone": "America/New_York" },
+      "recurringEventId": "standup",
+      "originalStartTime": { "dateTime": "2026-11-18T09:00:00-05:00", "timeZone": "America/New_York" }
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234570000\"",
+      "id": "standup_20261209T140000Z",
+      "status": "cancelled",
+      "recurringEventId": "standup",
+      "originalStartTime": { "dateTime": "2026-12-09T09:00:00-05:00", "timeZone": "America/New_York" }
+    },
+    {
+      "kind": "calendar#event",
+      "etag": "\"3527071234580000\"",
+      "id": "standup_20261216T140000Z",
+      "status": "cancelled",
+      "recurringEventId": "standup",
+      "originalStartTime": { "dateTime": "2026-12-16T09:00:00-05:00", "timeZone": "America/New_York" }
+    }
+  ]
+}

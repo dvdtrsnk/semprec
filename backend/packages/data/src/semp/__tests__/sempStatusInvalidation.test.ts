@@ -45,7 +45,7 @@ function inZero<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
 describe("sempStatus invalidations (issue #1868)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtimePool = await createRuntimeRolePool(admin, "semprec_data");
+    runtimePool = await createRuntimeRolePool(admin, "alldots_data");
     tenantZero = getTenantZeroId();
   });
   afterAll(async () => {

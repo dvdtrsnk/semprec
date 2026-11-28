@@ -8,21 +8,21 @@ import {
   setInvalidationHook,
   setInvalidationPublisher,
   type InvalidationEvent,
-} from "@semprec/data";
+} from "@alldots/data";
 import {
   createRuntimeRolePool,
   createTestTenant,
   getTestPool,
   resetDatabase,
   setTenantAiBudget,
-} from "@semprec/data/testSupport";
-import { currentTenantScope, runInTenant } from "@semprec/shared";
+} from "@alldots/data/testSupport";
+import { currentTenantScope, runInTenant } from "@alldots/shared";
 import { BudgetExceededError, complete, reserveAudioStreamChunk } from "../gateway.js";
 import { logger } from "../logger.js";
 
 /**
  * The gateway announces the first refusal of a tenant's budget window once per tenant and window, after the refused
- * reservation rolled back. Calls run on a `semprec_side` pool in the tenant's scope; a fresh tenant per case keeps the
+ * reservation rolled back. Calls run on a `alldots_side` pool in the tenant's scope; a fresh tenant per case keeps the
  * process-wide ledger of announced windows from leaking between cases. Realtime frames are observed through the
  * in-process NOTIFY hook; queued jobs through graphile-worker's public `jobs` view.
  */
@@ -142,7 +142,7 @@ function expectedResetDates(): { tomorrow: string; nextMonthFirst: string } {
 
 beforeAll(async () => {
   admin = getTestPool();
-  side = await createRuntimeRolePool(admin, "semprec_side");
+  side = await createRuntimeRolePool(admin, "alldots_side");
 });
 
 beforeEach(async () => {

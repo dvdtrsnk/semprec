@@ -14,6 +14,9 @@ enum CollectionsIdentifiers {
     static let newItemSheet = "collection.newItemSheet"
     static let newItemSave = "collection.newItemSave"
     static let loadMore = "collection.loadMore"
+    static let facetBar = "collection.facetBar"
+    /// Followed by the value the chip stands for, e.g. `collection.facetBar.chip.client`.
+    static let facetBarChipPrefix = "collection.facetBar.chip."
 
     // MARK: - Item
     static let itemScreen = "item.screen"
@@ -32,4 +35,17 @@ enum CollectionsIdentifiers {
     /// Followed by the database id.
     static let relatedPrefix = "item.related."
     static let projectSettings = "project.settings"
+    static let projectMailSignals = "project.settings.mailSignals"
+    static let projectTags = "project.tags"
+    static let projectSettingsTags = "project.settings.tags"
+    static let projectTagsSheet = "project.settings.tags.sheet"
+    static let projectTagsCancel = "project.settings.tags.cancel"
+    static let projectTagsDone = "project.settings.tags.done"
+    static let projectSettingsNewTag = "project.settings.tags.new"
+    /// Followed by the tag's key, e.g. `project.settings.tags.chip.client`.
+    static let projectTagChipPrefix = "project.settings.tags.chip."
+    static let projectTagName = "project.settings.tag.name"
+    static let projectTagRename = "project.settings.tag.rename"
+    static let projectTagDelete = "project.settings.tag.delete"
+    static let projectTagDeleteConfirm = "project.settings.tag.delete.confirm"
 }

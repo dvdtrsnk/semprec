@@ -1,16 +1,14 @@
 import type { PoolClient } from "pg";
-import { loadModuleCatalogs, resolveCatalogLabel } from "@semprec/module-registry";
+import { loadModuleCatalogs, resolveCatalogLabel } from "@alldots/module-registry";
 import { getTenantUserLocale } from "../auth/usersStore.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
-import { createRelationPropertyWithClient } from "../chokePoint/relationPropertyWrites.js";
 import * as viewsStore from "../chokePoint/viewsStore.js";
 import type { ViewTypeRegistry } from "../chokePoint/viewTypeRegistry.js";
 import { requireAffectedRows } from "../db/pool.js";
 import { toManifestLocale } from "../manifest/catalogResolution.js";
 import { SLEEP_DATABASE_DESCRIPTORS } from "../sleep/sleepModuleManifest.js";
 import { SENSITIVE_DATABASE_KEYS } from "./sensitiveDatabaseKeys.js";
-import { SLEEP_SETTINGS_AREA_KEY } from "./sleepModuleKeys.js";
 import { createProps, selectConfig, type PropSpec } from "./propSpecs.js";
 
 const SETTINGS_PROPERTIES: readonly PropSpec[] = [
@@ -93,16 +91,14 @@ async function createSleepDatabase(
 
 /**
  * Seeds the sleep module into the caller's transaction: the "Sleep" system project; `sleepSettings`,
- * `sleepPlans` and `sleepNights` with properties and a `table` view; the one-to-one `sleepSettings.area`
- * relation to Areas (no inverse, no edge seeded); the schema locks; one settings item and the two default
- * plans, named from the catalog in the tenant user's language (`cs` without a user). No nights.
+ * `sleepPlans` and `sleepNights` with properties and a `table` view; the schema locks; one settings item
+ * and the two default plans, named from the catalog in the tenant user's language (`cs` without a user). No nights.
  *
  * Not idempotent: `seedSystem` calls it once per new tenant.
  */
 export async function seedSleepModuleInTransaction(
   client: PoolClient,
   projectsDatabaseId: string,
-  areasDatabaseId: string,
   viewTypeRegistry: ViewTypeRegistry,
 ): Promise<void> {
   const locale = toManifestLocale((await getTenantUserLocale(client)) ?? "cs");
@@ -115,15 +111,6 @@ export async function seedSleepModuleInTransaction(
   const create = (descriptor: { key: string; name: string }, properties: readonly PropSpec[]) =>
     createSleepDatabase(client, descriptor, properties, project.id, viewTypeRegistry);
   const settingsId = await create(SLEEP_DATABASE_DESCRIPTORS.settings, SETTINGS_PROPERTIES);
-  // Must precede the schema lock below, which `propertiesStore` honours.
-  await createRelationPropertyWithClient(client, {
-    sourceDatabaseId: settingsId,
-    key: SLEEP_SETTINGS_AREA_KEY,
-    name: null,
-    targetDatabaseId: areasDatabaseId,
-    cardinality: "one_to_one",
-    owner: "user",
-  });
   const plansId = await create(SLEEP_DATABASE_DESCRIPTORS.plans, PLAN_PROPERTIES);
   const nightsId = await create(SLEEP_DATABASE_DESCRIPTORS.nights, NIGHT_PROPERTIES);
   for (const databaseId of [settingsId, plansId, nightsId]) {

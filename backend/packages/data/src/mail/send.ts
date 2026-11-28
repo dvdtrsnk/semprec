@@ -15,13 +15,18 @@ import { requestMailSendApproval } from "./mailSendApproval.js";
 import { getMailDraft, markMailDraftSent } from "./mailDraftsStore.js";
 import { announceMailThreadChanged } from "./mailThreadActions.js";
 import {
+  adoptProviderSentIdentity,
   deleteMailMessageMetaByItemId,
   getMailMessageMetaByItemId,
   upsertMailMessageMeta,
   type MailEnvelope,
   type MailEnvelopeAddress,
 } from "./mailMessageMetaStore.js";
-import { getMailAccountSyncState, defaultSyncModeForProvider } from "./mailAccountSyncStateStore.js";
+import {
+  getMailAccountSyncState,
+  defaultSyncModeForProvider,
+  lockMailAccountSyncPaused,
+} from "./mailAccountSyncStateStore.js";
 import { resolveThreadId } from "./threading.js";
 import { buildMailPreviewFromBody } from "./mailPlainText.js";
 import { parseAddressListProperty } from "./addressListParsing.js";
@@ -32,7 +37,8 @@ import {
   type OutgoingAttachmentInput,
   type OutgoingMimeDeps,
 } from "./outgoingMime.js";
-import type { MailTransportFactory } from "./mailTransport.js";
+import type { MailTransportFactory, MailTransportResult } from "./mailTransport.js";
+import { recordPendingSentCopy, recordPendingSentCopyAfterSend } from "./mailSentCopies.js";
 
 /**
  * An agent run (or an MCP client holding a run credential). An agent never sends directly: `sendDraftEmail`
@@ -72,6 +78,14 @@ export class MailboxNeedsReauthorizationError extends ChokePointError {
       mailboxId: mailboxItemId,
     });
     this.name = "MailboxNeedsReauthorizationError";
+  }
+}
+
+/** Raised before the claim: the account's Mail is switched off. The draft is untouched. 409 `mail_disabled`. */
+export class MailDisabledError extends ChokePointError {
+  constructor(mailboxItemId: string) {
+    super(409, "mail_disabled", "Mail is switched off for this account", { mailboxId: mailboxItemId });
+    this.name = "MailDisabledError";
   }
 }
 
@@ -164,12 +178,16 @@ async function unlinkFromFoldersWithSpecialPurpose(
 /**
  * `email.send`. The actor is checked first: an `ai_agent` never sends, and its call creates and returns
  * an approval request read from the stored draft; the approval executor later calls again as `user`.
- * For a user, `needsReauthorization` and a missing Sent folder are refused before the claim.
+ * For a user, Mail switched off, `needsReauthorization` and a missing Sent folder are refused before the
+ * claim.
  *
- * The claim transaction locks the Emails item and then its `mail_drafts` row, refuses a trashed or sent
- * draft, runs `beforeClaim`, and writes the claim. While held, draft writers refuse the draft as sent,
- * so no edit or discard commits before finalization. After a successful send one transaction moves the
- * draft to Sent, links People, sets `sent_at`, announces the thread and retires outdated Semp drafts.
+ * The claim transaction reads the account's sync state row `FOR SHARE` and refuses Mail switched off (a
+ * switch that commits first is seen; one that comes later waits for the claim transaction), then locks the
+ * Emails item and its `mail_drafts` row, refuses a trashed or sent draft, runs `beforeClaim`, and writes the
+ * claim. While held, draft writers refuse the draft as sent, so no edit or discard commits before
+ * finalization. After a successful send one transaction moves the draft to Sent, links People, sets
+ * `sent_at`, announces the thread, retires outdated Semp drafts and, for a provider that files no Sent copy (SMTP),
+ * records the copy and enqueues the job that appends it.
  * A failure before or during delivery undoes the claim so a genuine retry can still send.
  *
  * The claim is the `mail_message_meta` row written before the transport's `send`. Its `item_id` primary
@@ -201,13 +219,16 @@ export async function sendDraftEmail(
 ): Promise<SendEmailResult | ApprovalRequest> {
   if (input.actor.type === "ai_agent") return requestMailSendApproval(pool, input.draftItemId, input.actor);
 
-  const [draft, mailbox] = await withTransaction(pool, async (client) => [
+  const [draft, mailbox, initialSyncState] = await withTransaction(pool, async (client) => [
     await getItemById(client, moduleIds.emailsDatabaseId, input.draftItemId),
     await getItemById(client, moduleIds.mailboxesDatabaseId, input.mailboxItemId),
+    await getMailAccountSyncState(client, input.mailboxItemId),
   ]);
   if (!draft) throw new NotFoundError(`Draft ${input.draftItemId} not found`);
   // `getItemById` does not filter `deleted_at`, so a removed mailbox is a row with `deletedAt` set.
   if (!mailbox || mailbox.deletedAt) throw new NotFoundError(`Mailbox ${input.mailboxItemId} not found`);
+  // Ahead of the checks below: with Mail off its Sent folder may already be gone.
+  if (initialSyncState?.syncPausedAt) throw new MailDisabledError(input.mailboxItemId);
   if (mailbox.properties.syncStatus === "needsReauthorization") {
     throw new MailboxNeedsReauthorizationError(input.mailboxItemId);
   }
@@ -248,6 +269,8 @@ export async function sendDraftEmail(
 
   try {
     await withTransaction(pool, async (client) => {
+      if (await lockMailAccountSyncPaused(client, input.mailboxItemId))
+        throw new MailDisabledError(input.mailboxItemId);
       // Draft writers lock the Emails item then its `mail_drafts` row; deciding under both locks sees any
       // discard or edit committed since the checks above, and later ones find the claim.
       const draftItem = await lockItemById(client, moduleIds.emailsDatabaseId, input.draftItemId);
@@ -272,6 +295,8 @@ export async function sendDraftEmail(
         references: input.references,
         previewText: buildMailPreviewFromBody(input.bodyText, input.bodyHtml),
         ingestedAt: new Date(),
+        arrival: "live",
+        contentState: "full",
       });
     });
   } catch (err) {
@@ -282,6 +307,8 @@ export async function sendDraftEmail(
   }
 
   // Any failure here, including building the transport, undoes the claim.
+  let sentCopy: Buffer | null = null;
+  let providerIdentity: MailTransportResult = {};
   try {
     const transport = await transports.forMailbox(input.mailboxItemId, syncMode);
     const mime = await buildOutgoingMime(
@@ -300,11 +327,13 @@ export async function sendDraftEmail(
       },
       { client: pool, files: attachmentStorage.files, mailAttachments: attachmentStorage.mailAttachments },
     );
-    await transport.send({
+    const sent = await transport.send({
       raw: mime.raw,
       envelope: { from: input.from.address, recipients: mime.envelopeRecipients },
       ...(input.providerThreadId === undefined ? {} : { providerThreadId: input.providerThreadId }),
     });
+    if (sent.needsSentCopy) sentCopy = mime.raw;
+    providerIdentity = sent;
   } catch (err) {
     // Best-effort: the send failure in `err` must surface even if the compensating delete fails, which
     // leaves the claim in place (a retry then sees a conflict until it is cleared directly).
@@ -312,8 +341,25 @@ export async function sendDraftEmail(
     throw err;
   }
 
-  return withTransaction(pool, async (client) => {
+  // The Message-ID the message travels under: the provider's when it replaced the submitted one.
+  const sentMessageId = providerIdentity.messageId ?? messageId;
+  const finalized = withTransaction(pool, async (client) => {
     const sentAt = new Date();
+    if (providerIdentity.providerMessageId !== undefined || providerIdentity.messageId !== undefined) {
+      await adoptProviderSentIdentity(client, {
+        itemId: input.draftItemId,
+        mailboxItemId: input.mailboxItemId,
+        ...(providerIdentity.messageId === undefined ? {} : { messageId: providerIdentity.messageId }),
+        ...(providerIdentity.providerMessageId === undefined
+          ? {}
+          : { providerMessageId: providerIdentity.providerMessageId }),
+        ...(providerIdentity.providerThreadId === undefined
+          ? {}
+          : { providerThreadId: providerIdentity.providerThreadId }),
+        folderRelationPropertyId: moduleIds.folderRelationPropertyId,
+        sentFolderItemId,
+      });
+    }
     await updateItemWithClient(
       client,
       {
@@ -354,7 +400,7 @@ export async function sendDraftEmail(
       recipientsPeopleKey: moduleIds.recipientsPeopleKey,
     });
 
-    // Only Semprec-written drafts have a `mail_drafts` row. The item is already locked, so the row follows
+    // Only Alldots-written drafts have a `mail_drafts` row. The item is already locked, so the row follows
     // the lock order.
     if ((await getMailDraft(client, input.draftItemId)) !== null) {
       await markMailDraftSent(client, input.draftItemId, sentAt);
@@ -363,6 +409,10 @@ export async function sendDraftEmail(
     const threadId = (await getMailMessageMetaByItemId(client, input.draftItemId))?.threadId;
     if (!threadId) throw new Error(`The claim of draft ${input.draftItemId} has no thread`);
     announceMailThreadChanged(client, threadId);
+    // The provider files no Sent copy: it is recorded with the send, and its job appends it after the commit.
+    if (sentCopy !== null) {
+      await recordPendingSentCopy(client, { mailboxItemId: input.mailboxItemId, messageId, raw: sentCopy });
+    }
     // The user's own message makes the thread's Semp draft outdated, unless the Semp draft is the message.
     await retireSupersededSempDrafts(client, {
       threadId,
@@ -370,6 +420,16 @@ export async function sendDraftEmail(
       excludeDraftItemId: input.draftItemId,
     });
 
-    return { itemId: input.draftItemId, messageId, threadId, sentAt };
+    return { itemId: input.draftItemId, messageId: sentMessageId, threadId, sentAt };
   });
+  try {
+    return await finalized;
+  } catch (err) {
+    // The message was delivered and its claim stays; the copy rolled back with the finalization is recorded on its
+    // own, which never throws, so `err` is what the caller sees.
+    if (sentCopy !== null) {
+      await recordPendingSentCopyAfterSend(pool, { mailboxItemId: input.mailboxItemId, messageId, raw: sentCopy });
+    }
+    throw err;
+  }
 }

@@ -90,9 +90,9 @@ export interface ProposalComputationResult {
 
 /**
  * The injected model call that decides what an Inbox source becomes. It must never write to any target database or
- * page; it only computes values, and `createSemprecTickAction` alone writes the envelope.
+ * page; it only computes values, and `createAlldotsTickAction` alone writes the envelope.
  */
-export type ComputeSemprecProposalFn = (input: ProposalComputationInput) => Promise<ProposalComputationResult>;
+export type ComputeAlldotsProposalFn = (input: ProposalComputationInput) => Promise<ProposalComputationResult>;
 
 export interface TickSnapshot {
   recognition?: boolean;
@@ -135,24 +135,19 @@ export function tickComputationInput(snapshot: TickSnapshot, projectItemId: stri
   };
 }
 
-/**
- * `date` defaults to the source item's date. An area is dropped when the answer names a project, because the entry's
- * area derives from its project. A result with its own `target` is a `ValidationError`.
- */
+/** `date` defaults to the source item's date. A result with its own `target` is a `ValidationError`. */
 function buildJournalEntryEnvelope(snapshot: TickSnapshot, result: ProposalComputationResult): ProposalEnvelope {
   if (result.target !== undefined)
     throw new ValidationError("The target of a journal entry proposal is set by the server", { field: "target" });
   if (!snapshot.journalDatabaseId)
     throw new Error(`Snapshot for Inbox item ${snapshot.item.id} (entityKind 'journalEntry') has no journalDatabaseId`);
-  const { areaId, ...rest } = result.properties;
-  const date = rest.date === undefined ? sourceItemDate(snapshot.item) : rest.date;
+  const date = result.properties.date === undefined ? sourceItemDate(snapshot.item) : result.properties.date;
   return {
     entityKind: "journalEntry",
     target: snapshot.journalDatabaseId,
     properties: {
-      ...rest,
+      ...result.properties,
       ...(date === undefined ? {} : { date }),
-      ...(areaId !== undefined && rest.projectId === undefined ? { areaId } : {}),
     },
   };
 }

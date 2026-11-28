@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
-import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@semprec/queue";
+import { runInTenant } from "@alldots/shared";
+import { CORE_TASK_NAMES, enqueueJob, runOnce } from "@alldots/queue";
 import { createPool, withTransaction } from "../../db/pool.js";
 import { getDatabaseByModuleId } from "../../chokePoint/databasesStore.js";
 import { getPropertyByKey } from "../../chokePoint/propertiesStore.js";
@@ -50,11 +50,11 @@ describe("historical mail links for newly claimed addresses", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "semprec_data" });
+    runtime = createPool(process.env.TEST_DATABASE_URL ?? "", { role: "alldots_data" });
     const role = await runtime.query<{ name: string; bypass: boolean; superuser: boolean }>(
       "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
     );
-    expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+    expect(role.rows).toEqual([{ name: "alldots_data", bypass: false, superuser: false }]);
   });
   async function setup(): Promise<void> {
     await runInTenant(tenant(), () => seedSystem(runtime));
@@ -102,6 +102,8 @@ describe("historical mail links for newly claimed addresses", () => {
     return runInTenant(tenant(), () =>
       withTransaction(runtime, async (client) => {
         const message = await ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: filesId,
           folderRelationPropertyId: folderPropertyId,
@@ -188,7 +190,7 @@ describe("historical mail links for newly claimed addresses", () => {
 
   function ownedPool(role: boolean): { pool: Pool; active: Set<PoolClient>; errors: unknown[] } {
     const pool = createPool(process.env.TEST_DATABASE_URL ?? "", {
-      ...(role ? { role: "semprec_data" as const } : {}),
+      ...(role ? { role: "alldots_data" as const } : {}),
       statementTimeoutMs: 8000,
     });
     pool.options.max = role ? 1 : 3;

@@ -155,6 +155,10 @@ private extension ProfileScreen {
             .listRowButton()
             .disabled(viewModel.state.resetPhase == .sending || viewModel.state.email == nil)
             .accessibilityIdentifier(AccountIdentifiers.profilePassword)
+            row(.appearance, ProfileTile(symbol: "paintpalette.fill", color: .pink), title: "profile.row.appearance",
+                value: nil,
+                subtitle: nil
+            )
             row(.devices, ProfileTile(symbol: "laptopcomputer.and.iphone", color: .teal), title: "profile.row.devices",
                 value: viewModel.state.figures.map { String($0.activeSessions) },
                 subtitle: nil
@@ -166,9 +170,9 @@ private extension ProfileScreen {
 
     var data: some View {
         Section {
-            row(.mailAccounts, ProfileTile(symbol: "envelope.fill", color: .blue), title: "profile.row.mail",
+            row(.internetAccounts, ProfileTile(symbol: "at", color: .blue), title: "profile.row.internetAccounts",
                 value: viewModel.state.figures.map { String($0.mailAccountCount) },
-                subtitle: mailSubtitle
+                subtitle: internetAccountsSubtitle
             )
             row(.trash, ProfileTile(symbol: "trash.fill", color: .gray), title: "profile.row.trash",
                 value: viewModel.state.figures.map { String($0.trashCount) },
@@ -262,9 +266,10 @@ private extension ProfileScreen {
         }
     }
 
-    var mailSubtitle: String? {
+    /// How many accounts need attention: those that must sign in again.
+    var internetAccountsSubtitle: String? {
         guard let reauth = viewModel.state.figures?.mailAccountsNeedingReauth, reauth > 0 else { return nil }
-        return String(format: String(localized: "profile.mail.reauth", bundle: .module), reauth)
+        return String(format: String(localized: "profile.internetAccounts.reauth", bundle: .module), reauth)
     }
 
     func identifier(_ page: AccountPage) -> String {
@@ -274,7 +279,8 @@ private extension ProfileScreen {
         case .aiUsage: "aiUsage"
         case .trash: "trash"
         case .sempStatus: "sempStatus"
-        case .mailAccounts: "mailAccounts"
+        case .internetAccounts: "internetAccounts"
+        case .appearance: "appearance"
         }
     }
 }
@@ -288,7 +294,7 @@ private extension ProfileScreen {
                     state: ProfileState(
                         phase: .content,
                         email: "david.tresnak@example.cz",
-                        serverUrl: "https://semprec.example.cz",
+                        serverUrl: "https://alldots.example.cz",
                         locale: "cs",
                         locales: ["cs", "en"],
                         figures: ProfileFigures(

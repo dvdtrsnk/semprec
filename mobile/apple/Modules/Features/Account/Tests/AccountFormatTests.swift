@@ -23,6 +23,14 @@ final class AccountFormatTests: XCTestCase {
         XCTAssertNil(AccountFormat.instant("yesterday"))
     }
 
+    func testASyncTimeReadsTheServersMicrosecondsAndIsNilWithoutAnInstant() {
+        let micro = AccountFormat.syncTime("2026-10-21T10:00:00.123456Z", locale: english, timeZone: utc)
+        XCTAssertNotNil(micro)
+        XCTAssertEqual(micro, AccountFormat.syncTime("2026-10-21T10:00:00Z", locale: english, timeZone: utc))
+        XCTAssertNil(AccountFormat.syncTime("yesterday", locale: english, timeZone: utc))
+        XCTAssertNil(AccountFormat.syncTime(nil, locale: english, timeZone: utc))
+    }
+
     func testHowLongAgoIsWordedInTheLocaleAndNilForNoInstant() throws {
         let now = try XCTUnwrap(AccountFormat.instant("2026-10-21T12:00:00Z"))
         XCTAssertEqual(AccountFormat.relative("2026-10-21T10:00:00Z", now: now, locale: english), "2 hr. ago")
@@ -55,7 +63,7 @@ final class AccountFormatTests: XCTestCase {
     }
 
     func testTheHostIsTakenFromAServerAddressOrTheAddressItselfIsKept() {
-        XCTAssertEqual(AccountFormat.host(of: "https://semprec.tresnak.cc/app"), "semprec.tresnak.cc")
+        XCTAssertEqual(AccountFormat.host(of: "https://alldots.tresnak.cc/app"), "alldots.tresnak.cc")
         XCTAssertEqual(AccountFormat.host(of: "not a url"), "not a url")
         XCTAssertNil(AccountFormat.host(of: nil))
     }

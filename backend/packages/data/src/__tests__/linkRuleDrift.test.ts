@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool } from "pg";
-import { ModuleRegistry } from "@semprec/module-registry";
+import { ModuleRegistry } from "@alldots/module-registry";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -45,7 +45,7 @@ describe("link rule schema drift", () => {
     await pool?.end();
   });
 
-  it("returns nothing for a valid rule over the seeded ten databases", async () => {
+  it("returns nothing for a valid rule over the seeded core databases", async () => {
     const registry = await registryWith(["fixtureLinkRuleValid", "linkRuleValidModule.js"]);
     const findings = await withTransaction(pool, (client) => findInvalidLinkRuleReferences(client, registry));
     expect(findings).toEqual([]);
@@ -63,7 +63,7 @@ describe("link rule schema drift", () => {
       ownerProcess: "unknown",
     });
     const registry = await registryWith(["fixtureLinkRuleValid", "linkRuleValidModule.js"]);
-    const runtime = await createRuntimeRolePool(pool, "semprec_side");
+    const runtime = await createRuntimeRolePool(pool, "alldots_side");
     try {
       for (const clientPool of [runtime, pool]) {
         await withTenantTransaction(clientPool, tenantB, async (client) => {
@@ -89,13 +89,13 @@ describe("link rule schema drift", () => {
         ruleKey: "fixtureInvalid.misspelledSource",
         moduleId: "fixtureLinkRuleInvalid",
         reason: "missingSourceProperty",
-        property: "areas.nme",
+        property: "healthRecords.nme",
       },
       {
         ruleKey: "fixtureInvalid.misspelledVia",
         moduleId: "fixtureLinkRuleInvalid",
         reason: "missingViaProperty",
-        property: "projects.areaa",
+        property: "projects.healthRecordss",
       },
       {
         ruleKey: "fixtureInvalid.viaNotRelation",
@@ -107,7 +107,7 @@ describe("link rule schema drift", () => {
         ruleKey: "fixtureInvalid.wrongDirection",
         moduleId: "fixtureLinkRuleInvalid",
         reason: "viaDoesNotLeadToOtherDatabase",
-        property: "areas.company",
+        property: "healthRecords.files",
       },
     ]);
   });
@@ -190,17 +190,17 @@ describe("link rule schema drift", () => {
       .mockResolvedValue([
         { ...rule, valueFilter: { omit: { databaseKey: "systemSettings", propertyKey: "selfPerson" } } },
       ]);
-    const runtime = await createRuntimeRolePool(pool, "semprec_side");
+    const runtime = await createRuntimeRolePool(pool, "alldots_side");
     try {
       // Tenant B was never seeded: tenant zero's System settings must not satisfy its filter.
       const findings = await withTenantTransaction(runtime, tenantB, (client) =>
         findInvalidLinkRuleReferences(client, registry),
       );
       expect(findings.map((finding) => [finding.reason, finding.property])).toEqual([
-        ["missingSourceProperty", "areas.name"],
+        ["missingSourceProperty", "healthRecords.name"],
         ["missingTargetProperty", "projects.name"],
         ["missingValueFilterProperty", "systemSettings.selfPerson"],
-        ["missingViaProperty", "projects.area"],
+        ["missingViaProperty", "projects.healthRecords"],
       ]);
     } finally {
       spy.mockRestore();

@@ -12,16 +12,15 @@
 # load is refused before `current` moves.
 #
 # A rollback builds nothing, fetches nothing and runs no migration: it repoints `current` at a
-# release already on disk and restarts the services. Migrations are forward-only and compatible
-# with the code one release back only, so the target must be the release directly before the
-# newest one on disk, and `current` must still name that newest release.
+# release already on disk and restarts the services. The target must be the release directly before
+# the newest one on disk, and `current` must still name that newest release.
 set -euo pipefail
 
-readonly SEMPREC_ROOT=/opt/semprec
-readonly RELEASES_DIR="$SEMPREC_ROOT/releases"
-readonly CURRENT_LINK="$SEMPREC_ROOT/current"
-readonly MIGRATE_ENV="$SEMPREC_ROOT/shared/env/migrate.env"
-readonly LOCK_FILE="$SEMPREC_ROOT/.deploy.lock"
+readonly ALLDOTS_ROOT=/opt/alldots
+readonly RELEASES_DIR="$ALLDOTS_ROOT/releases"
+readonly CURRENT_LINK="$ALLDOTS_ROOT/current"
+readonly MIGRATE_ENV="$ALLDOTS_ROOT/shared/env/migrate.env"
+readonly LOCK_FILE="$ALLDOTS_ROOT/.deploy.lock"
 readonly PROC_ROOT=/proc
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SOURCE_REPOSITORY="$(cd -- "$SCRIPT_DIR/.." && pwd)"
@@ -29,10 +28,10 @@ readonly TAG_PATTERN='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 
 # Restarted in this order.
 readonly -a LONG_RUNNING_SERVICES=(
-  semprec-ai-gateway.service
-  semprec-api.service
-  semprec-agents.service
-  semprec-transcribe.service
+  alldots-ai-gateway.service
+  alldots-api.service
+  alldots-agents.service
+  alldots-transcribe.service
 )
 
 staging_dir=""
@@ -129,7 +128,7 @@ build_release() {
 # like a build failure.
 verify_native_entrypoints() {
   systemd-run --quiet --wait --pipe --collect \
-    --uid=semprec --gid=semprec \
+    --uid=alldots --gid=alldots \
     --working-directory="$staging_dir/backend" \
     /bin/sh -c 'exec node scripts/check-native-entrypoints.mjs' \
     || fail "native entrypoint check failed"
@@ -144,14 +143,14 @@ write_release_env() {
 }
 
 # systemd reads the `migrate` group file itself, the only file that holds the superuser migrate
-# URL and one no unit loads, so this script never reads or copies a secret. Migrations are forward-only and backward-compatible, so the release
-# still serving traffic keeps working against the migrated schema.
+# URL and one no unit loads, so this script never reads or copies a secret. The database is expected to be
+# empty (the operator wipes it before a deploy); the CLI applies the baseline to it.
 run_migrations() {
   systemd-run --quiet --wait --pipe --collect \
-    --uid=semprec --gid=semprec \
+    --uid=alldots --gid=alldots \
     --property=EnvironmentFile="$MIGRATE_ENV" \
     --working-directory="$staging_dir/backend" \
-    /bin/sh -c 'DATABASE_URL="$SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' \
+    /bin/sh -c 'DATABASE_URL="$ALLDOTS_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runMigrationsCli.js' \
     || fail "migrations failed"
 }
 
@@ -159,10 +158,10 @@ run_migrations() {
 # activation, so a failure leaves `current` and the services untouched, like a migration failure.
 run_seed() {
   systemd-run --quiet --wait --pipe --collect \
-    --uid=semprec --gid=semprec \
+    --uid=alldots --gid=alldots \
     --property=EnvironmentFile="$MIGRATE_ENV" \
     --working-directory="$staging_dir/backend" \
-    /bin/sh -c 'DATABASE_URL="$SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' \
+    /bin/sh -c 'DATABASE_URL="$ALLDOTS_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/runSeedCli.js' \
     || fail "seed failed"
 }
 
@@ -172,10 +171,10 @@ run_seed() {
 # as run_migrations; runs before activation, so a violation leaves `current` and the services untouched.
 verify_tenancy() {
   systemd-run --quiet --wait --pipe --collect \
-    --uid=semprec --gid=semprec \
+    --uid=alldots --gid=alldots \
     --property=EnvironmentFile="$MIGRATE_ENV" \
     --working-directory="$staging_dir/backend" \
-    /bin/sh -c 'DATABASE_URL="$SEMPREC_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/verifyTenancyCli.js' \
+    /bin/sh -c 'DATABASE_URL="$ALLDOTS_MIGRATE_DATABASE_URL" exec node packages/data/dist/db/verifyTenancyCli.js' \
     || fail "tenancy verification failed"
 }
 
@@ -188,7 +187,7 @@ promote_release() {
 # rename(2) replaces the link in one step: `current` always names a complete release.
 swap_current() {
   local tag="$1"
-  local next_link="$SEMPREC_ROOT/.current.next"
+  local next_link="$ALLDOTS_ROOT/.current.next"
   ln -sfn -- "$RELEASES_DIR/$tag" "$next_link"
   mv -T -- "$next_link" "$CURRENT_LINK"
 }

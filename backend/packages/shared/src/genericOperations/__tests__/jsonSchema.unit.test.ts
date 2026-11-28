@@ -19,18 +19,18 @@ it("advertises overviewHidden as an optional boolean of the database patch (issu
   expect(z.array(z.string()).optional().parse(patch.required) ?? []).not.toContain("overviewHidden");
 });
 const value = "11111111-1111-4111-8111-111111111111";
-const validLeaf = { type: "relation_path_contains", path: ["project", "area"], value };
+const validLeaf = { type: "relation_path_contains", path: ["project", "company"], value };
 const invalidLeaves = [
   { name: "missing path and value", leaf: { type: validLeaf.type } },
   { name: "missing path", leaf: { type: validLeaf.type, value } },
   { name: "missing value", leaf: { type: validLeaf.type, path: validLeaf.path } },
   { name: "empty path", leaf: { ...validLeaf, path: [] } },
   { name: "short path", leaf: { ...validLeaf, path: ["project"] } },
-  { name: "long path", leaf: { ...validLeaf, path: ["project", "area", "extra"] } },
-  { name: "non-array path", leaf: { ...validLeaf, path: "project.area" } },
-  { name: "empty first key", leaf: { ...validLeaf, path: ["", "area"] } },
+  { name: "long path", leaf: { ...validLeaf, path: ["project", "company", "extra"] } },
+  { name: "non-array path", leaf: { ...validLeaf, path: "project.company" } },
+  { name: "empty first key", leaf: { ...validLeaf, path: ["", "company"] } },
   { name: "empty second key", leaf: { ...validLeaf, path: ["project", ""] } },
-  { name: "non-string first key", leaf: { ...validLeaf, path: [0, "area"] } },
+  { name: "non-string first key", leaf: { ...validLeaf, path: [0, "company"] } },
   { name: "non-string second key", leaf: { ...validLeaf, path: ["project", null] } },
   { name: "invalid UUID", leaf: { ...validLeaf, value: "not-a-uuid" } },
   { name: "non-string UUID", leaf: { ...validLeaf, value: 123 } },
@@ -146,6 +146,7 @@ const defaultHashes: Record<string, string> = {
   "property.delete": "3ec9951c274d2a39f8bcb97e988d1c6db52f925747d827a4c6dc44a6a6009b0a",
   "property.option.add": "ef192f416ee0d3847dd865f8df602dc1c449edf6aa87255e59468b1542f7f2f4",
   "property.option.update": "9729f94bc6a8a391595961b6e0facecdfcfe90777136aaaeb57ff5372126fd8a",
+  "property.option.remove": "a5fb797ddf8ddc8693af7c12be3c8a5e21a719edecb7077849c14774c460a994",
   "view.list": "630c495e682d0545e7a780bc9b220ca45b18532d028f75c6c53b2e466c900c17",
   "view.get": "559a12505aff3c7f9f61c27fec8615a10d0416ebccb3801031274c7cacc8c06f",
   "view.create": "b3c015042164623a164a5518c20d6e5994ad15593d408e181bf636cf03fca2db",
@@ -180,9 +181,9 @@ const defaultHashes: Record<string, string> = {
   "database.facets": "235227f7c8f084dacb50f7f510123fec368bc59519700b48202c4cfae366ad56",
   "page.ensureJournalPeriod": "832c35c2d97c0677e49f6587e557825083481936b880a30f73d84b81ab40d3a9",
   "page.mergeJournalDuplicates": "a34df63d5931b36d578a6e20e17f36818f9853db2266f9e253b0dc73932ae387",
-  search: "9b2840da72eb61fc284c5065a1575b9bbdc64dca4d0df006f2ca317d6009b2b8",
+  search: "03349455db3b934f325d57653966fe9e6a03ffedfe7982c6388238cd7cbe4622",
   "relation.related": "d6c9e966fecd84b2add61a085f59ddf1d655d12d61ad36eff683abb96accb1fb",
-  "page.convertToBlock": "993877e7efe30e669041ead866cf7ef4db10e7a0bd4f5554c53cd488b890ef2e",
+  "page.convertToBlock": "460090728b8b2d2a93b3501fb6fa0e8d285d2e099d92314d53d701ad609eb924",
 };
 
 it("preserves every default operation schema byte for MCP callers", () => {
@@ -252,7 +253,6 @@ describe("search generated input", () => {
       "task",
       "event",
       "project",
-      "area",
       "contact",
       "journal",
       "file",

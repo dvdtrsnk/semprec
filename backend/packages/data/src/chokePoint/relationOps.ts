@@ -6,7 +6,7 @@
 // `runRelationEdgeWriteHooks`, never a direct domain import.
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import {
   markManagedTransactionRollbackOnly,
   requireManagedTransaction,
@@ -414,6 +414,7 @@ export async function createRelationWithClient(
     await runRelationEdgeChangedHooks({
       client,
       op: "create",
+      repeated: !inserted,
       relationDefinitionId: edge.relationDefinitionId,
       propertyId: edgeContext.property.id,
       itemA: edge.itemA,

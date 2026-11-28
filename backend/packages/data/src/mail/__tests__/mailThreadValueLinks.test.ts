@@ -1,6 +1,6 @@
 import "../../domainWriteHooks.js";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
@@ -61,6 +61,8 @@ async function newThread(messageId: string): Promise<TestThread> {
   return inTenant(() =>
     withTransaction(runtime, async (client) => {
       const ingested = await ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: databaseId("emails"),
         filesDatabaseId: databaseId("files"),
         folderRelationPropertyId: properties.emailFolder,
@@ -136,7 +138,7 @@ async function rowOf(thread: TestThread, tenantId = tenant) {
 describe("company, project and links of the mail thread list and detail (issue gh-1897)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(runtime);
   });
 

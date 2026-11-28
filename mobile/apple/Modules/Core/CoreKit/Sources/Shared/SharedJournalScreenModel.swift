@@ -53,11 +53,14 @@ extension SharedJournalScreenModel {
             axis: state.axis.map(JournalAxisRow.init),
             page: state.page.map(JournalPage.init),
             weeks: state.weeks.map(JournalWeek.init),
+            quarters: state.quarters.map(JournalQuarter.init),
             events: state.events.map(JournalEvent.init),
             birthdays: state.birthdays.map(JournalBirthday.init),
             inbox: state.inbox.map(JournalInboxItem.init),
-            saving: state.saving,
-            editProblem: JournalEditProblem(state.editProblem, failure: state.editFailure)
+            shown: state.shown.map(JournalSelection.init),
+            before: state.before.map(JournalPeriodContent.init),
+            after: state.after.map(JournalPeriodContent.init),
+            attachment: state.attachment.map(AttachmentPreview.init)
         )
     }
 
@@ -66,17 +69,13 @@ extension SharedJournalScreenModel {
         case .retry: SharedSDK.JournalActionRetry.shared
         case .select(let kind, let start): SharedSDK.JournalActionSelect(kind: kind.shared, start: start)
         case .goToday: SharedSDK.JournalActionGoToday.shared
+        case .turn(let steps): SharedSDK.JournalActionTurn(steps: Int32(steps))
         case .showAxisAround(let day): SharedSDK.JournalActionShowAxisAround(day: day)
         case .openEvent(let id): SharedSDK.JournalActionOpenEvent(id: id)
         case .openInbox: SharedSDK.JournalActionOpenInbox.shared
-        case .openPage(let pageId, let title): SharedSDK.JournalActionOpenPage(pageId: pageId, title: title)
-        case .setText(let page, let index, let text):
-            SharedSDK.JournalActionSetText(page: page.shared, index: Int32(index), text: text)
-        case .toggleDone(let page, let index):
-            SharedSDK.JournalActionToggleDone(page: page.shared, index: Int32(index))
-        case .addBlock(let page, let kind, let text):
-            SharedSDK.JournalActionAddBlock(page: page.shared, kind: kind.shared, text: text)
-        case .dismissProblem: SharedSDK.JournalActionDismissProblem.shared
+        case .openAttachment(let entryId, let attachmentId):
+            SharedSDK.JournalActionOpenAttachment(entryId: entryId, attachmentId: attachmentId)
+        case .closeAttachment: SharedSDK.JournalActionCloseAttachment.shared
         }
     }
 
@@ -84,7 +83,6 @@ extension SharedJournalScreenModel {
         switch onEnum(of: effect) {
         case .openEvent(let openEvent): .openEvent(id: openEvent.id)
         case .openInbox: .openInbox
-        case .openPage(let openPage): .openPage(pageId: openPage.pageId, title: openPage.title)
         }
     }
 }

@@ -2,17 +2,18 @@ import { buildItemSearchQuery } from "../search/itemSearchQuery.js";
 import type { ParsedMailSearchQuery } from "./search.js";
 
 export interface MailThreadFilters {
-  box: "inbox" | "flagged" | "sempDrafts";
+  /** `all` is the mail search's: any thread with a copy outside Junk and Trash, as global search counts. */
+  box: "inbox" | "flagged" | "sempDrafts" | "all";
   folderId: string | null;
   unread: boolean;
   mailboxId: string | null;
   search?: ParsedMailSearchQuery;
 }
 
-type FolderIdSql = `$${number}::uuid` | "mf.id";
+type FolderIdSql = `$${number}::uuid`;
 
 const threadInFolder = (folderId: FolderIdSql) =>
-  `EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND ${folderId} = ANY(c.folder_ids))`;
+  `l.thread_id IN (SELECT c.thread_id FROM copies c WHERE ${folderId} = ANY(c.folder_ids))`;
 
 type ThreadIdSql = "l.thread_id" | "p.thread_id";
 
@@ -34,25 +35,31 @@ export const mailThreadHasSempDraft = (threadId: ThreadIdSql) =>
       AND d.created_by = 'agent' AND d.sent_at IS NULL)`;
 
 export const mailThreadPredicates = {
-  inbox: "EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND c.has_inbox)",
-  flagged: "EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND c.flagged AND c.has_non_junk)",
+  inbox: "l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.has_inbox)",
+  flagged: "l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.flagged AND c.has_non_junk)",
+  all: "l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.has_non_junk)",
   /** Like `flagged`, needs a counted message outside Junk and Trash. */
   sempDrafts: `(${mailThreadHasSempDraft("l.thread_id")}
-    AND EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND c.has_non_junk))`,
+    AND l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.has_non_junk))`,
   inFolder: (parameter: number) => threadInFolder(`$${parameter}::uuid`),
-  inFolderRow: threadInFolder("mf.id"),
   unread: "cs.unread",
   inMailbox: (parameter: number) =>
-    `EXISTS (SELECT 1 FROM copies c WHERE c.thread_id = l.thread_id AND c.mailbox_item_id = $${parameter}::uuid)`,
+    `l.thread_id IN (SELECT c.thread_id FROM copies c WHERE c.mailbox_item_id = $${parameter}::uuid)`,
 } as const;
 
-export function matchesSearch(query: ParsedMailSearchQuery, firstParameter: number) {
+/** With `messageItemIds`, the satisfying message must also be one of those Emails items. */
+export function matchesSearch(
+  query: ParsedMailSearchQuery,
+  firstParameter: number,
+  messageItemIds?: readonly string[],
+) {
   const params: unknown[] = [];
   const bind = (value: unknown) => {
     params.push(value);
     return `$${firstParameter + params.length - 1}`;
   };
   const conditions = ["c.thread_id = l.thread_id"];
+  if (messageItemIds !== undefined) conditions.push(`c.item_id = ANY(${bind([...messageItemIds])}::uuid[])`);
   if (query.contradictory) conditions.push("false");
   if (query.freeText) {
     const built = buildItemSearchQuery(query.freeText, firstParameter + params.length);

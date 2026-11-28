@@ -1,4 +1,4 @@
-import type { ModuleLinkRuleProjection } from "@semprec/module-registry";
+import type { ModuleLinkRuleProjection } from "@alldots/module-registry";
 import type { RelationEdgeChangedHookContext } from "../chokePoint/hooks.js";
 import { lockItemById } from "../chokePoint/itemsStore.js";
 import {

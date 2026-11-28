@@ -5,11 +5,14 @@ import type { ItemRestoreHook } from "../chokePoint/hooks.js";
 import { restoreItemWithClient } from "../chokePoint/itemTrash.js";
 import type { WriterIdentity } from "../chokePoint/writerKind.js";
 import { MAILBOXES_MODULE_ID } from "../seed/emailModuleKeys.js";
+import { parseAddressListProperty } from "./addressListParsing.js";
 import {
   defaultSyncModeForProvider,
   ensureMailAccountSyncState,
   getMailAccountSyncState,
+  ProviderAccountAlreadyConnectedError,
 } from "./mailAccountSyncStateStore.js";
+import { mailboxHoldsAnyAddress } from "./mailboxAddresses.js";
 import { resolveMailModuleIds } from "./mailModuleIds.js";
 
 /** Live or trashed Folders of mailbox `$1`; a restore selects by deletion epoch, so the removal CTE is not reused. */
@@ -86,6 +89,9 @@ async function lockMailboxEmailIdsOfEpoch(
 /**
  * Runs inside the restore cascade's transaction, only for the tenant's system Mailboxes database.
  *
+ * 0. A mailbox one of whose addresses another live mailbox lists or records is refused with 409
+ *    `provider_account_already_connected`, which rolls the whole restore back: the account was connected again
+ *    after the removal. The read takes no row lock, like the password connect's duplicate rule.
  * 1. A mailbox without a sync state row gets the default for its `provider`; an existing row is kept.
  * 2. Folders, then Emails, trashed with exactly the mailbox's deletion epoch (the epoch the removal job
  *    uses) are locked `FOR NO KEY UPDATE` in id order and restored through the choke point. Rows trashed at
@@ -103,12 +109,17 @@ export const mailboxItemRestoreHook: ItemRestoreHook = async (context) => {
   const { client, database, item } = context;
   if (!database.system || database.ownerModuleId !== MAILBOXES_MODULE_ID) return;
 
+  const { mailboxesDatabaseId, foldersDatabaseId, emailsDatabaseId } = await resolveMailModuleIds(client);
+  const addresses = parseAddressListProperty(item.properties.addresses);
+  if (await mailboxHoldsAnyAddress(client, { mailboxesDatabaseId, addresses, exceptItemId: item.id })) {
+    throw new ProviderAccountAlreadyConnectedError();
+  }
+
   if ((await getMailAccountSyncState(client, item.id)) === null) {
     const provider = typeof item.properties.provider === "string" ? item.properties.provider : "generic";
     await ensureMailAccountSyncState(client, { itemId: item.id, syncMode: defaultSyncModeForProvider(provider) });
   }
 
-  const { foldersDatabaseId, emailsDatabaseId } = await resolveMailModuleIds(client);
   const writer: WriterIdentity = {
     writerKind: context.writerKind,
     ...(context.agentRunId === undefined ? {} : { agentRunId: context.agentRunId }),

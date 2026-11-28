@@ -1,6 +1,6 @@
 import type { AgentMessage, ConversationEntry } from "./types.js";
 
-/** Opaque pi-agent-core compaction settings, only forwarded to `shouldCompact`/`prepareCompaction`. */
+/** Opaque pi compaction settings, only forwarded to `shouldCompact`/`prepareCompaction`. */
 export type CompactionSettings = Record<string, unknown>;
 
 /** Opaque handoff from `prepareCompaction` to `compact`. */

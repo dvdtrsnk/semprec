@@ -4,17 +4,16 @@ import ProjectDescriptionHelpers
 let project = Project(
     name: "NotesFeature",
     options: .options(automaticSchemesOptions: .disabled),
-    settings: SemprecProject.moduleSettings(loadsKotlinFramework: true),
+    settings: AlldotsProject.moduleSettings(loadsKotlinFramework: true),
     targets: [
-        SemprecProject.framework(
+        AlldotsProject.framework(
             "NotesFeature",
             dependencies: [
                 .project(target: "CoreKit", path: "../../Core/CoreKit"),
-                .project(target: "DesignSystem", path: "../../Core/DesignSystem"),
-            ],
-            resources: ["Resources/**"]
+                .project(target: "NoteEditor", path: "../../Core/NoteEditor"),
+            ]
         ),
-        SemprecProject.tests(
+        AlldotsProject.tests(
             "NotesFeatureTests",
             for: "NotesFeature",
             dependencies: [.project(target: "CoreKit", path: "../../Core/CoreKit")]

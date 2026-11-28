@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -197,6 +197,8 @@ async function ingest(
 ): Promise<string> {
   const references = input.references ?? [];
   const { itemId } = await ingestEmailMessage(client, {
+    arrival: "live",
+    contentState: "full",
     emailsDatabaseId: ids.emails,
     filesDatabaseId: ids.files,
     folderRelationPropertyId: ids.emailFolderProperty,
@@ -433,7 +435,7 @@ async function newThreadsItemFor(client: PoolClient): Promise<string> {
 describe("mail purge hook (gh-1691)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(runtime);
     const role = await runAsSystem("verify mail purge hook role", () =>
       runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
@@ -663,6 +665,8 @@ describe("mail purge hook (gh-1691)", () => {
         );
         // The store's own writer, without a thread.
         await upsertMailMessageMeta(client, {
+          arrival: "live",
+          contentState: "full",
           itemId: item.id,
           mailboxItemId: mailbox.id,
           messageId: "<unthreaded@x>",

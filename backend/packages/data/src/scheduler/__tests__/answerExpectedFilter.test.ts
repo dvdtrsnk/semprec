@@ -11,7 +11,7 @@ import {
   type AiGatewayClientPort,
   type AiGatewayCompletionInput,
   type AiGatewayCompletionResult,
-} from "@semprec/shared";
+} from "@alldots/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createAgentRun } from "../../agentRuns/agentRunsStore.js";
 import { createUser } from "../../auth/usersStore.js";
@@ -153,6 +153,8 @@ async function receive(t: MailTenant, options: Receive = {}): Promise<string> {
     };
     const { itemId } = await withTransaction(runtime, (client) =>
       ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: db("emails"),
         filesDatabaseId: db("files"),
         folderRelationPropertyId: property("folder"),
@@ -325,8 +327,8 @@ async function setThreadProject(t: MailTenant, thread: ThreadRef, projectItemId:
 describe("the answer-expected gate and the run project of core.agentRun (issue gh-1941)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
-    storageRoot = await mkdtemp(join(tmpdir(), "semprec-answer-expected-"));
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
+    storageRoot = await mkdtemp(join(tmpdir(), "alldots-answer-expected-"));
   });
 
   afterAll(async () => {
@@ -448,7 +450,7 @@ describe("the answer-expected gate and the run project of core.agentRun (issue g
       expect(agentCalls.map((call) => call.projectItemId)).toEqual([projectId]);
     });
 
-    it("offers the run of a thread in an ordinary project no mail tool, while the run of the Email project has all five (the limit of issue gh-1941)", async () => {
+    it("offers the run of a thread in an ordinary project no mail tool, while the run of the Email project has all six (the limit of issue gh-1941)", async () => {
       const itemId = await receive(tenant);
       const thread = await threadOf(tenant, itemId);
       const projectId = await inTenant(tenant, () => createTestProjectItem(runtime));
@@ -478,6 +480,7 @@ describe("the answer-expected gate and the run project of core.agentRun (issue g
         "mail.draft.create",
         "mail.draft.send",
         "mail.draft.update",
+        "mail.search",
         "mail.thread.get",
         "mail.thread.proposeTask",
       ]);

@@ -2,299 +2,242 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// The time axis of the diary: a row of years, quarters, months and days that move together. All rows show the same
-/// moment in their middle, each at its own scale, so a day sits under its month, the month under its quarter and the
-/// quarter under its year. Dragging any row moves the moment, and every row with it; a tap selects a period. The
-/// selection and the periods that contain it are marked, today is orange. As the page below scrolls by `scrolled`
-/// points, the rows above and below the selected level fold away step by step, as in the design: the whole fold takes
-/// as many points as those rows are tall, and the row of the selected level stays. The rows hold a window of periods
-/// around the selection; a
-/// drag that ends near the edge of the days asks for the windows around the day it reached (`onMove`).
-struct JournalAxisView: View {
+/// The time axis of the diary: a row of years, months and days that move together, three horizontal scroll views and
+/// nothing more. All rows show the same moment in their middle, each at its own scale, so a day sits under its month
+/// and the month under its year.
+///
+/// One row moves at a time and the other two follow it, frame by frame: the row the person scrolls by hand, or the row
+/// that scrolls itself with the system's scroll animation to a period the person tapped (or to the selection, after
+/// Today). Every period a row shows has its days in the row of days, so a scroll never runs past the end of another
+/// row. The rows keep their identity whatever is selected; the row of the selected level is pinned to the top of the
+/// page while the page passes under it. A scroll that comes to rest near the edge of the windows asks for windows
+/// around the day it reached (`onMove`); the cells change only then, at rest.
+///
+/// The axis lies on `material`, one solid layer from the top of the screen down to a divider under the last row. As
+/// the page scrolls, the layer's lower edge goes up with the rows until it reaches the pinned row, and stays under it
+/// from then on; the rows below the pinned one pass under the pinned row, and the rows above it go up under the
+/// material the screen keeps over its top. A divider lies under the pinned row too, so a pinned month or year is set
+/// off from the rows below.
+struct JournalAxisView<Material: View>: View {
 
     // MARK: - Dependencies
     let rows: [JournalAxisRow]
     let selectionStart: String
     let selectionKind: JournalPeriodKind
-    let scrolled: CGFloat
+    /// How far above the axis the material reaches: up past the top of the screen, whatever the page shows above.
+    let materialReach: CGFloat
     let onSelect: (JournalAxisCell) -> Void
     let onMove: (String) -> Void
+    /// Told `true` when a row starts to move the axis and `false` when the axis comes to rest.
+    let onMoving: (Bool) -> Void
+    /// The solid layer the axis lies on.
+    @ViewBuilder let material: () -> Material
 
     // MARK: - State
-    /// The moment in the middle of every row, in days since 1970 (a fraction is a part of the day).
-    @State private var cursor: Double?
-    /// The cursor when the running drag began.
-    @State private var dragOrigin: Double?
-    /// True from the start of a drag until just after it ended: the cell under the finger moved with it, so lifting
-    /// the finger must not count as a tap on that cell.
-    @State private var dragged = false
+    @Binding var motion: JournalAxisMotion
+    /// The rows' tracks, worked out once for each window rather than on every frame of a scroll.
+    @State private var tracks = JournalAxisTracks()
 
     // MARK: - Body
     var body: some View {
-        let levels = split
-        let fold = foldProgress(upper: levels.upper, lower: levels.lower)
-        VStack(spacing: Self.rowSpacing) {
-            folding(levels.upper, progress: fold)
-            ForEach(levels.pinned) { row in rowView(row) }
-            folding(levels.lower, progress: fold)
+        // The rows lie one under another at fixed places, drawn with the pinned row last: on top of the rows and the
+        // page that pass under it.
+        ZStack(alignment: .top) {
+            ForEach(drawingOrder) { row in
+                let isPinned = row.kind == selectionKind
+                JournalAxisRowView(
+                    row: row,
+                    track: tracks.track(for: row),
+                    cursor: motion.cursor ?? anchor,
+                    motion: $motion,
+                    onSelect: onSelect,
+                    onRest: settle
+                )
+                .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
+                .padding(.vertical, Self.rowSpacing / 2)
+                .padding(.bottom, dividerGap(under: row.kind))
+                // The pinned row carries its own strip of the material, so the rows below pass under it.
+                .background {
+                    if isPinned { material() }
+                }
+                .overlay(alignment: .bottom) {
+                    if isPinned { JournalDivider() }
+                }
+                .pinned(isPinned)
+                .padding(.top, top(of: row.kind))
+            }
+        }
+        .background(alignment: .bottom) {
+            material()
+                .overlay(alignment: .bottom) { JournalDivider() }
+                .frame(height: materialReach + axisHeight)
+                .rising(axisHeight: axisHeight, pinnedTop: top(of: selectionKind), below: belowPinned)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text("journal.axis.label", bundle: .module))
-        .onChange(of: selectionStart) { _, _ in follow(animated: true) }
-        .onChange(of: rows) { _, _ in returnIfOutside() }
-        .onAppear { follow(animated: false) }
+        .onChange(of: windowStart) { _, _ in returnIfOutside() }
+        .onChange(of: selectionStart) { _, _ in follow() }
+        .onChange(of: selectionKind) { _, _ in follow() }
+        .onChange(of: motion.centerRequests) { _, _ in center() }
+        .onChange(of: motion.driver != nil) { _, moving in onMoving(moving) }
     }
 
-    private func rowView(_ row: JournalAxisRow) -> some View {
-        JournalAxisRowView(
-            row: row,
-            track: JournalAxisTrack(row: row),
-            cursor: currentCursor,
-            onSelect: { cell in
-                guard !dragged else { return }
-                onSelect(cell)
-                glide(to: cell.start, kind: cell.kind)
-            }
-        )
-        .highPriorityGesture(drag(scale: row.kind.daysPerPoint))
-        .accessibilityAdjustableAction { direction in adjust(row: row, direction: direction) }
-    }
-
-    /// The rows of a group that folds away: their height shrinks from the top and they fade, while the part still
-    /// shown keeps its place above the selected row.
-    @ViewBuilder
-    private func folding(_ group: [JournalAxisRow], progress: CGFloat) -> some View {
-        if !group.isEmpty {
-            let full = Self.height(of: group)
-            VStack(spacing: Self.rowSpacing) {
-                ForEach(group) { row in rowView(row) }
-            }
-            .frame(height: full * (1 - progress), alignment: .bottom)
-            .clipped()
-            .opacity(1 - progress)
-            .accessibilityHidden(progress >= 1)
-        }
-    }
-
-    /// The rows above the selected level, its own row and the rows below it.
-    private var split: (upper: [JournalAxisRow], pinned: [JournalAxisRow], lower: [JournalAxisRow]) {
-        guard let index = rows.firstIndex(where: { $0.kind == selectionKind }) else { return ([], rows, []) }
-        return (Array(rows[..<index]), [rows[index]], Array(rows[(index + 1)...]))
-    }
-
-    /// How far the folding rows are gone, 0 to 1: the fold takes as many points of scrolling as they are tall.
-    private func foldProgress(upper: [JournalAxisRow], lower: [JournalAxisRow]) -> CGFloat {
-        let total = Self.height(of: upper) + Self.height(of: lower)
-        guard total > 0 else { return 0 }
-        return min(max(scrolled / total, 0), 1)
-    }
-
-    /// How tall the rows that fold away are: every row but the one of the `selected` level.
-    static func foldingHeight(of rows: [JournalAxisRow], selected: JournalPeriodKind) -> CGFloat {
-        height(of: rows.filter { $0.kind != selected })
-    }
-
-    /// How tall `group`'s rows are with the space between them; for every row of the axis, how tall the whole axis is.
-    static func height(of group: [JournalAxisRow]) -> CGFloat {
-        group.reduce(0) { $0 + $1.kind.height + rowSpacing }
-    }
-
-    private var currentCursor: Double {
-        cursor ?? anchor
-    }
-
-    /// Where the axis rests for the selection: the middle of a day, or about the middle of a longer period.
+    /// The moment the axis rests on for the selection: the middle of the selected period's cell.
     private var anchor: Double {
-        guard let start = JournalAxisTrack.epochDay(selectionStart) else { return 0 }
-        guard let row = rows.first(where: { $0.kind == selectionKind }),
-              let span = JournalAxisTrack(row: row).span(startingAt: start) else { return start + 0.5 }
-        return start + min(Self.longPeriodAnchor, span / 2)
+        if let row = rows.first(where: { $0.kind == selectionKind }),
+           let index = row.cells.firstIndex(where: { $0.start == selectionStart }) {
+            return tracks.track(for: row).middle(of: index)
+        }
+        return (JournalAxisTrack.epochDay(selectionStart) ?? 0) + 0.5
     }
+
+    /// The rows in the order they are drawn: the pinned row last, so it lies over the others.
+    private var drawingOrder: [JournalAxisRow] {
+        rows.filter { $0.kind != selectionKind } + rows.filter { $0.kind == selectionKind }
+    }
+
+    /// How far down the axis the row of `kind` lies: under the rows of the wider levels.
+    private func top(of kind: JournalPeriodKind) -> CGFloat {
+        rows.prefix { $0.kind != kind }.reduce(0) { $0 + height(of: $1.kind) }
+    }
+
+    /// The height a row takes on the axis, with the room above a divider under it.
+    private func height(of kind: JournalPeriodKind) -> CGFloat {
+        kind.height + Self.rowSpacing + dividerGap(under: kind)
+    }
+
+    /// The room between a row and the divider under it, as between the calendar's week strip and its divider: under
+    /// the selected row and under the last row, where the material ends.
+    private func dividerGap(under kind: JournalPeriodKind) -> CGFloat {
+        kind == selectionKind || kind == rows.last?.kind ? Self.dividerGap : 0
+    }
+
+    /// The height of all the rows.
+    private var axisHeight: CGFloat {
+        rows.reduce(0) { $0 + height(of: $1.kind) }
+    }
+
+    /// How far the axis reaches below the pinned row: the rows of the narrower levels.
+    private var belowPinned: CGFloat {
+        axisHeight - top(of: selectionKind) - height(of: selectionKind)
+    }
+
+    /// The first day of the windows, which changes only when the windows move.
+    private var windowStart: String? {
+        rows.last?.cells.first?.start
+    }
+}
+
+// MARK: - Motion
+/// Where the axis stands, which row moves it and the scroll the selected row is asked to make.
+struct JournalAxisMotion: Equatable {
+
+    /// The moment in the middle of every row, in days since 1970 (a fraction is a part of the day). `nil` until a row
+    /// first moves: the rows then rest on the selection.
+    var cursor: Double?
+    /// The row that moves the axis, by hand or by its own scroll animation; the other rows follow it. `nil` at rest.
+    var driver: JournalPeriodKind?
+    /// The animated scroll a row is asked to make to a moment, such as the selection after Today.
+    var request: JournalAxisScrollRequest?
+    /// Counts the requests to scroll the selected period back to the middle, such as Today on today.
+    var centerRequests = 0
+}
+
+/// A request to the row of `kind` to scroll itself, animated, until `target` is in its middle. `id` tells two
+/// requests to the same target apart.
+struct JournalAxisScrollRequest: Equatable {
+
+    let id: Int
+    let kind: JournalPeriodKind
+    let target: Double
 }
 
 // MARK: - Movement
 private extension JournalAxisView {
 
-    func drag(scale: Double) -> some Gesture {
-        DragGesture(minimumDistance: Self.dragThreshold)
-            .onChanged { value in
-                let origin = dragOrigin ?? currentCursor
-                dragOrigin = origin
-                dragged = true
-                cursor = clamped(origin - value.translation.width * scale)
-            }
-            .onEnded { value in
-                let origin = dragOrigin ?? currentCursor
-                dragOrigin = nil
-                let target = clamped(origin - value.predictedEndTranslation.width * scale)
-                withAnimation(.smooth(duration: Self.glideDuration)) { cursor = target }
-                Task { @MainActor in dragged = false }
-                if nearEdge(target) { onMove(JournalAxisTrack.key(target)) }
-            }
+    /// Scrolls the selected row, animated, until the selected period is in the middle; the other rows follow it.
+    func center() {
+        let next = (motion.request?.id ?? 0) + 1
+        motion.request = JournalAxisScrollRequest(id: next, kind: selectionKind, target: anchor)
     }
 
-    /// Brings the selected period into the middle, unless the axis already shows it there.
-    func follow(animated: Bool) {
-        glide(to: selectionStart, kind: selectionKind, animated: animated)
+    /// The selection changed. A tap already scrolls its own row to the period; any other change (Today) scrolls the
+    /// selected row to it.
+    func follow() {
+        guard motion.driver == nil else { return }
+        center()
     }
 
-    /// Brings the period of `kind` that starts on `start` into the middle, unless the axis already shows it there.
-    func glide(to start: String, kind: JournalPeriodKind, animated: Bool = true) {
-        guard let first = JournalAxisTrack.epochDay(start) else { return }
-        let span = rows.first(where: { $0.kind == kind })
-            .flatMap { JournalAxisTrack(row: $0).span(startingAt: first) } ?? 1
-        if let cursor, cursor >= first, cursor < first + span { return }
-        withAnimation(animated ? .smooth(duration: Self.glideDuration) : nil) {
-            cursor = first + (kind == .day ? 0.5 : min(Self.longPeriodAnchor, span / 2))
+    /// The windows moved: when the cursor is no longer inside them (Today far away), the axis stands on the selection.
+    func returnIfOutside() {
+        guard let cursor = motion.cursor, let range = cursorRange, !range.contains(cursor) else { return }
+        motion.driver = nil
+        motion.cursor = anchor
+    }
+
+    /// A scroll came to rest: near the edge of the windows, they move around the moment it reached.
+    func settle() {
+        guard let cursor = motion.cursor, let range = cursorRange else { return }
+        if cursor - range.lowerBound < Self.edgeDays || range.upperBound - cursor < Self.edgeDays {
+            onMove(JournalAxisTrack.key(cursor))
         }
     }
 
-    /// The windows moved back to the selection (the person asked for it again, or for today): when the cursor is no
-    /// longer inside them, the axis returns to the selection.
-    func returnIfOutside() {
-        guard let cursor, let range = cursorRange, !range.contains(cursor) else { return }
-        withAnimation(.smooth(duration: Self.glideDuration)) { self.cursor = anchor }
-    }
-
     func adjust(row: JournalAxisRow, direction: AccessibilityAdjustmentDirection) {
-        let step = row.kind.daysPerPoint * row.kind.width
+        let step = row.kind.typicalSpan
+        let cursor = motion.cursor ?? anchor
+        motion.driver = nil
         switch direction {
-        case .increment: cursor = clamped(currentCursor + step)
-        case .decrement: cursor = clamped(currentCursor - step)
+        case .increment: motion.cursor = clamped(cursor + step)
+        case .decrement: motion.cursor = clamped(cursor - step)
         @unknown default: break
         }
     }
 
-    /// Keeps the cursor where every row, the days included, still fills the width around it.
     func clamped(_ value: Double) -> Double {
         guard let range = cursorRange else { return value }
         return min(max(value, range.lowerBound), range.upperBound)
     }
 
-    /// Whether the cursor came so close to the edge of the days that the windows should move with it.
-    func nearEdge(_ value: Double) -> Bool {
-        guard let range = cursorRange else { return false }
-        return value - range.lowerBound < Self.edgeDays || range.upperBound - value < Self.edgeDays
-    }
-
-    private var cursorRange: ClosedRange<Double>? {
-        let bounds = rows.compactMap { row in JournalAxisTrack(row: row).bounds }
+    /// Where every row has periods under the cursor.
+    var cursorRange: ClosedRange<Double>? {
+        let bounds = rows.compactMap { row in tracks.track(for: row).bounds }
         guard let lower = bounds.map(\.lowerBound).max(), let upper = bounds.map(\.upperBound).min(),
-              lower + Self.margin < upper - Self.margin else { return nil }
-        return (lower + Self.margin)...(upper - Self.margin)
+              lower < upper else { return nil }
+        return lower...upper
     }
 
-    static let dragThreshold: CGFloat = 6
-    static let rowSpacing: CGFloat = 2
-    /// About half the width of the row of days, so the row never shows empty space at an edge.
-    static let margin: Double = 6
-    /// How close to the edge of the days a drag may end before the windows move: about a quarter of a year.
-    static let edgeDays: Double = 100
-    static let glideDuration: Double = 0.35
-    /// A longer period rests about half a month in, as in the design.
-    static let longPeriodAnchor: Double = 15.5
+    static var rowSpacing: CGFloat { 2 }
+    static var dividerGap: CGFloat { 3 }
+    /// How close to the edge of the windows a scroll may rest before they move: a year, so that the periods around
+    /// the one in the middle are always there.
+    static var edgeDays: Double { 365 }
 }
 
-// MARK: - Track
-/// The cells of one row on the time line: where each period starts and ends, in days since 1970.
-@MainActor
-private struct JournalAxisTrack {
+// MARK: - Pinning
+private extension View {
 
-    let starts: [Double]
-    let ends: [Double]
-
-    init(row: JournalAxisRow) {
-        let starts = row.cells.map { Self.epochDay($0.start) ?? 0 }
-        self.starts = starts
-        ends = starts.indices.map { index in
-            index + 1 < starts.count ? starts[index + 1] : starts[index] + row.kind.typicalSpan
+    /// Keeps the view at the top of the enclosing scroll view's content, just under its top inset, once the page
+    /// scrolls it there, while `isPinned`. The scroll view's coordinate space starts at the inset. The offset is a
+    /// visual effect, worked out from the view's place in the scroll view as each frame is drawn, so the view stays
+    /// exactly in step with the scroll and the page's own state never changes while it scrolls. The effect is always
+    /// there, only its offset depends on `isPinned`: a row that becomes pinned stays the same view, and its scroll
+    /// view keeps its place.
+    func pinned(_ isPinned: Bool) -> some View {
+        visualEffect { content, proxy in
+            content.offset(y: isPinned ? max(0, -proxy.frame(in: .scrollView).minY) : 0)
         }
     }
 
-    var bounds: ClosedRange<Double>? {
-        guard let first = starts.first, let last = ends.last, first < last else { return nil }
-        return first...last
-    }
-
-    /// The length of the period that starts on `start`, if the row has it.
-    func span(startingAt start: Double) -> Double? {
-        starts.firstIndex(of: start).map { ends[$0] - starts[$0] }
-    }
-
-    /// The position of `cursor` in cells: 3.5 is the middle of the fourth cell.
-    func position(of cursor: Double) -> Double {
-        guard !starts.isEmpty else { return 0 }
-        var low = 0
-        var high = starts.count - 1
-        while low < high {
-            let mid = (low + high + 1) / 2
-            if starts[mid] <= cursor { low = mid } else { high = mid - 1 }
+    /// The material under the axis, whose lower edge is the axis's: it rises with the rows until it reaches the
+    /// pinned row (`pinnedTop` down the axis, `below` above the axis's end), and stays under it from then on.
+    func rising(axisHeight: CGFloat, pinnedTop: CGFloat, below: CGFloat) -> some View {
+        visualEffect { content, proxy in
+            let pinnedRow = proxy.frame(in: .scrollView).maxY - axisHeight + pinnedTop
+            let pinnedShift = max(0, -pinnedRow)
+            return content.offset(y: max(0, pinnedShift - below))
         }
-        let length = max(ends[low] - starts[low], 1)
-        return Double(low) + (cursor - starts[low]) / length
     }
-
-    static func epochDay(_ key: String) -> Double? {
-        JournalDates.date(key).map { ($0.timeIntervalSince1970 / secondsPerDay).rounded() }
-    }
-
-    /// The day `YYYY-MM-DD` that `epochDay` falls in.
-    static func key(_ epochDay: Double) -> String {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .gmt
-        let date = Date(timeIntervalSince1970: epochDay.rounded(.down) * secondsPerDay)
-        let parts = calendar.dateComponents([.year, .month, .day], from: date)
-        return String(format: "%04d-%02d-%02d", parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
-    }
-
-    private static let secondsPerDay: Double = 86_400
-}
-
-// MARK: - Row
-private struct JournalAxisRowView: View {
-
-    // MARK: - Dependencies
-    let row: JournalAxisRow
-    let track: JournalAxisTrack
-    let cursor: Double
-    let onSelect: (JournalAxisCell) -> Void
-
-    // MARK: - Body
-    var body: some View {
-        GeometryReader { proxy in
-            let middle = proxy.size.width / 2
-            let position = track.position(of: cursor)
-            let reach = Double(middle / row.kind.width) + 1
-            ZStack(alignment: .topLeading) {
-                ForEach(Array(row.cells.enumerated()), id: \.element.id) { index, cell in
-                    if abs(Double(index) - position) <= reach + 1 {
-                        Button { onSelect(cell) } label: { JournalAxisCellLabel(cell: cell) }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(Text(cell.accessibilityTitle))
-                            .accessibilityAddTraits(cell.current ? .isSelected : [])
-                            .accessibilityIdentifier(cell.identifier)
-                            .offset(x: middle + (Double(index) - position) * row.kind.width)
-                    }
-                }
-            }
-        }
-        .frame(height: row.kind.height)
-        .clipped()
-        .mask {
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0),
-                    .init(color: .black, location: Self.fade),
-                    .init(color: .black, location: 1 - Self.fade),
-                    .init(color: .clear, location: 1)
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        }
-        .contentShape(.rect)
-    }
-
-    /// The share of the width at each edge where the cells fade out, as in the design.
-    private static let fade: CGFloat = 0.14
 }

@@ -1,4 +1,4 @@
-import type { ChokePoint, CollectionMetadataResolver } from "@semprec/data";
+import type { ChokePoint, CollectionMetadataResolver } from "@alldots/data";
 import type { Pool } from "pg";
 import {
   ApprovalRequiredError,
@@ -9,16 +9,16 @@ import {
   readItemPatchChangeMetadata,
   sensitiveSourceDatabaseIdsByItem,
   withTransaction,
-} from "@semprec/data";
-import type { ModuleRegistry } from "@semprec/module-registry";
+} from "@alldots/data";
+import type { ModuleRegistry } from "@alldots/module-registry";
 import {
   GENERIC_OPERATION_NAMES,
   CAPABILITY_IDS,
   type AuthenticatedActor,
   type CapabilityId,
   type GenericOperationName,
-} from "@semprec/shared";
-import { createGenericOperationGateway, type GenericOperationGateway } from "@semprec/application";
+} from "@alldots/shared";
+import { createGenericOperationGateway, type GenericOperationGateway } from "@alldots/application";
 import { logger } from "../../logger.js";
 import type { ToolResultChange } from "../../toolEventPayload.js";
 
@@ -346,7 +346,7 @@ function createTool(
 }
 
 /**
- * One AgentTool per generic operation, named after the operation (MCP prefixes the same names `semprec.`). Both
+ * One AgentTool per generic operation, named after the operation (MCP prefixes the same names `alldots.`). Both
  * dispatch through `createGenericOperationGateway(pool, resolver)`, the single path into the catalog's business logic
  * in this process.
  *

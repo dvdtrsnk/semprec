@@ -151,10 +151,10 @@ final class InboxMappingTests: XCTestCase {
     // MARK: - Enums
     @MainActor
     func testEveryCardTypeAndPhaseAndApprovableIsMapped() {
-        XCTAssertEqual(SharedSDK.InboxCardType.allCases.count, 18)
+        XCTAssertEqual(SharedSDK.InboxCardType.allCases.count, 17)
         let types: [(SharedSDK.InboxCardType, CoreKit.InboxCardType)] = [
             (.task, .task), (.event, .event), (.page, .page), (.journal, .journal), (.project, .project),
-            (.area, .area), (.company, .company), (.person, .person), (.health, .health), (.file, .file),
+            (.company, .company), (.person, .person), (.health, .health), (.file, .file),
             (.recording, .recording), (.mcp, .mcp), (.invalid, .invalid), (.clarify, .clarify),
             (.transcriptEvent, .transcriptEvent), (.speaker, .speaker), (.approval, .approval),
             (.unsupported, .unsupported)
@@ -272,7 +272,8 @@ private extension InboxMappingTests {
         result: SharedSDK.InboxResultState? = nil,
         problem: SharedSDK.InboxProblem? = nil,
         problemFailure: SharedSDK.FailureKind? = nil,
-        picker: SharedSDK.InboxPickerState? = nil
+        picker: SharedSDK.InboxPickerState? = nil,
+        attachment: SharedSDK.AttachmentPreviewState? = nil
     ) -> SharedSDK.InboxState {
         SharedSDK.InboxState(
             phase: phase,
@@ -286,7 +287,8 @@ private extension InboxMappingTests {
             result: result,
             problem: problem,
             problemFailure: problemFailure,
-            picker: picker
+            picker: picker,
+            attachment: attachment
         )
     }
 
@@ -320,7 +322,8 @@ private extension InboxMappingTests {
             sourceKind: "tick",
             threadTitle: "Cleanup",
             heartbeatName: "Heartbeat",
-            mcpClientName: "Desktop"
+            mcpClientName: "Desktop",
+            attachments: []
         )
     }
 
@@ -364,7 +367,8 @@ private extension InboxMappingTests {
                 sourceKind: nil,
                 threadTitle: nil,
                 heartbeatName: nil,
-                mcpClientName: nil
+                mcpClientName: nil,
+                attachments: []
             ),
             targets: ["Tasks"],
             invalidText: "Archived",

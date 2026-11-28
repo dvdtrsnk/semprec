@@ -2,7 +2,7 @@ import "../../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createChokePoint, type ChokePoint } from "../../chokePoint/chokePoint.js";
 import { computeDeleteImpact, type DeleteImpact } from "../deleteImpact.js";
 import { insertValueLink } from "../../chokePoint/valueLinksStore.js";
@@ -106,7 +106,7 @@ async function subpage(parentItemId: string, title: string): Promise<string> {
 describe("computeDeleteImpact (issue #1856)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
     cp = createChokePoint(pool);
     resolver = await createCollectionMetadataResolver(await loadFullModuleRegistry());
   });
@@ -279,7 +279,7 @@ describe("computeDeleteImpact (issue #1856)", () => {
             ruleKey: "test.twoSources",
             sources: [
               { kind: "item", sourceItemId: project.id, sourcePropertyKey: "company" },
-              { kind: "item", sourceItemId: project.id, sourcePropertyKey: "area" },
+              { kind: "item", sourceItemId: project.id, sourcePropertyKey: "name" },
             ],
           }),
         ),

@@ -6,9 +6,36 @@ import CoreKit
 final class SignedInModels: ScreenModelFactory {
 
     // MARK: - Dependencies
-    private let real = SharedScreenModelFactory(sessionStore: .memory)
+    private let real: SharedScreenModelFactory
+
+    // MARK: - Init
+    /// `deviceServices` are the ones the test's composition was given; the models share them as the real scenes do.
+    init(deviceServices: DeviceServices = SharedDeviceNotifications(sessionStore: .memory).deviceServices) {
+        real = SharedScreenModelFactory(sessionStore: .memory, deviceServices: deviceServices)
+    }
+
+    // MARK: - Properties
+    /// Every call of `startLiveUpdates()` (`true`) and `stopLiveUpdates()` (`false`), in order.
+    private(set) var liveUpdateCalls: [Bool] = []
+    /// The days the calendar's and the diary's models were made for, in order.
+    private(set) var calendarDays: [String] = []
+    private(set) var journalDays: [String] = []
+    /// When set, the scene's wake guard is this scripted model, so that a test decides when a mission rings.
+    var scriptedWakeGuard: ScriptedWakeGuardScreenModel?
 
     // MARK: - Protocol conformance
+    func startLiveUpdates() {
+        liveUpdateCalls.append(true)
+        real.startLiveUpdates()
+    }
+
+    func stopLiveUpdates() {
+        liveUpdateCalls.append(false)
+        real.stopLiveUpdates()
+    }
+
+    func makeSyncStatus() -> any SyncStatusScreenModel { real.makeSyncStatus() }
+
     func makeLogin() -> any LoginScreenModel { real.makeLogin() }
 
     func makeOverview() -> any OverviewScreenModel { real.makeOverview() }
@@ -27,11 +54,12 @@ final class SignedInModels: ScreenModelFactory {
         real.makeItem(itemId: itemId, databaseKey: databaseKey)
     }
 
-    func makeJournal(initialDay: String) -> any JournalScreenModel { real.makeJournal(initialDay: initialDay) }
-
-    func makeJournalSubpage(itemId: String) -> any JournalSubpageScreenModel {
-        real.makeJournalSubpage(itemId: itemId)
+    func makeJournal(initialDay: String) -> any JournalScreenModel {
+        journalDays.append(initialDay)
+        return real.makeJournal(initialDay: initialDay)
     }
+
+    func makeNoteEditor(source: NoteEditorSource) -> any NoteEditorScreenModel { real.makeNoteEditor(source: source) }
 
     func makeInboxCapture() -> any InboxCaptureScreenModel { real.makeInboxCapture() }
 
@@ -41,7 +69,22 @@ final class SignedInModels: ScreenModelFactory {
         real.makeSleep(night: night, startOnNight: startOnNight)
     }
 
-    func makeCalendar(initialDay: String) -> any CalendarScreenModel { real.makeCalendar(initialDay: initialDay) }
+    func makeWakeSettings() -> any WakeSettingsScreenModel {
+        real.makeWakeSettings()
+    }
+
+    func makeWakeGuard() -> any WakeGuardScreenModel {
+        scriptedWakeGuard ?? real.makeWakeGuard()
+    }
+
+    func makeDebugAlarms() -> any DebugAlarmScreenModel {
+        real.makeDebugAlarms()
+    }
+
+    func makeCalendar(initialDay: String) -> any CalendarScreenModel {
+        calendarDays.append(initialDay)
+        return real.makeCalendar(initialDay: initialDay)
+    }
 
     func makeCalendarList() -> any CalendarListScreenModel { real.makeCalendarList() }
 
@@ -59,11 +102,12 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeTrash() -> any TrashScreenModel { real.makeTrash() }
 
-    // MARK: - Areas
-    func makeArea(areaId: String) -> any AreaScreenModel { real.makeArea(areaId: areaId) }
+    func makeInternetAccounts() -> any InternetAccountsScreenModel { real.makeInternetAccounts() }
 
-    // MARK: - Notes
-    func makeNotes(itemId: String) -> any NotesScreenModel { real.makeNotes(itemId: itemId) }
+    func makeInternetAccount(accountId: String) -> any InternetAccountScreenModel {
+        real.makeInternetAccount(accountId: accountId)
+    }
+
     func makeInbox() -> any InboxScreenModel { real.makeInbox() }
     // MARK: - Mail
     func makeMailThreads(start: MailListStart) -> any MailThreadsScreenModel { real.makeMailThreads(start: start) }
@@ -74,9 +118,9 @@ final class SignedInModels: ScreenModelFactory {
 
     func makeMailFolders() -> any MailFoldersScreenModel { real.makeMailFolders() }
 
-    func makeMailAccounts() -> any MailAccountsScreenModel { real.makeMailAccounts() }
-
-    func makeMailAccount(mailboxId: String) -> any MailAccountScreenModel { real.makeMailAccount(mailboxId: mailboxId) }
+    func makeProjectMailSignals(projectId: String) -> any ProjectMailSignalsScreenModel {
+        real.makeProjectMailSignals(projectId: projectId)
+    }
 
     func makeSempThread(
         start: SempThreadStart,

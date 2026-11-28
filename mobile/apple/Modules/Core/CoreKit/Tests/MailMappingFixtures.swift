@@ -14,9 +14,9 @@ extension XCTestCase {
         threads: [SharedSDK.MailThreadItem] = [],
         box: SharedSDK.MailListBox = .inbox,
         filter: SharedSDK.MailListFilter = .all,
-        facets: SharedSDK.MailFacetsState = SharedSDK.MailFacetsState(
-            phase: .idle, areaTotal: 0, projectTotal: 0, areas: [], projects: []
-        )
+        facets: SharedSDK.MailFacetsState = SharedSDK.MailFacetsState(phase: .idle, projectTotal: 0, projects: []),
+        remoteSearch: SharedSDK.MailRemoteSearchSummary? = nil,
+        actionRefusal: SharedSDK.MailRefusal? = nil
     ) -> SharedSDK.MailThreadsState {
         SharedSDK.MailThreadsState(
             phase: phase,
@@ -30,14 +30,43 @@ extension XCTestCase {
             filter: filter,
             mailboxId: "m1",
             folderId: "f1",
-            areaId: "a1",
             projectId: "p1",
-            areaName: "Práce",
             projectName: "Web",
             mailboxes: [SharedSDK.MailMailboxChip(id: "m1", name: "Gmail")],
             reauthorization: [SharedSDK.MailAccountNotice(id: "m2", name: "Outlook", since: "2026-10-19T09:12:00Z")],
             facets: facets,
-            actionFailed: true
+            remoteSearch: remoteSearch,
+            fromCache: false,
+            actionFailed: true,
+            actionRefusal: actionRefusal
+        )
+    }
+
+    func messageItem(
+        bodyText: String = "Ahoj",
+        bodyPhase: SharedSDK.MailBodyPhase = .ready,
+        bodyFailure: SharedSDK.FailureKind? = nil,
+        bodyUnavailable: SharedSDK.MailContentUnavailable? = nil,
+        attachments: [SharedSDK.MailAttachmentItem] = []
+    ) -> SharedSDK.MailMessageItem {
+        SharedSDK.MailMessageItem(
+            emailId: "e1", fromName: "Petr", fromAddress: "p@x.cz", own: true, toNames: ["David"],
+            date: "2026-10-20T12:41:00Z", bodyText: bodyText, preview: "Náhled", bodyPhase: bodyPhase,
+            bodyFailure: bodyFailure, bodyUnavailable: bodyUnavailable, attachments: attachments, expanded: true
+        )
+    }
+
+    func attachmentItem(
+        link: SharedSDK.MailLinkInfo? = nil,
+        fileItemId: String? = nil,
+        savePhase: SharedSDK.MailAttachmentSavePhase = .idle,
+        saveFailure: SharedSDK.FailureKind? = nil,
+        saveUnavailable: SharedSDK.MailContentUnavailable? = nil
+    ) -> SharedSDK.MailAttachmentItem {
+        SharedSDK.MailAttachmentItem(
+            attachmentId: "a1", filename: "a.pdf", contentType: "application/pdf", byteSize: 840,
+            project: SharedSDK.MailLinkedValue(text: "Web", link: link), fileItemId: fileItemId,
+            savePhase: savePhase, saveFailure: saveFailure, saveUnavailable: saveUnavailable
         )
     }
 
@@ -49,7 +78,9 @@ extension XCTestCase {
         tasks: [SharedSDK.MailTaskItem] = [],
         draft: SharedSDK.MailSempDraft? = nil,
         sendPhase: SharedSDK.MailSendPhase = .idle,
-        sendFailure: SharedSDK.FailureKind? = nil
+        sendFailure: SharedSDK.FailureKind? = nil,
+        sendRefusal: SharedSDK.MailRefusal? = nil,
+        actionRefusal: SharedSDK.MailRefusal? = nil
     ) -> SharedSDK.MailThreadState {
         SharedSDK.MailThreadState(
             phase: phase,
@@ -69,22 +100,27 @@ extension XCTestCase {
             draft: draft,
             sendPhase: sendPhase,
             sendFailure: sendFailure,
+            sendRefusal: sendRefusal,
             sentFrom: "Gmail",
             archivedOrTrashed: true,
             canReply: true,
             acting: true,
             creatingTask: true,
-            actionFailed: true
+            actionFailed: true,
+            actionRefusal: actionRefusal
         )
     }
 
     func composeState(
         _ phase: SharedSDK.MailComposePhase,
-        failure: SharedSDK.FailureKind? = nil
+        failure: SharedSDK.FailureKind? = nil,
+        refusal: SharedSDK.MailRefusal? = nil,
+        sendRefusal: SharedSDK.MailRefusal? = nil
     ) -> SharedSDK.MailComposeState {
         SharedSDK.MailComposeState(
             phase: phase,
             failure: failure,
+            refusal: refusal,
             senders: [SharedSDK.MailSender(mailboxId: "m1", name: "Gmail", address: "me@gmail.com")],
             senderId: "m1",
             to: [SharedSDK.MailRecipient(name: "Petr", address: "p@x.cz")],
@@ -95,6 +131,7 @@ extension XCTestCase {
             invalidAddress: true,
             sendPhase: .sent,
             sendFailure: .rejected,
+            sendRefusal: sendRefusal,
             sentFrom: "Gmail",
             discardFailed: true
         )
@@ -124,50 +161,6 @@ extension XCTestCase {
                     collapsed: true
                 )
             ]
-        )
-    }
-
-    func accountsState(
-        _ phase: SharedSDK.MailAccountsPhase,
-        failure: SharedSDK.FailureKind? = nil,
-        connectFailure: SharedSDK.MailConnectFailure? = nil
-    ) -> SharedSDK.MailAccountsState {
-        SharedSDK.MailAccountsState(
-            phase: phase,
-            failure: failure,
-            refreshing: false,
-            accounts: [
-                SharedSDK.MailAccountItem(id: "m1", name: "Gmail", address: nil, provider: "gmail", status: .ok)
-            ],
-            connecting: true,
-            connectFailure: connectFailure
-        )
-    }
-
-    func accountState(
-        _ phase: SharedSDK.MailAccountPhase,
-        failure: SharedSDK.FailureKind? = nil,
-        removal: SharedSDK.MailRemovalPhase = .confirming
-    ) -> SharedSDK.MailAccountState {
-        SharedSDK.MailAccountState(
-            phase: phase,
-            failure: failure,
-            account: SharedSDK.MailAccountDetail(
-                id: "m1",
-                name: "Gmail",
-                address: "me@gmail.com",
-                provider: "gmail",
-                syncMode: "imap",
-                status: .needsReauthorization,
-                lastSuccessfulSyncAt: "2026-10-19T08:12:00Z",
-                failingSince: "2026-10-19T09:12:00Z",
-                connectionLimit: 3,
-                connectionLimitApplies: true,
-                autonomousSendProjectCount: 1
-            ),
-            removal: removal,
-            impact: SharedSDK.MailRemovalImpactItem(messages: 120, drafts: 2, threads: 50, attachmentsKept: 7),
-            actionFailed: true
         )
     }
 }

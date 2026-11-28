@@ -35,15 +35,15 @@ describe("parseRemoteTags", () => {
 
 describe("parseGithubRepository", () => {
   it.each([
-    ["https://github.com/dvdtrsnk/semprec.git\n", "dvdtrsnk/semprec"],
-    ["https://github.com/dvdtrsnk/semprec", "dvdtrsnk/semprec"],
-    ["git@github.com:dvdtrsnk/semprec.git", "dvdtrsnk/semprec"],
-    ["ssh://git@github.com/dvdtrsnk/semprec.git", "dvdtrsnk/semprec"],
+    ["https://github.com/dvdtrsnk/alldots.git\n", "dvdtrsnk/alldots"],
+    ["https://github.com/dvdtrsnk/alldots", "dvdtrsnk/alldots"],
+    ["git@github.com:dvdtrsnk/alldots.git", "dvdtrsnk/alldots"],
+    ["ssh://git@github.com/dvdtrsnk/alldots.git", "dvdtrsnk/alldots"],
   ])("reads %j as %s", (url, repository) => {
     expect(parseGithubRepository(url)).toBe(repository);
   });
 
-  it.each(["https://gitlab.example.com/dvdtrsnk/semprec.git", "https://github.com/dvdtrsnk", "/local/path/semprec"])(
+  it.each(["https://gitlab.example.com/dvdtrsnk/alldots.git", "https://github.com/dvdtrsnk", "/local/path/alldots"])(
     "rejects the non-GitHub remote %j",
     (url) => {
       expect(() => parseGithubRepository(url)).toThrow(/is not a github\.com repository URL/);

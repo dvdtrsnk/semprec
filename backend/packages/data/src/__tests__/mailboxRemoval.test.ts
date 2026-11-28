@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant, TenantScopeMissingError } from "@semprec/shared";
+import { runAsSystem, runInTenant, TenantScopeMissingError } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createChokePoint, type ChokePoint } from "../chokePoint/chokePoint.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
@@ -12,7 +12,6 @@ import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { ensureFolderItem } from "../mail/folderDiscovery.js";
 import type { GmailMailClient } from "../mail/gmailReconcile.js";
 import type { GraphMailClient } from "../mail/graphReconcile.js";
-import type { ImapConnectionLimiter } from "../mail/imapConnectionLimiter.js";
 import type { ImapMailClient } from "../mail/imapReconcile.js";
 import {
   deleteMailAccountSyncState,
@@ -32,6 +31,8 @@ import { setInvalidationHook, type InvalidationEvent } from "../realtimeHook.js"
 import { createActionQueueAffinity } from "../scheduler/actions.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { provisionTenant } from "../tenancy/provisionTenant.js";
+import { fakeImapRange } from "../testSupport/fakeImapMessages.js";
+import { gmailHistory } from "../testSupport/gmailListing.js";
 import {
   createRuntimeRolePool,
   createTestTenant,
@@ -217,10 +218,12 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
     selectFolder: async (path) => {
       calls.push(`selectFolder ${path}`);
       await options.onSelectFolder?.(path);
-      return { uidvalidity: 1, uidnext: 1, highestModSeq: null };
+      return { uidvalidity: 1, uidnext: 1, highestModSeq: null, messages: 0 };
     },
-    fetchMessagesSince: async () => called("fetchMessagesSince", []),
-    fetchVanishedSince: async () => called("fetchVanishedSince", []),
+    fetchMessagesSince: async () => called("fetchMessagesSince", fakeImapRange([])),
+    fetchMessagesBefore: async () => called("fetchMessagesBefore", fakeImapRange([])),
+    fetchSnippets: async () => called("fetchSnippets", new Map<number, string>()),
+    fetchChangesSince: async () => called("fetchChangesSince", { flags: [], vanished: [] }),
     fetchAllUids: async () => called("fetchAllUids", []),
     fetchFlagsChangedSince: async () => called("fetchFlagsChangedSince", []),
     setMessageFlag: async () => called("setMessageFlag", undefined),
@@ -229,21 +232,16 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
   };
   const gmail: GmailMailClient = {
     getCurrentHistoryId: async () => called("getCurrentHistoryId", "1"),
-    listHistorySince: async () =>
-      called("listHistorySince", {
-        invalidated: false,
-        newHistoryId: "1",
-        changedMessageIds: [],
-        removedMessageIds: [],
-      }),
-    listAllMessageIds: async () => called("listAllMessageIds", []),
+    listHistorySince: async () => called("listHistorySince", gmailHistory("1")),
+    listMessageIds: async () => called("listMessageIds", { ids: [], nextPageToken: null }),
     fetchMessage: async () => called("fetchMessage", null),
     listLabels: async () => called("listLabels", []),
     modifyMessageLabels: async () => called("modifyMessageLabels", undefined),
   };
   const graph: GraphMailClient = {
     listFolders: async () => called("listFolders", []),
-    fetchDelta: async () => called("fetchDelta", { invalidated: false, newDeltaLink: "delta-1", changes: [] }),
+    fetchDeltaPage: async () => called("fetchDeltaPage", { changes: [], nextLink: null, deltaLink: "delta-1" }),
+    fetchMessageContent: async () => called("fetchMessageContent", null),
     patchMessage: async () => called("patchMessage", undefined),
   };
   return {
@@ -256,14 +254,10 @@ function stubProviders(options: { folders?: string[]; onSelectFolder?: (path: st
   };
 }
 
-function syncPass(
-  mailboxItemId: string,
-  adapters: MailSyncAdapterFactory,
-  limiter?: ImapConnectionLimiter,
-): Promise<void> {
+function syncPass(mailboxItemId: string, adapters: MailSyncAdapterFactory): Promise<void> {
   return runInTenant(tenant, async () => {
     const moduleIds = await withTransaction(runtime, (client) => resolveMailModuleIds(client));
-    await handleSyncMailAccountTask(runtime, { mailboxItemId }, adapters, moduleIds, unusedStorage, undefined, limiter);
+    await handleSyncMailAccountTask(runtime, { mailboxItemId }, adapters, moduleIds, unusedStorage);
   });
 }
 
@@ -317,7 +311,7 @@ async function transactionIdsHeldBy(pid: number): Promise<number> {
 describe("mailbox removal (gh-1690)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    runtime = await createRuntimeRolePool(admin, "semprec_data");
+    runtime = await createRuntimeRolePool(admin, "alldots_data");
     chokePoint = createChokePoint(runtime);
   });
 
@@ -458,33 +452,28 @@ describe("mailbox removal (gh-1690)", () => {
   });
 
   describe("a removal and a sync pass of the same mailbox", () => {
-    it("makes a removal that arrives during a pass wait for it, holding no row lock, and then removes the mailbox", async () => {
+    /** The provider calls of an IMAP pass that ends before its first transaction finds anything to sync. */
+    const NO_RECONCILE = ["createImapClient", "getCapabilities", "listFolders", "close"];
+
+    it("makes a removal wait for a transaction of a pass holding the mailbox's guard, holding no row lock, and then removes the mailbox", async () => {
       const { mailbox, sibling } = await inTenant(async (client) => ({
         mailbox: await createConnectedMailbox(client, "Work"),
         sibling: await createConnectedMailbox(client, "Private"),
       }));
       const other = await createTestTenant(admin);
       await provisionTenant(runtime, other);
-      const secondFolder = signal();
+      const held = signal();
       const released = signal();
-      // The pass stops while it selects its second folder. Its first folder is reconciled by then, so
-      // the pass holds the row lock on that folder's sync state.
-      const providers = stubProviders({
-        folders: ["inbox", "archive"],
-        onSelectFolder: async (path) => {
-          if (path !== "archive") return;
-          secondFolder.resolve();
-          await released.promise;
-        },
+      // Every transaction of a pass takes the guard first, as this one does.
+      const passTransaction = inTenant(async (client) => {
+        await lockMailboxSync(client, mailbox.id);
+        held.resolve();
+        await released.promise;
       });
-      let passSettled = false;
       let removalSettled = false;
-      const pass = syncPass(mailbox.id, providers.adapters).finally(() => {
-        passSettled = true;
-      });
       let removal: Promise<boolean> | undefined;
       try {
-        await reachedBeforeEnd(secondFolder.promise, pass, "the pass");
+        await reachedBeforeEnd(held.promise, passTransaction, "the pass transaction");
         removal = remove(mailbox.id).finally(() => {
           removalSettled = true;
         });
@@ -500,7 +489,6 @@ describe("mailbox removal (gh-1690)", () => {
         expect(waits.map((wait) => wait.lock)).toEqual(["advisory"]);
         expect(await transactionIdsHeldBy(waits[0]?.pid ?? -1)).toBe(0);
         expect(removalSettled).toBe(false);
-        expect(passSettled).toBe(false);
         // The guard's key names the tenant and the mailbox: another tenant's request for the same id
         // does not wait, and neither does the removal of another mailbox of this tenant.
         expect(await remove(mailbox.id, other)).toBe(false);
@@ -508,19 +496,49 @@ describe("mailbox removal (gh-1690)", () => {
         expect(removalSettled).toBe(false);
       } finally {
         released.resolve();
-        await Promise.allSettled([pass, removal]);
+        await Promise.allSettled([passTransaction, removal]);
       }
 
-      await pass;
       expect(await removal).toBe(true);
-      expect(providers.calls.filter((call) => call.startsWith("selectFolder"))).toEqual([
-        "selectFolder inbox",
-        "selectFolder archive",
-      ]);
       const after = await snapshot(mailbox);
       expect(after).toMatchObject(REMOVED);
       expectTrashedAsNeedsReauthorization(after);
       expect(await snapshot(sibling)).toMatchObject(REMOVED);
+    });
+
+    it("lets a removal that arrives while a pass talks to the provider run at once, and the pass then writes nothing more", async () => {
+      const mailbox = await inTenant((client) => createConnectedMailbox(client, "Work"));
+      const secondFolder = signal();
+      const released = signal();
+      // The pass stops while it selects its second folder; its first folder's batch has committed.
+      const providers = stubProviders({
+        folders: ["inbox", "archive"],
+        onSelectFolder: async (path) => {
+          if (path !== "archive") return;
+          secondFolder.resolve();
+          await released.promise;
+        },
+      });
+      const pass = syncPass(mailbox.id, providers.adapters);
+      try {
+        await reachedBeforeEnd(secondFolder.promise, pass, "the pass");
+        // No transaction of the pass is open while it waits on the provider, so the removal does not wait.
+        expect(await remove(mailbox.id)).toBe(true);
+      } finally {
+        released.resolve();
+        await Promise.allSettled([pass]);
+      }
+
+      await pass;
+      expect(providers.calls.filter((call) => call.startsWith("selectFolder"))).toEqual([
+        "selectFolder inbox",
+        "selectFolder archive",
+      ]);
+      // The pass's next transaction found the mailbox removed: no flag write-back, no sync state written back.
+      expect(providers.calls).not.toContain("setMessageFlag");
+      const after = await snapshot(mailbox);
+      expect(after).toMatchObject(REMOVED);
+      expectTrashedAsNeedsReauthorization(after);
     });
 
     it.each(SYNC_MODES)(
@@ -575,9 +593,9 @@ describe("mailbox removal (gh-1690)", () => {
         await holder;
         expect(await removal).toBe(true);
         await pass;
-        // No reconcile call reached a provider. The IMAP pass opens its connection before its first
-        // statement, and closed it.
-        expect(providers.calls).toEqual(syncMode === "imap" ? ["createImapClient", "close"] : []);
+        // The pass waited for the removal to claim its pass lease on the sync state row, found the row deleted and
+        // asked the provider nothing.
+        expect(providers.calls).toEqual([]);
         const after = await snapshot(mailbox);
         expect(after).toMatchObject(REMOVED);
         expectTrashedAsNeedsReauthorization(after);
@@ -586,7 +604,7 @@ describe("mailbox removal (gh-1690)", () => {
 
     /**
      * One IMAP pass of `mailbox` during which `change` happens after the pass read the mailbox, its sync
-     * state and credential and before its write transaction (the connection limiter grants the slot in
+     * state and credential and before its first transaction (the pass waits for its IMAP connection in
      * between). Returns the provider calls and the mailbox's rows right after `change`.
      */
     async function passAfter(
@@ -594,20 +612,20 @@ describe("mailbox removal (gh-1690)", () => {
       change: () => Promise<void>,
     ): Promise<{ calls: string[]; changed: MailboxSnapshot }> {
       const providers = stubProviders({ folders: ["inbox", "archive"] });
+      const createImapClient = providers.adapters.createImapClient;
+      if (!createImapClient) throw new Error("the stub providers have no IMAP client");
       let changed: MailboxSnapshot | undefined;
-      const limiter: ImapConnectionLimiter = {
-        async run<T>(_accountId: string, _limit: number, task: () => Promise<T>): Promise<T> {
+      await syncPass(mailbox.id, {
+        ...providers.adapters,
+        async createImapClient(mailboxItemId, credential, accountLimit) {
           await change();
           changed = await snapshot(mailbox);
-          return task();
+          return createImapClient(mailboxItemId, credential, accountLimit);
         },
-      };
-      await syncPass(mailbox.id, providers.adapters, limiter);
-      if (changed === undefined) throw new Error("the pass never asked for its connection slot");
+      });
+      if (changed === undefined) throw new Error("the pass never asked for its IMAP connection");
       return { calls: providers.calls, changed };
     }
-
-    const NO_RECONCILE = ["createImapClient", "close"];
 
     it("makes a pass do no work for a live mailbox whose sync state was deleted while the pass waited for its connection", async () => {
       const mailbox = await inTenant((client) => createConnectedMailbox(client, "Work"));

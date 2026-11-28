@@ -1,4 +1,4 @@
-import { serializeBlocks, type NewBlockInput, type PageBlock, type SerializableBlock } from "@semprec/block-model";
+import { serializeBlocks, type NewBlockInput, type PageBlock, type SerializableBlock } from "@alldots/block-model";
 
 /**
  * Cap on rows x columns of the LCS table for the changed middle stretch (shared prefix/suffix are not counted); past
@@ -32,6 +32,7 @@ function contentKey(block: {
   type: string;
   indent?: number;
   done?: boolean;
+  toggle?: boolean;
   text?: PageBlock["text"] | string;
   pageId?: string | null;
 }): string {
@@ -40,6 +41,7 @@ function contentKey(block: {
     type: block.type,
     indent: block.indent ?? 0,
     ...(block.done === undefined ? {} : { done: block.done }),
+    ...(block.toggle === undefined ? {} : { toggle: block.toggle }),
     ...(typeof block.text === "string" ? { text: [{ insert: block.text }] } : block.text ? { text: block.text } : {}),
     pageId: block.pageId?.toLowerCase() ?? null,
   };

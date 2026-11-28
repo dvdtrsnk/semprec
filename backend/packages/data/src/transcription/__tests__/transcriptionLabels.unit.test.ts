@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 const { loadModuleCatalogs } = vi.hoisted(() => ({ loadModuleCatalogs: vi.fn() }));
 
-vi.mock("@semprec/module-registry", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@semprec/module-registry")>();
+vi.mock("@alldots/module-registry", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@alldots/module-registry")>();
   loadModuleCatalogs.mockImplementation(actual.loadModuleCatalogs);
   return { ...actual, loadModuleCatalogs };
 });

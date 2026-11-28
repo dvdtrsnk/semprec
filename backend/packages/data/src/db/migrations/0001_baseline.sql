@@ -1,4 +1,4 @@
--- The schema of a fresh Semprec database, in its final shape.
+-- The schema of a fresh Alldots database, in its final shape.
 --
 -- This file replaced the 177 development-era migrations (0001_core_schema.sql through
 -- 0177_side_role_cannot_mint_actors.sql) before the first production release: no database with data
@@ -7,8 +7,8 @@
 -- Every later change is a new numbered migration on top of this one (docs/operations/migrations.md).
 --
 -- Ownership: every object belongs to the migrating role, except the cross-tenant router functions, which
--- belong to semprec_router (docs/adr/2026-10-07-cross-tenant-router-functions.md). Tenancy annotations
--- (`semprec:tenancy=...`) are table comments that db/tenancyInvariants.ts reads.
+-- belong to alldots_router (docs/adr/2026-10-07-cross-tenant-router-functions.md). Tenancy annotations
+-- (`alldots:tenancy=...`) are table comments that db/tenancyInvariants.ts reads.
 
 -- SQL function bodies below reference tables created later in this file.
 SET LOCAL check_function_bodies = false;
@@ -22,25 +22,25 @@ SET LOCAL check_function_bodies = false;
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_data') THEN
-    CREATE ROLE semprec_data LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alldots_data') THEN
+    CREATE ROLE alldots_data LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_side') THEN
-    CREATE ROLE semprec_side LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alldots_side') THEN
+    CREATE ROLE alldots_side LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'semprec_router') THEN
-    CREATE ROLE semprec_router NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'alldots_router') THEN
+    CREATE ROLE alldots_router NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS;
   END IF;
 END
 $$;
-ALTER ROLE semprec_router NOLOGIN NOSUPERUSER BYPASSRLS;
+ALTER ROLE alldots_router NOLOGIN NOSUPERUSER BYPASSRLS;
 
--- semprec_data (the choke point's role) inherits every side-table grant of semprec_side.
-GRANT semprec_side TO semprec_data;
+-- alldots_data (the choke point's role) inherits every side-table grant of alldots_side.
+GRANT alldots_side TO alldots_data;
 
-GRANT USAGE ON SCHEMA public TO semprec_data;
-GRANT USAGE ON SCHEMA public TO semprec_side;
-GRANT USAGE ON SCHEMA public TO semprec_router;
+GRANT USAGE ON SCHEMA public TO alldots_data;
+GRANT USAGE ON SCHEMA public TO alldots_side;
+GRANT USAGE ON SCHEMA public TO alldots_router;
 
 -- ====================================================================================================
 -- Extensions
@@ -103,10 +103,10 @@ CREATE FUNCTION public.ai_global_spend() RETURNS TABLE(spent_today numeric, spen
   WHERE c.at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
 $$;
 
-ALTER FUNCTION public.ai_global_spend() OWNER TO semprec_router;
+ALTER FUNCTION public.ai_global_spend() OWNER TO alldots_router;
 
 REVOKE ALL ON FUNCTION public.ai_global_spend() FROM PUBLIC;
-GRANT ALL ON FUNCTION public.ai_global_spend() TO semprec_side;
+GRANT ALL ON FUNCTION public.ai_global_spend() TO alldots_side;
 
 CREATE FUNCTION public.ai_tenant_spend() RETURNS TABLE(tenant_id uuid, spent_today_usd numeric, spent_month_usd numeric)
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -120,10 +120,10 @@ CREATE FUNCTION public.ai_tenant_spend() RETURNS TABLE(tenant_id uuid, spent_tod
   GROUP BY c.tenant_id
 $$;
 
-ALTER FUNCTION public.ai_tenant_spend() OWNER TO semprec_router;
+ALTER FUNCTION public.ai_tenant_spend() OWNER TO alldots_router;
 
 REVOKE ALL ON FUNCTION public.ai_tenant_spend() FROM PUBLIC;
-GRANT ALL ON FUNCTION public.ai_tenant_spend() TO semprec_data;
+GRANT ALL ON FUNCTION public.ai_tenant_spend() TO alldots_data;
 
 CREATE FUNCTION public.app_current_tenant() RETURNS uuid
     LANGUAGE sql STABLE
@@ -193,10 +193,10 @@ CREATE FUNCTION public.ops_health_counts() RETURNS TABLE(agent_run_errors_7d big
     (SELECT count(*) FROM public.tenant_observability_checks WHERE status = 'alerting')
 $$;
 
-ALTER FUNCTION public.ops_health_counts() OWNER TO semprec_router;
+ALTER FUNCTION public.ops_health_counts() OWNER TO alldots_router;
 
 REVOKE ALL ON FUNCTION public.ops_health_counts() FROM PUBLIC;
-GRANT ALL ON FUNCTION public.ops_health_counts() TO semprec_data;
+GRANT ALL ON FUNCTION public.ops_health_counts() TO alldots_data;
 
 CREATE FUNCTION public.route_gmail_address(email_address text) RETURNS TABLE(tenant_id uuid, mailbox_item_id uuid)
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -206,10 +206,36 @@ CREATE FUNCTION public.route_gmail_address(email_address text) RETURNS TABLE(ten
   WHERE s.sync_mode = 'gmail_api' AND s.gmail_watch_email_address = email_address
 $$;
 
-ALTER FUNCTION public.route_gmail_address(email_address text) OWNER TO semprec_router;
+ALTER FUNCTION public.route_gmail_address(email_address text) OWNER TO alldots_router;
 
 REVOKE ALL ON FUNCTION public.route_gmail_address(email_address text) FROM PUBLIC;
-GRANT ALL ON FUNCTION public.route_gmail_address(email_address text) TO semprec_data;
+GRANT ALL ON FUNCTION public.route_gmail_address(email_address text) TO alldots_data;
+
+CREATE FUNCTION public.route_google_calendar_channel(channel_id text) RETURNS TABLE(tenant_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+  SELECT c.tenant_id FROM public.calendar_push_channels c
+  WHERE c.provider = 'google' AND c.channel_id = route_google_calendar_channel.channel_id
+$$;
+
+ALTER FUNCTION public.route_google_calendar_channel(channel_id text) OWNER TO alldots_router;
+
+REVOKE ALL ON FUNCTION public.route_google_calendar_channel(channel_id text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.route_google_calendar_channel(channel_id text) TO alldots_data;
+
+CREATE FUNCTION public.route_graph_calendar_subscription(subscription_id text) RETURNS TABLE(tenant_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+  SELECT c.tenant_id FROM public.calendar_push_channels c
+  WHERE c.provider = 'graph' AND c.channel_id = route_graph_calendar_subscription.subscription_id
+$$;
+
+ALTER FUNCTION public.route_graph_calendar_subscription(subscription_id text) OWNER TO alldots_router;
+
+REVOKE ALL ON FUNCTION public.route_graph_calendar_subscription(subscription_id text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.route_graph_calendar_subscription(subscription_id text) TO alldots_data;
 
 CREATE FUNCTION public.route_graph_subscription(subscription_id text) RETURNS uuid
     LANGUAGE sql STABLE SECURITY DEFINER
@@ -218,10 +244,23 @@ CREATE FUNCTION public.route_graph_subscription(subscription_id text) RETURNS uu
   SELECT s.tenant_id FROM public.mail_account_sync_state s WHERE s.graph_subscription_id = subscription_id
 $$;
 
-ALTER FUNCTION public.route_graph_subscription(subscription_id text) OWNER TO semprec_router;
+ALTER FUNCTION public.route_graph_subscription(subscription_id text) OWNER TO alldots_router;
 
 REVOKE ALL ON FUNCTION public.route_graph_subscription(subscription_id text) FROM PUBLIC;
-GRANT ALL ON FUNCTION public.route_graph_subscription(subscription_id text) TO semprec_data;
+GRANT ALL ON FUNCTION public.route_graph_subscription(subscription_id text) TO alldots_data;
+
+CREATE FUNCTION public.route_mail_oauth_state(state_hash text) RETURNS TABLE(tenant_id uuid)
+    LANGUAGE sql STABLE SECURITY DEFINER
+    SET search_path TO 'pg_catalog', 'public', 'pg_temp'
+    AS $$
+  SELECT s.tenant_id FROM public.mail_oauth_states s
+  WHERE s.state_hash = route_mail_oauth_state.state_hash AND s.used_at IS NULL AND s.expires_at > now()
+$$;
+
+ALTER FUNCTION public.route_mail_oauth_state(state_hash text) OWNER TO alldots_router;
+
+REVOKE ALL ON FUNCTION public.route_mail_oauth_state(state_hash text) FROM PUBLIC;
+GRANT ALL ON FUNCTION public.route_mail_oauth_state(state_hash text) TO alldots_data;
 
 CREATE FUNCTION public.task_recurrence_due_for_rollover(mode text, rule jsonb, occurrence date, anchor date, today date) RETURNS boolean
     LANGUAGE plpgsql IMMUTABLE
@@ -356,7 +395,7 @@ END;
 $$;
 
 REVOKE ALL ON FUNCTION public.task_recurrence_due_for_rollover(mode text, rule jsonb, occurrence date, anchor date, today date) FROM PUBLIC;
-GRANT ALL ON FUNCTION public.task_recurrence_due_for_rollover(mode text, rule jsonb, occurrence date, anchor date, today date) TO semprec_data;
+GRANT ALL ON FUNCTION public.task_recurrence_due_for_rollover(mode text, rule jsonb, occurrence date, anchor date, today date) TO alldots_data;
 
 -- ====================================================================================================
 -- Text search
@@ -502,7 +541,7 @@ CREATE TABLE public.admin_audit_log (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-COMMENT ON TABLE public.admin_audit_log IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.admin_audit_log IS 'alldots:tenancy=global';
 
 CREATE SEQUENCE public.admin_audit_log_id_seq
     START WITH 1
@@ -520,9 +559,9 @@ ALTER TABLE ONLY public.admin_audit_log
 
 CREATE INDEX admin_audit_log_created_at_idx ON public.admin_audit_log USING btree (created_at);
 
-GRANT SELECT,INSERT ON TABLE public.admin_audit_log TO semprec_data;
+GRANT SELECT,INSERT ON TABLE public.admin_audit_log TO alldots_data;
 
-GRANT SELECT,USAGE ON SEQUENCE public.admin_audit_log_id_seq TO semprec_side;
+GRANT SELECT,USAGE ON SEQUENCE public.admin_audit_log_id_seq TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- agent_database_grants
@@ -538,12 +577,12 @@ CREATE TABLE public.agent_database_grants (
     CONSTRAINT agent_database_grants_access_check CHECK ((access = ANY (ARRAY['none'::text, 'read'::text, 'write'::text])))
 );
 
-COMMENT ON TABLE public.agent_database_grants IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.agent_database_grants IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.agent_database_grants
     ADD CONSTRAINT agent_database_grants_pkey PRIMARY KEY (tenant_id, project_item_id, database_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_database_grants TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_database_grants TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- agent_guidance_drift_findings
@@ -565,7 +604,7 @@ CREATE TABLE public.agent_guidance_drift_findings (
     CONSTRAINT agent_guidance_drift_findings_status_check CHECK ((status = ANY (ARRAY['active'::text, 'resolved'::text, 'dismissed'::text])))
 );
 
-COMMENT ON TABLE public.agent_guidance_drift_findings IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.agent_guidance_drift_findings IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.agent_guidance_drift_findings
     ADD CONSTRAINT agent_guidance_drift_findings_pkey PRIMARY KEY (id);
@@ -573,7 +612,7 @@ ALTER TABLE ONLY public.agent_guidance_drift_findings
 ALTER TABLE ONLY public.agent_guidance_drift_findings
     ADD CONSTRAINT agent_guidance_drift_findings_project_item_id_fingerprint_key UNIQUE (project_item_id, fingerprint);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_guidance_drift_findings TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_guidance_drift_findings TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- agent_run_events
@@ -589,7 +628,7 @@ CREATE TABLE public.agent_run_events (
     CONSTRAINT agent_run_events_kind_check CHECK ((kind = ANY (ARRAY['turn_start'::text, 'message'::text, 'tool_use'::text, 'tool_result'::text, 'turn_end'::text, 'run_status'::text, 'compaction'::text, 'user_message'::text])))
 );
 
-COMMENT ON TABLE public.agent_run_events IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.agent_run_events IS 'alldots:tenancy=tenant';
 
 CREATE SEQUENCE public.agent_run_events_id_seq
     START WITH 1
@@ -607,9 +646,9 @@ ALTER TABLE ONLY public.agent_run_events
 
 CREATE INDEX agent_run_events_run_idx ON public.agent_run_events USING btree (agent_run_id, id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_run_events TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_run_events TO alldots_side;
 
-GRANT SELECT,USAGE ON SEQUENCE public.agent_run_events_id_seq TO semprec_side;
+GRANT SELECT,USAGE ON SEQUENCE public.agent_run_events_id_seq TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- agent_run_mcp_credentials
@@ -625,7 +664,7 @@ CREATE TABLE public.agent_run_mcp_credentials (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.agent_run_mcp_credentials IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.agent_run_mcp_credentials IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.agent_run_mcp_credentials
     ADD CONSTRAINT agent_run_mcp_credentials_pkey PRIMARY KEY (id);
@@ -634,7 +673,7 @@ CREATE UNIQUE INDEX agent_run_mcp_credentials_agent_run_id_key ON public.agent_r
 
 CREATE UNIQUE INDEX agent_run_mcp_credentials_token_hash_key ON public.agent_run_mcp_credentials USING btree (token_hash);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_run_mcp_credentials TO semprec_data;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_run_mcp_credentials TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- agent_run_read_allowances
@@ -647,12 +686,12 @@ CREATE TABLE public.agent_run_read_allowances (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-COMMENT ON TABLE public.agent_run_read_allowances IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.agent_run_read_allowances IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.agent_run_read_allowances
     ADD CONSTRAINT agent_run_read_allowances_pkey PRIMARY KEY (tenant_id, agent_run_id, item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_run_read_allowances TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_run_read_allowances TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- agent_runs
@@ -688,7 +727,7 @@ CREATE TABLE public.agent_runs (
     CONSTRAINT agent_runs_unit_check CHECK ((unit = ANY (ARRAY['invocation'::text, 'session'::text])))
 );
 
-COMMENT ON TABLE public.agent_runs IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.agent_runs IS 'alldots:tenancy=tenant';
 
 CREATE SEQUENCE public.agent_runs_wake_seq_seq
     START WITH 1
@@ -722,14 +761,14 @@ CREATE UNIQUE INDEX agent_runs_tenant_retry_of_run_id_uq ON public.agent_runs US
 
 CREATE INDEX agent_runs_thread_wake_idx ON public.agent_runs USING btree (tenant_id, thread_id, wake_seq);
 
-GRANT SELECT ON TABLE public.agent_runs TO semprec_side;
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_runs TO semprec_data;
+GRANT SELECT ON TABLE public.agent_runs TO alldots_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.agent_runs TO alldots_data;
 
-GRANT SELECT(status) ON TABLE public.agent_runs TO semprec_router;
+GRANT SELECT(status) ON TABLE public.agent_runs TO alldots_router;
 
-GRANT SELECT(started_at) ON TABLE public.agent_runs TO semprec_router;
+GRANT SELECT(started_at) ON TABLE public.agent_runs TO alldots_router;
 
-GRANT SELECT,USAGE ON SEQUENCE public.agent_runs_wake_seq_seq TO semprec_side;
+GRANT SELECT,USAGE ON SEQUENCE public.agent_runs_wake_seq_seq TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- ai_gateway_calls
@@ -753,7 +792,7 @@ CREATE TABLE public.ai_gateway_calls (
     CONSTRAINT ai_gateway_calls_status_check CHECK ((status = ANY (ARRAY['reserved'::text, 'settled'::text, 'failed'::text])))
 );
 
-COMMENT ON TABLE public.ai_gateway_calls IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.ai_gateway_calls IS 'alldots:tenancy=tenant';
 
 CREATE SEQUENCE public.ai_gateway_calls_id_seq
     START WITH 1
@@ -777,15 +816,15 @@ CREATE INDEX ai_gateway_calls_tenant_at_idx ON public.ai_gateway_calls USING btr
 
 CREATE INDEX ai_gateway_calls_tenant_semp_message_idx ON public.ai_gateway_calls USING btree (tenant_id, semp_message_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.ai_gateway_calls TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.ai_gateway_calls TO alldots_side;
 
-GRANT SELECT(at) ON TABLE public.ai_gateway_calls TO semprec_router;
+GRANT SELECT(at) ON TABLE public.ai_gateway_calls TO alldots_router;
 
-GRANT SELECT(cost_usd) ON TABLE public.ai_gateway_calls TO semprec_router;
+GRANT SELECT(cost_usd) ON TABLE public.ai_gateway_calls TO alldots_router;
 
-GRANT SELECT(tenant_id) ON TABLE public.ai_gateway_calls TO semprec_router;
+GRANT SELECT(tenant_id) ON TABLE public.ai_gateway_calls TO alldots_router;
 
-GRANT SELECT,USAGE ON SEQUENCE public.ai_gateway_calls_id_seq TO semprec_side;
+GRANT SELECT,USAGE ON SEQUENCE public.ai_gateway_calls_id_seq TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- approval_requests
@@ -817,7 +856,7 @@ CREATE TABLE public.approval_requests (
     CONSTRAINT approval_requests_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text])))
 );
 
-COMMENT ON TABLE public.approval_requests IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.approval_requests IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.approval_requests
     ADD CONSTRAINT approval_requests_pkey PRIMARY KEY (id);
@@ -832,8 +871,8 @@ CREATE INDEX approval_requests_tenant_decided_idx ON public.approval_requests US
 
 CREATE INDEX approval_requests_tenant_status_requested_idx ON public.approval_requests USING btree (tenant_id, status, requested_at DESC);
 
-GRANT SELECT ON TABLE public.approval_requests TO semprec_side;
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.approval_requests TO semprec_data;
+GRANT SELECT ON TABLE public.approval_requests TO alldots_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.approval_requests TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- blobs
@@ -851,7 +890,7 @@ CREATE TABLE public.blobs (
     detected_mime_type text
 );
 
-COMMENT ON TABLE public.blobs IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.blobs IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.blobs
     ADD CONSTRAINT blobs_pkey PRIMARY KEY (id);
@@ -860,7 +899,69 @@ CREATE UNIQUE INDEX blobs_tenant_content_hash_uq ON public.blobs USING btree (te
 
 CREATE UNIQUE INDEX blobs_tenant_id_id_uq ON public.blobs USING btree (tenant_id, id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.blobs TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.blobs TO alldots_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- calendar_account_sync_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- The calendar side of an internet account (a Mailboxes item): the outcome of its last calendar sync pass and the
+-- pass whose batches are applying (`apply_pass_id`, cleared by its success). Written by the calendar sync and the
+-- manual sync route while Calendars is on; deleted when Calendars is switched off or the account is removed.
+CREATE TABLE public.calendar_account_sync_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    account_item_id uuid NOT NULL,
+    status text DEFAULT 'never'::text NOT NULL,
+    last_successful_sync_at timestamp with time zone,
+    failing_since timestamp with time zone,
+    last_error_code text,
+    initial_sync_completed_at timestamp with time zone,
+    manual_sync_requested_at timestamp with time zone,
+    apply_pass_id uuid,
+    CONSTRAINT calendar_account_sync_state_status_check CHECK ((status = ANY (ARRAY['ok'::text, 'error'::text, 'never'::text, 'needsReauthorization'::text, 'needsConsent'::text])))
+);
+
+COMMENT ON TABLE public.calendar_account_sync_state IS 'alldots:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_account_sync_state
+    ADD CONSTRAINT calendar_account_sync_state_pkey PRIMARY KEY (tenant_id, account_item_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_account_sync_state TO alldots_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- calendar_event_push_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- The desired state of an account calendar Event that a user's or agent's change must bring to its provider: the
+-- operation last recorded, a revision every recorded change raises, the push job's outcome, and the lease of the one
+-- push job running for the Event (`lease_id` until `lease_until`). Written in the transaction of the Event's write
+-- and by the `calendarEventPush` job.
+CREATE TABLE public.calendar_event_push_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    event_item_id uuid NOT NULL,
+    operation text NOT NULL,
+    desired_revision bigint DEFAULT 1 NOT NULL,
+    status text DEFAULT 'pending'::text NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    last_error_code text,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    lease_id uuid,
+    lease_until timestamp with time zone,
+    CONSTRAINT calendar_event_push_state_lease_check CHECK (((lease_id IS NULL) = (lease_until IS NULL))),
+    CONSTRAINT calendar_event_push_state_operation_check CHECK ((operation = ANY (ARRAY['create'::text, 'update'::text, 'delete'::text, 'move'::text]))),
+    CONSTRAINT calendar_event_push_state_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'sent'::text, 'conflict'::text, 'failed'::text]))),
+    CONSTRAINT calendar_event_push_state_attempts_check CHECK ((attempts >= 0)),
+    CONSTRAINT calendar_event_push_state_desired_revision_check CHECK ((desired_revision >= 1))
+);
+
+COMMENT ON TABLE public.calendar_event_push_state IS 'alldots:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_event_push_state
+    ADD CONSTRAINT calendar_event_push_state_pkey PRIMARY KEY (tenant_id, event_item_id);
+
+CREATE INDEX calendar_event_push_state_pending_idx ON public.calendar_event_push_state USING btree (tenant_id, event_item_id) WHERE (status = 'pending'::text);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_event_push_state TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- calendar_feed_state
@@ -877,12 +978,78 @@ CREATE TABLE public.calendar_feed_state (
     last_error_code text
 );
 
-COMMENT ON TABLE public.calendar_feed_state IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.calendar_feed_state IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_pkey PRIMARY KEY (tenant_id, calendar_item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_feed_state TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_feed_state TO alldots_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- calendar_push_channels
+-- ----------------------------------------------------------------------------------------------------
+
+-- The push channels of internet accounts' calendars at their provider: a Google Calendar `events.watch` channel per
+-- tracked calendar (`resource_id` is what stopping it takes), a Microsoft Graph subscription on `/me/events` per
+-- account. `secret` is the channel token or `clientState` the provider sends back with every notification, so the
+-- table is left out of the tenant export. Written by the calendar push maintenance and the account's removal.
+CREATE TABLE public.calendar_push_channels (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    provider text NOT NULL,
+    channel_id text NOT NULL,
+    account_item_id uuid NOT NULL,
+    calendar_item_id uuid,
+    resource_id text,
+    secret text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT calendar_push_channels_provider_check CHECK ((provider = ANY (ARRAY['google'::text, 'graph'::text]))),
+    CONSTRAINT calendar_push_channels_shape_check CHECK ((CASE WHEN (provider = 'google'::text) THEN ((calendar_item_id IS NOT NULL) AND (resource_id IS NOT NULL)) ELSE ((calendar_item_id IS NULL) AND (resource_id IS NULL)) END))
+);
+
+COMMENT ON TABLE public.calendar_push_channels IS 'alldots:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_pkey PRIMARY KEY (tenant_id, provider, channel_id);
+
+CREATE INDEX calendar_push_channels_account_idx ON public.calendar_push_channels USING btree (tenant_id, account_item_id);
+
+CREATE INDEX calendar_push_channels_calendar_idx ON public.calendar_push_channels USING btree (tenant_id, calendar_item_id);
+
+-- For route_google_calendar_channel and route_graph_calendar_subscription, which look a channel up before any tenant
+-- is known.
+CREATE INDEX calendar_push_channels_channel_idx ON public.calendar_push_channels USING btree (provider, channel_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_push_channels TO alldots_side;
+
+GRANT SELECT(tenant_id) ON TABLE public.calendar_push_channels TO alldots_router;
+
+GRANT SELECT(provider) ON TABLE public.calendar_push_channels TO alldots_router;
+
+GRANT SELECT(channel_id) ON TABLE public.calendar_push_channels TO alldots_router;
+
+-- ----------------------------------------------------------------------------------------------------
+-- calendar_remote_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- An account calendar's identity at its provider and its sync cursors; written by the calendar sync.
+CREATE TABLE public.calendar_remote_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    calendar_item_id uuid NOT NULL,
+    remote_id text NOT NULL,
+    remote_url text,
+    sync_token text,
+    ctag text,
+    last_synced_at timestamp with time zone,
+    last_error_code text
+);
+
+COMMENT ON TABLE public.calendar_remote_state IS 'alldots:tenancy=tenant';
+
+ALTER TABLE ONLY public.calendar_remote_state
+    ADD CONSTRAINT calendar_remote_state_pkey PRIMARY KEY (tenant_id, calendar_item_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.calendar_remote_state TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- credential_access_log
@@ -899,7 +1066,7 @@ CREATE TABLE public.credential_access_log (
     CONSTRAINT credential_access_log_actor_type_check CHECK ((actor_type = ANY (ARRAY['user'::text, 'sync_worker'::text, 'smtp_send'::text, 'mcp_connection_manager'::text, 'ai_agent'::text])))
 );
 
-COMMENT ON TABLE public.credential_access_log IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.credential_access_log IS 'alldots:tenancy=tenant';
 
 CREATE SEQUENCE public.credential_access_log_id_seq
     START WITH 1
@@ -917,9 +1084,9 @@ ALTER TABLE ONLY public.credential_access_log
 
 CREATE INDEX credential_access_log_item_id_idx ON public.credential_access_log USING btree (item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.credential_access_log TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.credential_access_log TO alldots_side;
 
-GRANT SELECT,USAGE ON SEQUENCE public.credential_access_log_id_seq TO semprec_side;
+GRANT SELECT,USAGE ON SEQUENCE public.credential_access_log_id_seq TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- databases
@@ -946,7 +1113,7 @@ CREATE TABLE public.databases (
     CONSTRAINT databases_icon_format CHECK (((icon IS NULL) OR (icon ~ '^[a-z][a-z0-9-]{0,63}$'::text)))
 );
 
-COMMENT ON TABLE public.databases IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.databases IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.databases
     ADD CONSTRAINT databases_key_unique UNIQUE (tenant_id, key);
@@ -964,8 +1131,8 @@ CREATE UNIQUE INDEX databases_tenant_id_id_uq ON public.databases USING btree (t
 
 CREATE UNIQUE INDEX databases_tenant_system_module_uq ON public.databases USING btree (tenant_id, owner_module_id) WHERE system;
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.databases TO semprec_data;
-GRANT SELECT ON TABLE public.databases TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.databases TO alldots_data;
+GRANT SELECT ON TABLE public.databases TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- doc_history_updates
@@ -982,7 +1149,7 @@ CREATE TABLE public.doc_history_updates (
     CONSTRAINT doc_history_updates_created_by_check CHECK ((created_by = ANY (ARRAY['user'::text, 'ai_agent'::text, 'system'::text])))
 );
 
-COMMENT ON TABLE public.doc_history_updates IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.doc_history_updates IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.doc_history_updates
     ADD CONSTRAINT doc_history_updates_pkey PRIMARY KEY (update_id);
@@ -991,7 +1158,7 @@ CREATE INDEX doc_history_updates_doc_id_created_at_update_id_idx ON public.doc_h
 
 CREATE INDEX doc_history_updates_expires_at_idx ON public.doc_history_updates USING btree (expires_at);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.doc_history_updates TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.doc_history_updates TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- doc_snapshot_history
@@ -1010,7 +1177,7 @@ CREATE TABLE public.doc_snapshot_history (
     CONSTRAINT doc_snapshot_history_created_by_check CHECK ((created_by = ANY (ARRAY['user'::text, 'ai_agent'::text, 'system'::text])))
 );
 
-COMMENT ON TABLE public.doc_snapshot_history IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.doc_snapshot_history IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.doc_snapshot_history
     ADD CONSTRAINT doc_snapshot_history_pkey PRIMARY KEY (id);
@@ -1021,7 +1188,7 @@ CREATE INDEX doc_snapshot_history_doc_id_taken_at_idx ON public.doc_snapshot_his
 
 CREATE INDEX doc_snapshot_history_expires_at_idx ON public.doc_snapshot_history USING btree (expires_at);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.doc_snapshot_history TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.doc_snapshot_history TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- doc_snapshots
@@ -1035,12 +1202,12 @@ CREATE TABLE public.doc_snapshots (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.doc_snapshots IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.doc_snapshots IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.doc_snapshots
     ADD CONSTRAINT doc_snapshots_pkey PRIMARY KEY (doc_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.doc_snapshots TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.doc_snapshots TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- doc_updates
@@ -1056,7 +1223,7 @@ CREATE TABLE public.doc_updates (
     CONSTRAINT doc_updates_created_by_check CHECK ((created_by = ANY (ARRAY['user'::text, 'ai_agent'::text, 'system'::text])))
 );
 
-COMMENT ON TABLE public.doc_updates IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.doc_updates IS 'alldots:tenancy=tenant';
 
 CREATE SEQUENCE public.doc_updates_id_seq
     START WITH 1
@@ -1074,9 +1241,9 @@ ALTER TABLE ONLY public.doc_updates
 
 CREATE INDEX doc_updates_doc_id_idx ON public.doc_updates USING btree (doc_id, id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.doc_updates TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.doc_updates TO alldots_side;
 
-GRANT SELECT,USAGE ON SEQUENCE public.doc_updates_id_seq TO semprec_side;
+GRANT SELECT,USAGE ON SEQUENCE public.doc_updates_id_seq TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- docs
@@ -1095,7 +1262,7 @@ CREATE TABLE public.docs (
     CONSTRAINT docs_last_edited_by_check CHECK ((last_edited_by = ANY (ARRAY['user'::text, 'ai_agent'::text, 'system'::text])))
 );
 
-COMMENT ON TABLE public.docs IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.docs IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.docs
     ADD CONSTRAINT docs_pkey PRIMARY KEY (id);
@@ -1104,7 +1271,33 @@ CREATE UNIQUE INDEX docs_tenant_id_id_uq ON public.docs USING btree (tenant_id, 
 
 CREATE UNIQUE INDEX docs_tenant_item_id_uq ON public.docs USING btree (tenant_id, item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.docs TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.docs TO alldots_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- event_remote_state
+-- ----------------------------------------------------------------------------------------------------
+
+-- An account calendar Event's identity at its provider and `base_snapshot`, the field values of the last sync (the
+-- base of the three-way merge); written by the calendar sync.
+CREATE TABLE public.event_remote_state (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    event_item_id uuid NOT NULL,
+    calendar_item_id uuid NOT NULL,
+    remote_id text NOT NULL,
+    remote_href text,
+    etag text,
+    base_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT event_remote_state_base_snapshot_check CHECK ((jsonb_typeof(base_snapshot) = 'object'::text))
+);
+
+COMMENT ON TABLE public.event_remote_state IS 'alldots:tenancy=tenant';
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_pkey PRIMARY KEY (tenant_id, event_item_id);
+
+CREATE UNIQUE INDEX event_remote_state_tenant_calendar_remote_id_uq ON public.event_remote_state USING btree (tenant_id, calendar_item_id, remote_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.event_remote_state TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- external_credentials
@@ -1123,12 +1316,12 @@ CREATE TABLE public.external_credentials (
     CONSTRAINT external_credentials_scheme_tenant_only CHECK ((scheme = 'tenant'::text))
 );
 
-COMMENT ON TABLE public.external_credentials IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.external_credentials IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.external_credentials
     ADD CONSTRAINT external_credentials_pkey PRIMARY KEY (item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.external_credentials TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.external_credentials TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- heartbeat_occurrences
@@ -1147,7 +1340,7 @@ CREATE TABLE public.heartbeat_occurrences (
     CONSTRAINT heartbeat_occurrences_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'succeeded'::text, 'failed'::text, 'cancelled'::text])))
 );
 
-COMMENT ON TABLE public.heartbeat_occurrences IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.heartbeat_occurrences IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.heartbeat_occurrences
     ADD CONSTRAINT heartbeat_occurrences_heartbeat_id_scheduled_for_key UNIQUE (heartbeat_id, scheduled_for);
@@ -1159,7 +1352,7 @@ CREATE INDEX heartbeat_occurrences_heartbeat_idx ON public.heartbeat_occurrences
 
 CREATE UNIQUE INDEX heartbeat_occurrences_tenant_id_id_uq ON public.heartbeat_occurrences USING btree (tenant_id, id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.heartbeat_occurrences TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.heartbeat_occurrences TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- idempotency_keys
@@ -1173,15 +1366,15 @@ CREATE TABLE public.idempotency_keys (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.idempotency_keys IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.idempotency_keys IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.idempotency_keys
     ADD CONSTRAINT idempotency_keys_pkey PRIMARY KEY (tenant_id, key);
 
 CREATE INDEX idempotency_keys_tenant_item_idx ON public.idempotency_keys USING btree (tenant_id, item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.idempotency_keys TO semprec_data;
-GRANT SELECT ON TABLE public.idempotency_keys TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.idempotency_keys TO alldots_data;
+GRANT SELECT ON TABLE public.idempotency_keys TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- idempotent_responses
@@ -1199,14 +1392,14 @@ CREATE TABLE public.idempotent_responses (
     expires_at timestamp with time zone NOT NULL
 );
 
-COMMENT ON TABLE public.idempotent_responses IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.idempotent_responses IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.idempotent_responses
     ADD CONSTRAINT idempotent_responses_pkey PRIMARY KEY (tenant_id, user_id, key, route);
 
 CREATE INDEX idempotent_responses_expires_at_idx ON public.idempotent_responses USING btree (expires_at);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.idempotent_responses TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.idempotent_responses TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- inbox_attachments
@@ -1227,7 +1420,7 @@ CREATE TABLE public.inbox_attachments (
     CONSTRAINT inbox_attachments_source_check CHECK ((source = ANY (ARRAY['camera'::text, 'scan'::text, 'photoLibrary'::text, 'files'::text, 'share'::text])))
 );
 
-COMMENT ON TABLE public.inbox_attachments IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.inbox_attachments IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.inbox_attachments
     ADD CONSTRAINT inbox_attachments_pkey PRIMARY KEY (attachment_id);
@@ -1240,7 +1433,7 @@ CREATE INDEX inbox_attachments_tenant_reduced_blob_idx ON public.inbox_attachmen
 
 CREATE INDEX inbox_attachments_tenant_thumbnail_blob_idx ON public.inbox_attachments USING btree (tenant_id, thumbnail_blob_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.inbox_attachments TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.inbox_attachments TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- invites
@@ -1257,7 +1450,7 @@ CREATE TABLE public.invites (
     revoked_at timestamp with time zone
 );
 
-COMMENT ON TABLE public.invites IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.invites IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.invites
     ADD CONSTRAINT invites_pkey PRIMARY KEY (id);
@@ -1266,7 +1459,7 @@ CREATE INDEX invites_email_idx ON public.invites USING btree (email);
 
 CREATE UNIQUE INDEX invites_token_hash_key ON public.invites USING btree (token_hash);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.invites TO semprec_data;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.invites TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- item_automation
@@ -1285,14 +1478,14 @@ CREATE TABLE public.item_automation (
     CONSTRAINT item_automation_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'done'::text, 'error'::text, 'locked'::text, 'notFound'::text])))
 );
 
-COMMENT ON TABLE public.item_automation IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.item_automation IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.item_automation
     ADD CONSTRAINT item_automation_pkey PRIMARY KEY (item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.item_automation TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.item_automation TO alldots_side;
 
-GRANT SELECT(status) ON TABLE public.item_automation TO semprec_router;
+GRANT SELECT(status) ON TABLE public.item_automation TO alldots_router;
 
 -- ----------------------------------------------------------------------------------------------------
 -- item_origins
@@ -1312,7 +1505,7 @@ CREATE TABLE public.item_origins (
     CONSTRAINT item_origins_capture_time_basis_check CHECK ((capture_time_basis = ANY (ARRAY['inboxCapture'::text, 'unknown'::text])))
 );
 
-COMMENT ON TABLE public.item_origins IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.item_origins IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.item_origins
     ADD CONSTRAINT item_origins_pkey PRIMARY KEY (tenant_id, item_id);
@@ -1323,7 +1516,7 @@ CREATE INDEX item_origins_tenant_inbox_item_idx ON public.item_origins USING btr
 
 CREATE INDEX item_origins_tenant_source_transcript_idx ON public.item_origins USING btree (tenant_id, source_transcript_id) WHERE (source_transcript_id IS NOT NULL);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.item_origins TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.item_origins TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- item_relations
@@ -1338,7 +1531,7 @@ CREATE TABLE public.item_relations (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.item_relations IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.item_relations IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.item_relations
     ADD CONSTRAINT item_relations_pkey PRIMARY KEY (id);
@@ -1352,8 +1545,8 @@ CREATE INDEX item_relations_item_b_idx ON public.item_relations USING btree (ite
 
 CREATE TRIGGER item_relations_cardinality_trigger BEFORE INSERT ON public.item_relations FOR EACH ROW EXECUTE FUNCTION public.enforce_relation_cardinality();
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.item_relations TO semprec_data;
-GRANT SELECT ON TABLE public.item_relations TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.item_relations TO alldots_data;
+GRANT SELECT ON TABLE public.item_relations TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- item_search_index
@@ -1369,7 +1562,7 @@ CREATE TABLE public.item_search_index (
     page_text text
 );
 
-COMMENT ON TABLE public.item_search_index IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.item_search_index IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.item_search_index
     ADD CONSTRAINT item_search_index_pkey PRIMARY KEY (item_id);
@@ -1378,7 +1571,7 @@ CREATE INDEX item_search_index_db_id ON public.item_search_index USING btree (da
 
 CREATE INDEX item_search_index_gin ON public.item_search_index USING gin (search_vector);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.item_search_index TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.item_search_index TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- items
@@ -1396,7 +1589,7 @@ CREATE TABLE public.items (
     version bigint DEFAULT 1 NOT NULL
 );
 
-COMMENT ON TABLE public.items IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.items IS 'alldots:tenancy=tenant';
 
 COMMENT ON COLUMN public.items.version IS 'Optimistic-concurrency token (ifVersion): incremented by every write that advances updated_at.';
 
@@ -1416,8 +1609,8 @@ CREATE INDEX items_deleted_at_idx ON public.items USING btree (tenant_id, delete
 
 CREATE INDEX items_props_gin ON public.items USING gin (properties jsonb_path_ops);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.items TO semprec_data;
-GRANT SELECT ON TABLE public.items TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.items TO alldots_data;
+GRANT SELECT ON TABLE public.items TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- library_cover_candidates
@@ -1435,12 +1628,12 @@ CREATE TABLE public.library_cover_candidates (
     CONSTRAINT library_cover_candidates_idx_check CHECK (((idx >= 0) AND (idx <= 2)))
 );
 
-COMMENT ON TABLE public.library_cover_candidates IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.library_cover_candidates IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.library_cover_candidates
     ADD CONSTRAINT library_cover_candidates_pkey PRIMARY KEY (item_id, idx);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.library_cover_candidates TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.library_cover_candidates TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- login_attempts
@@ -1454,7 +1647,7 @@ CREATE TABLE public.login_attempts (
     attempted_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-COMMENT ON TABLE public.login_attempts IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.login_attempts IS 'alldots:tenancy=global';
 
 CREATE SEQUENCE public.login_attempts_id_seq
     START WITH 1
@@ -1472,9 +1665,9 @@ ALTER TABLE ONLY public.login_attempts
 
 CREATE INDEX login_attempts_email_ip_idx ON public.login_attempts USING btree (email, ip, attempted_at DESC);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.login_attempts TO semprec_data;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.login_attempts TO alldots_data;
 
-GRANT SELECT,USAGE ON SEQUENCE public.login_attempts_id_seq TO semprec_side;
+GRANT SELECT,USAGE ON SEQUENCE public.login_attempts_id_seq TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_account_server_settings
@@ -1490,8 +1683,10 @@ CREATE TABLE public.mail_account_server_settings (
     smtp_port integer,
     smtp_security text,
     username text NOT NULL,
+    caldav_url text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT mail_account_server_settings_caldav_url_length CHECK ((char_length(caldav_url) <= 2048)),
     CONSTRAINT mail_account_server_settings_imap_all_or_none CHECK ((((imap_host IS NULL) AND (imap_port IS NULL) AND (imap_security IS NULL)) OR ((imap_host IS NOT NULL) AND (imap_port IS NOT NULL) AND (imap_security IS NOT NULL)))),
     CONSTRAINT mail_account_server_settings_imap_port_check CHECK ((imap_port = ANY (ARRAY[993, 143, 465, 587]))),
     CONSTRAINT mail_account_server_settings_imap_security_check CHECK ((imap_security = ANY (ARRAY['tls'::text, 'starttls'::text]))),
@@ -1500,14 +1695,14 @@ CREATE TABLE public.mail_account_server_settings (
     CONSTRAINT mail_account_server_settings_smtp_security_check CHECK ((smtp_security = ANY (ARRAY['tls'::text, 'starttls'::text])))
 );
 
-COMMENT ON TABLE public.mail_account_server_settings IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_account_server_settings IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.mail_account_server_settings
     ADD CONSTRAINT mail_account_server_settings_pkey PRIMARY KEY (mailbox_item_id);
 
 CREATE INDEX mail_account_server_settings_tenant_idx ON public.mail_account_server_settings USING btree (tenant_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_account_server_settings TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_account_server_settings TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_account_sync_state
@@ -1532,11 +1727,29 @@ CREATE TABLE public.mail_account_sync_state (
     initial_sync_completed_at timestamp with time zone,
     last_failure_kind text,
     provider_account_address text,
+    sync_paused_at timestamp with time zone,
+    granted_scopes text[],
+    pass_lease_token uuid,
+    pass_lease_expires_at timestamp with time zone,
+    pass_rerun_requested boolean DEFAULT false NOT NULL,
+    connected_at timestamp with time zone,
+    gmail_listing_phase text,
+    gmail_listing_page_token text,
+    graph_delta_next_link text,
+    CONSTRAINT mail_account_sync_state_gmail_listing_phase_check CHECK ((gmail_listing_phase = ANY (ARRAY['full'::text, 'index'::text]))),
     CONSTRAINT mail_account_sync_state_last_failure_kind_check CHECK ((last_failure_kind = ANY (ARRAY['reauthorization'::text, 'connectionLimit'::text, 'other'::text]))),
     CONSTRAINT mail_account_sync_state_sync_mode_check CHECK ((sync_mode = ANY (ARRAY['imap'::text, 'gmail_api'::text, 'graph_api'::text])))
 );
 
-COMMENT ON TABLE public.mail_account_sync_state IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_account_sync_state IS 'alldots:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_account_sync_state.connected_at IS 'Anchor of the account''s mail: set by the first sync pass that finds it NULL, cleared when Mail is switched off.';
+
+COMMENT ON COLUMN public.mail_account_sync_state.gmail_listing_phase IS 'Gmail full listing in progress: ''full'' lists the messages inside the full-content window, ''index'' the older ones; NULL when no listing runs.';
+
+COMMENT ON COLUMN public.mail_account_sync_state.gmail_listing_page_token IS 'The messages.list page token the Gmail listing resumes at; NULL at the start of its phase.';
+
+COMMENT ON COLUMN public.mail_account_sync_state.graph_delta_next_link IS 'The nextLink of the Graph delta round in progress; promoted to graph_delta_link only when the round''s deltaLink arrives.';
 
 ALTER TABLE ONLY public.mail_account_sync_state
     ADD CONSTRAINT mail_account_sync_state_pkey PRIMARY KEY (item_id);
@@ -1547,17 +1760,17 @@ CREATE UNIQUE INDEX mail_account_sync_state_graph_subscription_id_uq ON public.m
 
 CREATE UNIQUE INDEX mail_account_sync_state_tenant_provider_address_uq ON public.mail_account_sync_state USING btree (tenant_id, provider_account_address) WHERE (provider_account_address IS NOT NULL);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_account_sync_state TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_account_sync_state TO alldots_side;
 
-GRANT SELECT(item_id) ON TABLE public.mail_account_sync_state TO semprec_router;
+GRANT SELECT(item_id) ON TABLE public.mail_account_sync_state TO alldots_router;
 
-GRANT SELECT(sync_mode) ON TABLE public.mail_account_sync_state TO semprec_router;
+GRANT SELECT(sync_mode) ON TABLE public.mail_account_sync_state TO alldots_router;
 
-GRANT SELECT(graph_subscription_id) ON TABLE public.mail_account_sync_state TO semprec_router;
+GRANT SELECT(graph_subscription_id) ON TABLE public.mail_account_sync_state TO alldots_router;
 
-GRANT SELECT(tenant_id) ON TABLE public.mail_account_sync_state TO semprec_router;
+GRANT SELECT(tenant_id) ON TABLE public.mail_account_sync_state TO alldots_router;
 
-GRANT SELECT(gmail_watch_email_address) ON TABLE public.mail_account_sync_state TO semprec_router;
+GRANT SELECT(gmail_watch_email_address) ON TABLE public.mail_account_sync_state TO alldots_router;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_attachments
@@ -1566,24 +1779,32 @@ GRANT SELECT(gmail_watch_email_address) ON TABLE public.mail_account_sync_state 
 CREATE TABLE public.mail_attachments (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
     message_item_id uuid NOT NULL,
-    blob_id uuid NOT NULL,
+    blob_id uuid,
     filename text NOT NULL,
     content_type text NOT NULL,
     content_id text,
     disposition text NOT NULL,
     byte_size bigint NOT NULL,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
-    CONSTRAINT mail_attachments_disposition_check CHECK ((disposition = ANY (ARRAY['attachment'::text, 'inline'::text])))
+    provider_part text,
+    CONSTRAINT mail_attachments_disposition_check CHECK ((disposition = ANY (ARRAY['attachment'::text, 'inline'::text]))),
+    CONSTRAINT mail_attachments_stored_or_located_check CHECK (((blob_id IS NOT NULL) OR (provider_part IS NOT NULL)))
 );
 
-COMMENT ON TABLE public.mail_attachments IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_attachments IS 'alldots:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_attachments.blob_id IS 'The stored bytes; NULL for an attachment of an index message, recorded by its metadata alone.';
+
+COMMENT ON COLUMN public.mail_attachments.provider_part IS 'Where the provider holds the bytes (the IMAP body part id); NULL where the adapter records none.';
+
+COMMENT ON COLUMN public.mail_attachments.byte_size IS 'Bytes stored; for an attachment without stored bytes, the size the provider''s body structure gives.';
 
 ALTER TABLE ONLY public.mail_attachments
     ADD CONSTRAINT mail_attachments_pkey PRIMARY KEY (id);
 
 CREATE INDEX mail_attachments_message_item_id_idx ON public.mail_attachments USING btree (message_item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_attachments TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_attachments TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_drafts
@@ -1617,7 +1838,7 @@ CREATE TABLE public.mail_drafts (
     CONSTRAINT mail_drafts_to_recipients_check CHECK ((jsonb_typeof(to_recipients) = 'array'::text))
 );
 
-COMMENT ON TABLE public.mail_drafts IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_drafts IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.mail_drafts
     ADD CONSTRAINT mail_drafts_pkey PRIMARY KEY (email_item_id);
@@ -1628,7 +1849,7 @@ CREATE INDEX mail_drafts_tenant_mailbox_idx ON public.mail_drafts USING btree (t
 
 CREATE INDEX mail_drafts_tenant_source_email_idx ON public.mail_drafts USING btree (tenant_id, source_email_item_id) WHERE (source_email_item_id IS NOT NULL);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_drafts TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_drafts TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_folder_sync_state
@@ -1639,17 +1860,62 @@ CREATE TABLE public.mail_folder_sync_state (
     uidvalidity bigint,
     uidnext bigint,
     highestmodseq bigint,
+    message_count bigint,
     last_full_reconcile_at timestamp with time zone,
     last_error text,
-    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    live_from_uid bigint,
+    backfill_below_uid bigint,
+    backfill_index_only boolean DEFAULT false NOT NULL,
+    client_backfill_lease_token uuid,
+    client_backfill_lease_until timestamp with time zone,
+    CONSTRAINT mail_folder_sync_state_client_lease_check CHECK (((client_backfill_lease_token IS NULL) = (client_backfill_lease_until IS NULL)))
 );
 
-COMMENT ON TABLE public.mail_folder_sync_state IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_folder_sync_state IS 'alldots:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.live_from_uid IS 'The folder''s UIDNEXT when its state was first established or reset after a UIDVALIDITY change; a message with a UID at or above it arrived live.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.backfill_below_uid IS 'Every UID from 1 up to, not including, this value still awaits the backfill, which runs from it downwards. Set to live_from_uid when the state is established; NULL with live_from_uid set means the backfill is done, NULL with live_from_uid NULL that the state is not established yet.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.backfill_index_only IS 'The descending backfill reached a message older than the full-content window: what is left below backfill_below_uid is history stored as an index, which a native client may upload. Cleared with the state on a UIDVALIDITY change.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.client_backfill_lease_token IS 'The native client lease on the folder''s backfill (history upload); while client_backfill_lease_until is in the future the server''s backfill skips the folder. Set together with client_backfill_lease_until.';
+
+COMMENT ON COLUMN public.mail_folder_sync_state.client_backfill_lease_until IS 'When the client backfill lease ends unless renewed; NULL when no client holds one.';
 
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_pkey PRIMARY KEY (item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_folder_sync_state TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_folder_sync_state TO alldots_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- mail_message_content_cache
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_message_content_cache (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    item_id uuid NOT NULL,
+    body_html text,
+    body_text text,
+    fetched_at timestamp with time zone DEFAULT now() NOT NULL,
+    expires_at timestamp with time zone NOT NULL
+);
+
+COMMENT ON TABLE public.mail_message_content_cache IS 'alldots:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_message_content_cache.body_html IS 'The HTML part of an index message as its provider returned it on demand, unsanitized like Emails.body; NULL when the message has none.';
+
+COMMENT ON COLUMN public.mail_message_content_cache.body_text IS 'The text part of an index message as its provider returned it on demand; NULL when the message has none.';
+
+COMMENT ON COLUMN public.mail_message_content_cache.expires_at IS 'fetched_at plus seven days; readers ignore the row from then on and the daily sweep deletes it.';
+
+ALTER TABLE ONLY public.mail_message_content_cache
+    ADD CONSTRAINT mail_message_content_cache_pkey PRIMARY KEY (tenant_id, item_id);
+
+CREATE INDEX mail_message_content_cache_tenant_expires_idx ON public.mail_message_content_cache USING btree (tenant_id, expires_at);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_message_content_cache TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_message_flag_sync_state
@@ -1665,14 +1931,14 @@ CREATE TABLE public.mail_message_flag_sync_state (
     CONSTRAINT mail_message_flag_sync_state_property_key_check CHECK ((property_key = ANY (ARRAY['read'::text, 'flagged'::text])))
 );
 
-COMMENT ON TABLE public.mail_message_flag_sync_state IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_message_flag_sync_state IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.mail_message_flag_sync_state
     ADD CONSTRAINT mail_message_flag_sync_state_pkey PRIMARY KEY (message_item_id, property_key);
 
 CREATE INDEX mail_message_flag_sync_state_pending_idx ON public.mail_message_flag_sync_state USING btree (message_item_id) WHERE (current_state IS DISTINCT FROM desired_state);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_message_flag_sync_state TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_message_flag_sync_state TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_message_meta
@@ -1690,21 +1956,30 @@ CREATE TABLE public.mail_message_meta (
     delivered_to_address text,
     message_kind text DEFAULT 'message'::text NOT NULL,
     dsn_original_message_id text,
-    migration_status text DEFAULT 'stable'::text NOT NULL,
     mailbox_item_id uuid,
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     preview_text text,
     ingested_at timestamp with time zone,
     is_bulk boolean DEFAULT false NOT NULL,
-    CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text]))),
-    CONSTRAINT mail_message_meta_migration_status_check CHECK ((migration_status = ANY (ARRAY['stable'::text, 'partial'::text, 'done'::text])))
+    arrival text NOT NULL,
+    content_state text NOT NULL,
+    folder_copy_removed_at timestamp with time zone,
+    CONSTRAINT mail_message_meta_arrival_check CHECK ((arrival = ANY (ARRAY['live'::text, 'backfill'::text]))),
+    CONSTRAINT mail_message_meta_content_state_check CHECK ((content_state = ANY (ARRAY['full'::text, 'index'::text]))),
+    CONSTRAINT mail_message_meta_message_kind_check CHECK ((message_kind = ANY (ARRAY['message'::text, 'dsn'::text])))
 );
 
-COMMENT ON TABLE public.mail_message_meta IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_message_meta IS 'alldots:tenancy=tenant';
 
 COMMENT ON COLUMN public.mail_message_meta.preview_text IS 'Plain-text preview of the message body, whitespace collapsed, at most 200 characters.';
 
-COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Semprec (ingest or send claim); backfilled rows use items.updated_at.';
+COMMENT ON COLUMN public.mail_message_meta.ingested_at IS 'When the message entered Alldots (ingest or send claim).';
+
+COMMENT ON COLUMN public.mail_message_meta.arrival IS 'live = new mail after the account connected, backfill = imported history; decided once at ingest.';
+
+COMMENT ON COLUMN public.mail_message_meta.content_state IS 'full = body and attachment bytes stored, index = envelope, preview and attachment metadata only; decided once at ingest.';
+
+COMMENT ON COLUMN public.mail_message_meta.folder_copy_removed_at IS 'When an IMAP pass last removed one of the message''s folder edges; set until a pass''s final transaction decides whether the Email keeps a folder copy.';
 
 ALTER TABLE ONLY public.mail_message_meta
     ADD CONSTRAINT mail_message_meta_pkey PRIMARY KEY (item_id);
@@ -1712,6 +1987,8 @@ ALTER TABLE ONLY public.mail_message_meta
 CREATE INDEX mail_message_meta_dsn_original_message_id_idx ON public.mail_message_meta USING btree (dsn_original_message_id) WHERE (dsn_original_message_id IS NOT NULL);
 
 CREATE INDEX mail_message_meta_envelope_gin_idx ON public.mail_message_meta USING gin (envelope jsonb_path_ops);
+
+CREATE INDEX mail_message_meta_folder_copy_removed_idx ON public.mail_message_meta USING btree (tenant_id, mailbox_item_id) WHERE (folder_copy_removed_at IS NOT NULL);
 
 CREATE INDEX mail_message_meta_in_reply_to_idx ON public.mail_message_meta USING btree (in_reply_to) WHERE (in_reply_to IS NOT NULL);
 
@@ -1725,7 +2002,7 @@ CREATE INDEX mail_message_meta_tenant_thread_idx ON public.mail_message_meta USI
 
 CREATE INDEX mail_message_meta_thread_id_idx ON public.mail_message_meta USING btree (thread_id) WHERE (thread_id IS NOT NULL);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_message_meta TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_message_meta TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_message_move_sync_state
@@ -1738,6 +2015,7 @@ CREATE TABLE public.mail_message_move_sync_state (
     desired_purpose text NOT NULL,
     source_evidence jsonb NOT NULL,
     current_purpose text,
+    restore_purpose text,
     desired_revision bigint DEFAULT 1 NOT NULL,
     operation_token uuid,
     captured_revision bigint,
@@ -1757,6 +2035,7 @@ CREATE TABLE public.mail_message_move_sync_state (
     CONSTRAINT mail_message_move_sync_state_current_purpose_check CHECK ((current_purpose = ANY (ARRAY['archive'::text, 'trash'::text, 'inbox'::text, 'sent'::text]))),
     CONSTRAINT mail_message_move_sync_state_desired_purpose_check CHECK ((desired_purpose = ANY (ARRAY['archive'::text, 'trash'::text, 'inbox'::text, 'sent'::text]))),
     CONSTRAINT mail_message_move_sync_state_desired_revision_check CHECK ((desired_revision > 0)),
+    CONSTRAINT mail_message_move_sync_state_restore_purpose_check CHECK ((restore_purpose = ANY (ARRAY['inbox'::text, 'sent'::text]))),
     CONSTRAINT mail_message_move_sync_state_failure_reason_check CHECK ((failure_reason = ANY (ARRAY['messageMissing'::text, 'providerRejected'::text, 'unsupportedCapability'::text]))),
     CONSTRAINT mail_message_move_sync_state_operation_evidence_check CHECK (((operation_evidence IS NULL) OR ((jsonb_typeof(operation_evidence) = 'object'::text) AND (octet_length((operation_evidence)::text) <= 8192)))),
     CONSTRAINT mail_message_move_sync_state_operation_phase_check CHECK ((operation_phase = ANY (ARRAY['in_flight'::text, 'between_steps'::text, 'uncertain'::text]))),
@@ -1765,7 +2044,7 @@ CREATE TABLE public.mail_message_move_sync_state (
     CONSTRAINT mail_message_move_sync_state_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'done'::text, 'failed'::text])))
 );
 
-COMMENT ON TABLE public.mail_message_move_sync_state IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_message_move_sync_state IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.mail_message_move_sync_state
     ADD CONSTRAINT mail_message_move_sync_state_pkey PRIMARY KEY (tenant_id, message_item_id);
@@ -1775,7 +2054,7 @@ ALTER TABLE ONLY public.mail_message_move_sync_state
 
 CREATE INDEX mail_message_move_sync_pending_idx ON public.mail_message_move_sync_state USING btree (tenant_id, mailbox_item_id, status);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_message_move_sync_state TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_message_move_sync_state TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_oauth_states
@@ -1793,10 +2072,14 @@ CREATE TABLE public.mail_oauth_states (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone DEFAULT (now() + '00:10:00'::interval) NOT NULL,
     used_at timestamp with time zone,
-    CONSTRAINT mail_oauth_states_provider_check CHECK ((provider = ANY (ARRAY['gmail'::text, 'outlook'::text])))
+    services text[] NOT NULL,
+    redirect_target text,
+    CONSTRAINT mail_oauth_states_provider_check CHECK ((provider = ANY (ARRAY['gmail'::text, 'outlook'::text]))),
+    CONSTRAINT mail_oauth_states_services_check CHECK (((cardinality(services) > 0) AND (services <@ ARRAY['mail'::text, 'calendars'::text]))),
+    CONSTRAINT mail_oauth_states_redirect_target_check CHECK ((redirect_target = 'app'::text))
 );
 
-COMMENT ON TABLE public.mail_oauth_states IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_oauth_states IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.mail_oauth_states
     ADD CONSTRAINT mail_oauth_states_pkey PRIMARY KEY (id);
@@ -1809,7 +2092,43 @@ CREATE INDEX mail_oauth_states_tenant_mailbox_idx ON public.mail_oauth_states US
 
 CREATE INDEX mail_oauth_states_user_idx ON public.mail_oauth_states USING btree (user_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_oauth_states TO semprec_side;
+-- For route_mail_oauth_state, which looks a state up before any tenant is known.
+CREATE INDEX mail_oauth_states_state_hash_idx ON public.mail_oauth_states USING btree (state_hash);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_oauth_states TO alldots_side;
+
+GRANT SELECT(tenant_id) ON TABLE public.mail_oauth_states TO alldots_router;
+
+GRANT SELECT(state_hash) ON TABLE public.mail_oauth_states TO alldots_router;
+
+GRANT SELECT(used_at) ON TABLE public.mail_oauth_states TO alldots_router;
+
+GRANT SELECT(expires_at) ON TABLE public.mail_oauth_states TO alldots_router;
+
+-- ----------------------------------------------------------------------------------------------------
+-- mail_sent_copies
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_sent_copies (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    mailbox_item_id uuid NOT NULL,
+    message_id text NOT NULL,
+    raw bytea NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    failed_at timestamp with time zone,
+    CONSTRAINT mail_sent_copies_message_id_check CHECK (((length(message_id) >= 1) AND (length(message_id) <= 998)))
+);
+
+COMMENT ON TABLE public.mail_sent_copies IS 'alldots:tenancy=tenant';
+
+ALTER TABLE ONLY public.mail_sent_copies
+    ADD CONSTRAINT mail_sent_copies_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.mail_sent_copies
+    ADD CONSTRAINT mail_sent_copies_tenant_id_mailbox_item_id_message_id_key UNIQUE (tenant_id, mailbox_item_id, message_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_sent_copies TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_thread_aliases
@@ -1823,14 +2142,62 @@ CREATE TABLE public.mail_thread_aliases (
     CONSTRAINT mail_thread_aliases_not_self CHECK ((from_thread_id <> to_thread_id))
 );
 
-COMMENT ON TABLE public.mail_thread_aliases IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_thread_aliases IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.mail_thread_aliases
     ADD CONSTRAINT mail_thread_aliases_pkey PRIMARY KEY (tenant_id, from_thread_id);
 
 CREATE INDEX mail_thread_aliases_to_thread_idx ON public.mail_thread_aliases USING btree (tenant_id, to_thread_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_aliases TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_aliases TO alldots_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- mail_thread_change_counters
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_thread_change_counters (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    epoch uuid DEFAULT gen_random_uuid() NOT NULL,
+    seq bigint DEFAULT 0 NOT NULL,
+    reset_seq bigint DEFAULT 0 NOT NULL,
+    CONSTRAINT mail_thread_change_counters_reset_seq_check CHECK ((reset_seq <= seq))
+);
+
+COMMENT ON TABLE public.mail_thread_change_counters IS 'alldots:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_thread_change_counters.seq IS 'The tenant''s mail list change sequence: one step per committed transaction that changed a thread list row, taken under this row''s lock right before COMMIT, so its order is the commit order.';
+
+COMMENT ON COLUMN public.mail_thread_change_counters.reset_seq IS 'The step of the last change too wide to list per thread (a mailbox''s name or addresses, a folder''s purpose); a delta cursor before it is answered with reset.';
+
+COMMENT ON COLUMN public.mail_thread_change_counters.epoch IS 'Names this counter in a delta cursor, so a cursor of a recreated database is not read against it.';
+
+ALTER TABLE ONLY public.mail_thread_change_counters
+    ADD CONSTRAINT mail_thread_change_counters_pkey PRIMARY KEY (tenant_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_change_counters TO alldots_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- mail_thread_changes
+-- ----------------------------------------------------------------------------------------------------
+
+CREATE TABLE public.mail_thread_changes (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    thread_id uuid NOT NULL,
+    seq bigint NOT NULL
+);
+
+COMMENT ON TABLE public.mail_thread_changes IS 'alldots:tenancy=tenant';
+
+COMMENT ON COLUMN public.mail_thread_changes.thread_id IS 'A mail thread id, live, merged away or deleted: no foreign key, so the row outlives its thread and a delta reports it removed.';
+
+COMMENT ON COLUMN public.mail_thread_changes.seq IS 'mail_thread_change_counters.seq of the last committed transaction that changed the thread''s list row.';
+
+ALTER TABLE ONLY public.mail_thread_changes
+    ADD CONSTRAINT mail_thread_changes_pkey PRIMARY KEY (tenant_id, thread_id);
+
+CREATE INDEX mail_thread_changes_tenant_seq_idx ON public.mail_thread_changes USING btree (tenant_id, seq);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_thread_changes TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mail_threads
@@ -1844,7 +2211,7 @@ CREATE TABLE public.mail_threads (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-COMMENT ON TABLE public.mail_threads IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mail_threads IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.mail_threads
     ADD CONSTRAINT mail_threads_pkey PRIMARY KEY (id);
@@ -1853,7 +2220,7 @@ CREATE UNIQUE INDEX mail_threads_tenant_id_id_uq ON public.mail_threads USING bt
 
 CREATE UNIQUE INDEX mail_threads_tenant_item_id_idx ON public.mail_threads USING btree (tenant_id, item_id) WHERE (item_id IS NOT NULL);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_threads TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mail_threads TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- manifest_drift_findings
@@ -1869,14 +2236,14 @@ CREATE TABLE public.manifest_drift_findings (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.manifest_drift_findings IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.manifest_drift_findings IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.manifest_drift_findings
     ADD CONSTRAINT manifest_drift_findings_pkey PRIMARY KEY (id);
 
 CREATE UNIQUE INDEX manifest_drift_findings_tenant_active_idx ON public.manifest_drift_findings USING btree (tenant_id, kind, dedupe_key) WHERE ((resolved_at IS NULL) AND (dedupe_key IS NOT NULL));
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.manifest_drift_findings TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.manifest_drift_findings TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mcp_server_connection_state
@@ -1891,12 +2258,12 @@ CREATE TABLE public.mcp_server_connection_state (
     CONSTRAINT mcp_server_connection_state_last_error_reason_check CHECK (((last_error_reason IS NULL) OR (last_error_reason = ANY (ARRAY['invalid_config'::text, 'transport_not_allowed'::text, 'stdio_sandbox_unavailable'::text, 'credential_decryption_failed'::text, 'address_not_allowed'::text, 'handshake_failed'::text, 'connect_timeout'::text]))))
 );
 
-COMMENT ON TABLE public.mcp_server_connection_state IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mcp_server_connection_state IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.mcp_server_connection_state
     ADD CONSTRAINT mcp_server_connection_state_pkey PRIMARY KEY (tenant_id, mcp_server_item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mcp_server_connection_state TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mcp_server_connection_state TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- mcp_tool_registrations
@@ -1920,7 +2287,7 @@ CREATE TABLE public.mcp_tool_registrations (
     CONSTRAINT mcp_tool_registrations_display_label_object CHECK (((display_label IS NULL) OR (jsonb_typeof(display_label) = 'object'::text)))
 );
 
-COMMENT ON TABLE public.mcp_tool_registrations IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.mcp_tool_registrations IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.mcp_tool_registrations
     ADD CONSTRAINT mcp_tool_registrations_mcp_server_item_id_tool_name_key UNIQUE (mcp_server_item_id, tool_name);
@@ -1932,7 +2299,7 @@ CREATE INDEX mcp_tool_registrations_server_item_idx ON public.mcp_tool_registrat
 
 CREATE UNIQUE INDEX mcp_tool_registrations_tenant_id_id_uq ON public.mcp_tool_registrations USING btree (tenant_id, id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mcp_tool_registrations TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.mcp_tool_registrations TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- notification_preferences
@@ -1949,16 +2316,17 @@ CREATE TABLE public.notification_preferences (
     badge_approvals boolean DEFAULT true NOT NULL,
     badge_invites boolean DEFAULT true NOT NULL,
     badge_inbox boolean DEFAULT false NOT NULL,
+    calendar_changes boolean DEFAULT true NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT notification_preferences_problems_level_check CHECK ((problems_level = ANY (ARRAY['off'::text, 'critical'::text, 'all'::text])))
 );
 
-COMMENT ON TABLE public.notification_preferences IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.notification_preferences IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.notification_preferences
     ADD CONSTRAINT notification_preferences_pkey PRIMARY KEY (tenant_id, user_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.notification_preferences TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.notification_preferences TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- notifications
@@ -1979,10 +2347,10 @@ CREATE TABLE public.notifications (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
     resolved_at timestamp with time zone,
     body text,
-    CONSTRAINT notifications_kind_check CHECK ((kind = ANY (ARRAY['approval_pending'::text, 'agent_run_error'::text, 'heartbeat_error'::text, 'automation_error'::text, 'mail_sync_error'::text, 'process_stale'::text, 'queue_backlog'::text, 'mail_sync_stalled'::text, 'backup_restore_failed'::text, 'agent_guidance_drift'::text, 'agent_guidance_drift_resolved'::text, 'semp_problem'::text, 'calendar_invitation'::text])))
+    CONSTRAINT notifications_kind_check CHECK ((kind = ANY (ARRAY['approval_pending'::text, 'agent_run_error'::text, 'heartbeat_error'::text, 'automation_error'::text, 'mail_sync_error'::text, 'process_stale'::text, 'queue_backlog'::text, 'mail_sync_stalled'::text, 'backup_restore_failed'::text, 'agent_guidance_drift'::text, 'agent_guidance_drift_resolved'::text, 'semp_problem'::text, 'calendar_invitation'::text, 'calendar_event_added'::text, 'calendar_event_changed'::text, 'calendar_event_cancelled'::text, 'calendar_change_overwritten'::text])))
 );
 
-COMMENT ON TABLE public.notifications IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.notifications IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.notifications
     ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
@@ -1995,7 +2363,7 @@ CREATE UNIQUE INDEX notifications_tenant_id_id_uq ON public.notifications USING 
 
 CREATE INDEX notifications_unread_idx ON public.notifications USING btree (user_id) WHERE (read_at IS NULL);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.notifications TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.notifications TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- observability_checks
@@ -2010,7 +2378,7 @@ CREATE TABLE public.observability_checks (
     CONSTRAINT observability_checks_status_check CHECK ((status = ANY (ARRAY['ok'::text, 'alerting'::text])))
 );
 
-COMMENT ON TABLE public.observability_checks IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.observability_checks IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.observability_checks
     ADD CONSTRAINT observability_checks_check_key_key UNIQUE (check_key);
@@ -2018,7 +2386,7 @@ ALTER TABLE ONLY public.observability_checks
 ALTER TABLE ONLY public.observability_checks
     ADD CONSTRAINT observability_checks_pkey PRIMARY KEY (id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.observability_checks TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.observability_checks TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- password_reset_tokens
@@ -2033,7 +2401,7 @@ CREATE TABLE public.password_reset_tokens (
     consumed_at timestamp with time zone
 );
 
-COMMENT ON TABLE public.password_reset_tokens IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.password_reset_tokens IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.password_reset_tokens
     ADD CONSTRAINT password_reset_tokens_pkey PRIMARY KEY (id);
@@ -2042,7 +2410,7 @@ CREATE UNIQUE INDEX password_reset_tokens_token_hash_key ON public.password_rese
 
 CREATE INDEX password_reset_tokens_user_id_idx ON public.password_reset_tokens USING btree (user_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.password_reset_tokens TO semprec_data;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.password_reset_tokens TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- person_email_index
@@ -2054,14 +2422,14 @@ CREATE TABLE public.person_email_index (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.person_email_index IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.person_email_index IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.person_email_index
     ADD CONSTRAINT person_email_index_pkey PRIMARY KEY (tenant_id, email);
 
 CREATE INDEX person_email_index_item_id_idx ON public.person_email_index USING btree (item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.person_email_index TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.person_email_index TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- process_heartbeats
@@ -2075,12 +2443,12 @@ CREATE TABLE public.process_heartbeats (
     beat_at timestamp with time zone NOT NULL
 );
 
-COMMENT ON TABLE public.process_heartbeats IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.process_heartbeats IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.process_heartbeats
     ADD CONSTRAINT process_heartbeats_pkey PRIMARY KEY (process);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.process_heartbeats TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.process_heartbeats TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- project_agent_guidance
@@ -2094,14 +2462,14 @@ CREATE TABLE public.project_agent_guidance (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.project_agent_guidance IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.project_agent_guidance IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.project_agent_guidance
     ADD CONSTRAINT project_agent_guidance_pkey PRIMARY KEY (project_item_id);
 
 CREATE INDEX project_agent_guidance_owner_user_id_idx ON public.project_agent_guidance USING btree (owner_user_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_agent_guidance TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_agent_guidance TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- project_agent_guidance_versions
@@ -2113,12 +2481,12 @@ CREATE TABLE public.project_agent_guidance_versions (
     last_version timestamp with time zone
 );
 
-COMMENT ON TABLE public.project_agent_guidance_versions IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.project_agent_guidance_versions IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.project_agent_guidance_versions
     ADD CONSTRAINT project_agent_guidance_versions_pkey PRIMARY KEY (tenant_id, project_item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_agent_guidance_versions TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_agent_guidance_versions TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- project_heartbeats
@@ -2141,7 +2509,7 @@ CREATE TABLE public.project_heartbeats (
     CONSTRAINT project_heartbeats_origin_check CHECK ((origin = ANY (ARRAY['user'::text, 'system'::text])))
 );
 
-COMMENT ON TABLE public.project_heartbeats IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.project_heartbeats IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.project_heartbeats
     ADD CONSTRAINT project_heartbeats_pkey PRIMARY KEY (id);
@@ -2158,7 +2526,7 @@ CREATE INDEX project_heartbeats_tenant_due_idx ON public.project_heartbeats USIN
 
 CREATE UNIQUE INDEX project_heartbeats_tenant_id_id_uq ON public.project_heartbeats USING btree (tenant_id, id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_heartbeats TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_heartbeats TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- project_kept_dates
@@ -2171,12 +2539,41 @@ CREATE TABLE public.project_kept_dates (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-COMMENT ON TABLE public.project_kept_dates IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.project_kept_dates IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.project_kept_dates
     ADD CONSTRAINT project_kept_dates_pkey PRIMARY KEY (tenant_id, item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_kept_dates TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_kept_dates TO alldots_side;
+
+-- ----------------------------------------------------------------------------------------------------
+-- project_mail_signals
+-- ----------------------------------------------------------------------------------------------------
+
+-- What marks a mail thread as a project's, besides the project's people: written only by the mail module
+-- (`mail/projectMailSignalsStore.ts`), read by the signal match of the preview, the assignment and live triage.
+CREATE TABLE public.project_mail_signals (
+    tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL,
+    project_item_id uuid NOT NULL,
+    domains text[] DEFAULT '{}'::text[] NOT NULL,
+    addresses text[] DEFAULT '{}'::text[] NOT NULL,
+    keywords text[] DEFAULT '{}'::text[] NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT project_mail_signals_counts_check CHECK (((cardinality(domains) <= 50) AND (cardinality(addresses) <= 100) AND (cardinality(keywords) <= 50)))
+);
+
+COMMENT ON TABLE public.project_mail_signals IS 'alldots:tenancy=tenant';
+
+COMMENT ON COLUMN public.project_mail_signals.domains IS 'Lower-case hosts without www.; a sender or recipient at the host or a subdomain of it matches. A freemail host is kept but never matches.';
+
+COMMENT ON COLUMN public.project_mail_signals.addresses IS 'Lower-case, trimmed e-mail addresses; a sender or recipient with one of them matches.';
+
+COMMENT ON COLUMN public.project_mail_signals.keywords IS 'Trimmed words or phrases matched against the message search text with the Czech ending rule of mail/mailSignalKeywords.ts.';
+
+ALTER TABLE ONLY public.project_mail_signals
+    ADD CONSTRAINT project_mail_signals_pkey PRIMARY KEY (tenant_id, project_item_id);
+
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_mail_signals TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- project_mcp_grants
@@ -2191,14 +2588,14 @@ CREATE TABLE public.project_mcp_grants (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.project_mcp_grants IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.project_mcp_grants IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.project_mcp_grants
     ADD CONSTRAINT project_mcp_grants_pkey PRIMARY KEY (project_item_id, mcp_tool_registration_id);
 
 CREATE INDEX project_mcp_grants_tool_registration_idx ON public.project_mcp_grants USING btree (mcp_tool_registration_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_mcp_grants TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.project_mcp_grants TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- properties
@@ -2223,7 +2620,7 @@ CREATE TABLE public.properties (
     CONSTRAINT properties_owner_check CHECK ((owner = ANY (ARRAY['user'::text, 'system'::text])))
 );
 
-COMMENT ON TABLE public.properties IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.properties IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.properties
     ADD CONSTRAINT properties_database_id_key_key UNIQUE (database_id, key);
@@ -2233,8 +2630,8 @@ ALTER TABLE ONLY public.properties
 
 CREATE UNIQUE INDEX properties_tenant_id_id_uq ON public.properties USING btree (tenant_id, id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.properties TO semprec_data;
-GRANT SELECT ON TABLE public.properties TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.properties TO alldots_data;
+GRANT SELECT ON TABLE public.properties TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- push_deliveries
@@ -2252,7 +2649,7 @@ CREATE TABLE public.push_deliveries (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.push_deliveries IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.push_deliveries IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.push_deliveries
     ADD CONSTRAINT push_deliveries_pkey PRIMARY KEY (id);
@@ -2261,7 +2658,7 @@ CREATE INDEX push_deliveries_notification_id_idx ON public.push_deliveries USING
 
 CREATE UNIQUE INDEX push_deliveries_pair_idx ON public.push_deliveries USING btree (notification_id, push_subscription_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.push_deliveries TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.push_deliveries TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- push_subscriptions
@@ -2288,7 +2685,7 @@ CREATE TABLE public.push_subscriptions (
     CONSTRAINT push_subscriptions_platform_check CHECK ((platform = ANY (ARRAY['web'::text, 'ios'::text, 'macos'::text])))
 );
 
-COMMENT ON TABLE public.push_subscriptions IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.push_subscriptions IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.push_subscriptions
     ADD CONSTRAINT push_subscriptions_pkey PRIMARY KEY (id);
@@ -2301,7 +2698,7 @@ CREATE INDEX push_subscriptions_session_id_idx ON public.push_subscriptions USIN
 
 CREATE INDEX push_subscriptions_user_id_idx ON public.push_subscriptions USING btree (user_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.push_subscriptions TO semprec_data;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.push_subscriptions TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- recording_requests
@@ -2321,7 +2718,7 @@ CREATE TABLE public.recording_requests (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-COMMENT ON TABLE public.recording_requests IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.recording_requests IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.recording_requests
     ADD CONSTRAINT recording_requests_pkey PRIMARY KEY (tenant_id, file_item_id);
@@ -2330,7 +2727,7 @@ CREATE INDEX recording_requests_tenant_event_item_idx ON public.recording_reques
 
 CREATE INDEX recording_requests_tenant_project_item_idx ON public.recording_requests USING btree (tenant_id, project_item_id) WHERE (project_item_id IS NOT NULL);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.recording_requests TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.recording_requests TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- relation_definitions
@@ -2345,7 +2742,7 @@ CREATE TABLE public.relation_definitions (
     CONSTRAINT relation_definitions_cardinality_check CHECK ((cardinality = ANY (ARRAY['one_to_one'::text, 'one_to_many'::text, 'many_to_many'::text])))
 );
 
-COMMENT ON TABLE public.relation_definitions IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.relation_definitions IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.relation_definitions
     ADD CONSTRAINT relation_definitions_pkey PRIMARY KEY (id);
@@ -2358,8 +2755,8 @@ ALTER TABLE ONLY public.relation_definitions
 
 CREATE UNIQUE INDEX relation_definitions_tenant_id_id_uq ON public.relation_definitions USING btree (tenant_id, id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.relation_definitions TO semprec_data;
-GRANT SELECT ON TABLE public.relation_definitions TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.relation_definitions TO alldots_data;
+GRANT SELECT ON TABLE public.relation_definitions TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- rollup_dependencies
@@ -2373,7 +2770,7 @@ CREATE TABLE public.rollup_dependencies (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.rollup_dependencies IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.rollup_dependencies IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.rollup_dependencies
     ADD CONSTRAINT rollup_dependencies_pkey PRIMARY KEY (rollup_property_id);
@@ -2382,8 +2779,8 @@ CREATE INDEX rollup_dependencies_reldef_idx ON public.rollup_dependencies USING 
 
 CREATE INDEX rollup_dependencies_source_idx ON public.rollup_dependencies USING btree (source_database_id, source_property_key);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.rollup_dependencies TO semprec_data;
-GRANT SELECT ON TABLE public.rollup_dependencies TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.rollup_dependencies TO alldots_data;
+GRANT SELECT ON TABLE public.rollup_dependencies TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- semp_message_speech
@@ -2399,14 +2796,14 @@ CREATE TABLE public.semp_message_speech (
     CONSTRAINT semp_message_speech_audio_seconds_check CHECK ((audio_seconds >= (0)::double precision))
 );
 
-COMMENT ON TABLE public.semp_message_speech IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.semp_message_speech IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.semp_message_speech
     ADD CONSTRAINT semp_message_speech_pkey PRIMARY KEY (tenant_id, message_id, voice);
 
 CREATE INDEX semp_message_speech_tenant_blob_idx ON public.semp_message_speech USING btree (tenant_id, blob_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_message_speech TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_message_speech TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- semp_messages
@@ -2446,7 +2843,7 @@ CREATE TABLE public.semp_messages (
     CONSTRAINT semp_messages_system_columns_check CHECK (((role = 'system'::text) OR ((system_key IS NULL) AND (system_params IS NULL))))
 );
 
-COMMENT ON TABLE public.semp_messages IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.semp_messages IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.semp_messages
     ADD CONSTRAINT semp_messages_pkey PRIMARY KEY (id);
@@ -2460,7 +2857,7 @@ CREATE INDEX semp_messages_search_vector_idx ON public.semp_messages USING gin (
 
 CREATE INDEX semp_messages_thread_created_idx ON public.semp_messages USING btree (tenant_id, thread_id, created_at DESC, id DESC);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_messages TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_messages TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- semp_problem_occurrences
@@ -2472,12 +2869,12 @@ CREATE TABLE public.semp_problem_occurrences (
     occurrence_key text NOT NULL
 );
 
-COMMENT ON TABLE public.semp_problem_occurrences IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.semp_problem_occurrences IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.semp_problem_occurrences
     ADD CONSTRAINT semp_problem_occurrences_pkey PRIMARY KEY (tenant_id, problem_id, occurrence_key);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_problem_occurrences TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_problem_occurrences TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- semp_problems
@@ -2506,7 +2903,7 @@ CREATE TABLE public.semp_problems (
     CONSTRAINT semp_problems_severity_check CHECK ((severity = ANY (ARRAY['critical'::text, 'warning'::text])))
 );
 
-COMMENT ON TABLE public.semp_problems IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.semp_problems IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.semp_problems
     ADD CONSTRAINT semp_problems_pkey PRIMARY KEY (id);
@@ -2521,7 +2918,7 @@ CREATE UNIQUE INDEX semp_problems_tenant_id_id_uq ON public.semp_problems USING 
 
 CREATE INDEX semp_problems_tenant_resolved_idx ON public.semp_problems USING btree (tenant_id, resolved_at DESC, id DESC) WHERE (resolved_at IS NOT NULL);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_problems TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_problems TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- semp_threads
@@ -2544,7 +2941,7 @@ CREATE TABLE public.semp_threads (
     CONSTRAINT semp_threads_title_source_check CHECK ((title_source = ANY (ARRAY['auto'::text, 'user'::text])))
 );
 
-COMMENT ON TABLE public.semp_threads IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.semp_threads IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.semp_threads
     ADD CONSTRAINT semp_threads_pkey PRIMARY KEY (id);
@@ -2560,7 +2957,7 @@ CREATE INDEX semp_threads_tenant_subject_proposal_idx ON public.semp_threads USI
 
 CREATE UNIQUE INDEX semp_threads_tick_heartbeat_uq ON public.semp_threads USING btree (tenant_id, heartbeat_id) WHERE (kind = 'tick'::text);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_threads TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.semp_threads TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- sessions
@@ -2585,7 +2982,7 @@ CREATE TABLE public.sessions (
     CONSTRAINT sessions_platform_check CHECK ((platform = ANY (ARRAY['web'::text, 'ios'::text, 'macos'::text])))
 );
 
-COMMENT ON TABLE public.sessions IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.sessions IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.sessions
     ADD CONSTRAINT sessions_pkey PRIMARY KEY (id);
@@ -2598,7 +2995,7 @@ CREATE INDEX sessions_user_device_active_idx ON public.sessions USING btree (use
 
 CREATE INDEX sessions_user_id_idx ON public.sessions USING btree (user_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.sessions TO semprec_data;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.sessions TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- task_recurrence
@@ -2617,7 +3014,7 @@ CREATE TABLE public.task_recurrence (
     CONSTRAINT task_recurrence_mode_check CHECK ((mode = ANY (ARRAY['fixed'::text, 'floating'::text])))
 );
 
-COMMENT ON TABLE public.task_recurrence IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.task_recurrence IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.task_recurrence
     ADD CONSTRAINT task_recurrence_pkey PRIMARY KEY (item_id);
@@ -2626,7 +3023,7 @@ CREATE INDEX task_recurrence_tenant_trashed_active_item_idx ON public.task_recur
 
 CREATE UNIQUE INDEX task_recurrence_tenant_series_id_uq ON public.task_recurrence USING btree (tenant_id, series_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.task_recurrence TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.task_recurrence TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- tenant_ai_budgets
@@ -2642,13 +3039,13 @@ CREATE TABLE public.tenant_ai_budgets (
     CONSTRAINT tenant_ai_budgets_monthly_cap_usd_check CHECK ((monthly_cap_usd >= (0)::numeric))
 );
 
-COMMENT ON TABLE public.tenant_ai_budgets IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.tenant_ai_budgets IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.tenant_ai_budgets
     ADD CONSTRAINT tenant_ai_budgets_pkey PRIMARY KEY (tenant_id);
 
-GRANT SELECT ON TABLE public.tenant_ai_budgets TO semprec_side;
-GRANT SELECT,INSERT,UPDATE ON TABLE public.tenant_ai_budgets TO semprec_data;
+GRANT SELECT ON TABLE public.tenant_ai_budgets TO alldots_side;
+GRANT SELECT,INSERT,UPDATE ON TABLE public.tenant_ai_budgets TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- tenant_deletions
@@ -2660,12 +3057,12 @@ CREATE TABLE public.tenant_deletions (
     completed_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-COMMENT ON TABLE public.tenant_deletions IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.tenant_deletions IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.tenant_deletions
     ADD CONSTRAINT tenant_deletions_pkey PRIMARY KEY (tenant_id);
 
-GRANT SELECT,INSERT ON TABLE public.tenant_deletions TO semprec_data;
+GRANT SELECT,INSERT ON TABLE public.tenant_deletions TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- tenant_exports
@@ -2684,7 +3081,7 @@ CREATE TABLE public.tenant_exports (
     CONSTRAINT tenant_exports_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'running'::text, 'ready'::text, 'failed'::text])))
 );
 
-COMMENT ON TABLE public.tenant_exports IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.tenant_exports IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.tenant_exports
     ADD CONSTRAINT tenant_exports_pkey PRIMARY KEY (id);
@@ -2693,7 +3090,7 @@ CREATE UNIQUE INDEX tenant_exports_active_uq ON public.tenant_exports USING btre
 
 CREATE INDEX tenant_exports_tenant_created_idx ON public.tenant_exports USING btree (tenant_id, created_at DESC);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.tenant_exports TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.tenant_exports TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- tenant_keys
@@ -2707,12 +3104,12 @@ CREATE TABLE public.tenant_keys (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-COMMENT ON TABLE public.tenant_keys IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.tenant_keys IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.tenant_keys
     ADD CONSTRAINT tenant_keys_pkey PRIMARY KEY (tenant_id);
 
-GRANT SELECT,INSERT,DELETE ON TABLE public.tenant_keys TO semprec_side;
+GRANT SELECT,INSERT,DELETE ON TABLE public.tenant_keys TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- tenant_observability_checks
@@ -2728,7 +3125,7 @@ CREATE TABLE public.tenant_observability_checks (
     CONSTRAINT tenant_observability_checks_status_check CHECK ((status = ANY (ARRAY['ok'::text, 'alerting'::text])))
 );
 
-COMMENT ON TABLE public.tenant_observability_checks IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.tenant_observability_checks IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.tenant_observability_checks
     ADD CONSTRAINT tenant_observability_checks_pkey PRIMARY KEY (id);
@@ -2736,9 +3133,9 @@ ALTER TABLE ONLY public.tenant_observability_checks
 ALTER TABLE ONLY public.tenant_observability_checks
     ADD CONSTRAINT tenant_observability_checks_tenant_id_check_key_key UNIQUE (tenant_id, check_key);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.tenant_observability_checks TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.tenant_observability_checks TO alldots_side;
 
-GRANT SELECT(status) ON TABLE public.tenant_observability_checks TO semprec_router;
+GRANT SELECT(status) ON TABLE public.tenant_observability_checks TO alldots_router;
 
 -- ----------------------------------------------------------------------------------------------------
 -- tenants
@@ -2752,13 +3149,13 @@ CREATE TABLE public.tenants (
     CONSTRAINT tenants_status_check CHECK ((status = ANY (ARRAY['provisioning'::text, 'active'::text, 'suspended'::text, 'deleting'::text])))
 );
 
-COMMENT ON TABLE public.tenants IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.tenants IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.tenants
     ADD CONSTRAINT tenants_pkey PRIMARY KEY (id);
 
-GRANT SELECT ON TABLE public.tenants TO semprec_side;
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.tenants TO semprec_data;
+GRANT SELECT ON TABLE public.tenants TO alldots_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.tenants TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- transcript_action_item_states
@@ -2776,7 +3173,7 @@ CREATE TABLE public.transcript_action_item_states (
     CONSTRAINT transcript_action_item_states_state_check CHECK ((state = ANY (ARRAY['added'::text, 'noted'::text, 'dismissed'::text])))
 );
 
-COMMENT ON TABLE public.transcript_action_item_states IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.transcript_action_item_states IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.transcript_action_item_states
     ADD CONSTRAINT transcript_action_item_states_pkey PRIMARY KEY (tenant_id, transcript_item_id, action_item_id);
@@ -2785,8 +3182,8 @@ CREATE INDEX transcript_action_item_states_tenant_owner_person_idx ON public.tra
 
 CREATE INDEX transcript_action_item_states_tenant_task_item_idx ON public.transcript_action_item_states USING btree (tenant_id, task_item_id) WHERE (task_item_id IS NOT NULL);
 
-GRANT SELECT ON TABLE public.transcript_action_item_states TO semprec_side;
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.transcript_action_item_states TO semprec_data;
+GRANT SELECT ON TABLE public.transcript_action_item_states TO alldots_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.transcript_action_item_states TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- users
@@ -2804,7 +3201,7 @@ CREATE TABLE public.users (
     CONSTRAINT users_role_check CHECK ((role = ANY (ARRAY['admin'::text, 'member'::text])))
 );
 
-COMMENT ON TABLE public.users IS 'semprec:tenancy=global';
+COMMENT ON TABLE public.users IS 'alldots:tenancy=global';
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
@@ -2815,8 +3212,8 @@ CREATE UNIQUE INDEX users_tenant_id_id_uq ON public.users USING btree (tenant_id
 
 CREATE UNIQUE INDEX users_tenant_id_key ON public.users USING btree (tenant_id);
 
-GRANT SELECT ON TABLE public.users TO semprec_side;
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.users TO semprec_data;
+GRANT SELECT ON TABLE public.users TO alldots_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.users TO alldots_data;
 
 -- ----------------------------------------------------------------------------------------------------
 -- value_link_sources
@@ -2834,7 +3231,7 @@ CREATE TABLE public.value_link_sources (
     CONSTRAINT value_link_sources_source_kind_check CHECK ((source_kind = ANY (ARRAY['item'::text, 'senderDomain'::text])))
 );
 
-COMMENT ON TABLE public.value_link_sources IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.value_link_sources IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.value_link_sources
     ADD CONSTRAINT value_link_sources_pkey PRIMARY KEY (id);
@@ -2845,7 +3242,7 @@ CREATE UNIQUE INDEX value_link_sources_item_uq ON public.value_link_sources USIN
 
 CREATE INDEX value_link_sources_source_item_idx ON public.value_link_sources USING btree (tenant_id, source_item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.value_link_sources TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.value_link_sources TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- value_links
@@ -2866,7 +3263,7 @@ CREATE TABLE public.value_links (
     CONSTRAINT value_links_state_columns_check CHECK ((((state = 'on'::text) AND (broken_by IS NULL) AND (broken_at IS NULL)) OR ((state = 'broken'::text) AND (broken_by IS NOT NULL) AND (broken_at IS NOT NULL))))
 );
 
-COMMENT ON TABLE public.value_links IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.value_links IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.value_links
     ADD CONSTRAINT value_links_pkey PRIMARY KEY (id);
@@ -2877,7 +3274,7 @@ ALTER TABLE ONLY public.value_links
 ALTER TABLE ONLY public.value_links
     ADD CONSTRAINT value_links_tenant_item_property_uq UNIQUE (tenant_id, item_id, property_key);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.value_links TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.value_links TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- view_items
@@ -2890,15 +3287,15 @@ CREATE TABLE public.view_items (
     tenant_id uuid DEFAULT public.app_tenant_default() NOT NULL
 );
 
-COMMENT ON TABLE public.view_items IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.view_items IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.view_items
     ADD CONSTRAINT view_items_pkey PRIMARY KEY (view_id, item_id);
 
 CREATE INDEX view_items_item_id_idx ON public.view_items USING btree (item_id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.view_items TO semprec_data;
-GRANT SELECT ON TABLE public.view_items TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.view_items TO alldots_data;
+GRANT SELECT ON TABLE public.view_items TO alldots_side;
 
 -- ----------------------------------------------------------------------------------------------------
 -- views
@@ -2919,7 +3316,7 @@ CREATE TABLE public.views (
     CONSTRAINT views_curated_no_db CHECK (((database_id IS NULL) = (NOT ((config ->> 'membership'::text) IS DISTINCT FROM 'manual'::text))))
 );
 
-COMMENT ON TABLE public.views IS 'semprec:tenancy=tenant';
+COMMENT ON TABLE public.views IS 'alldots:tenancy=tenant';
 
 ALTER TABLE ONLY public.views
     ADD CONSTRAINT views_pkey PRIMARY KEY (id);
@@ -2932,8 +3329,8 @@ CREATE UNIQUE INDEX views_one_default_per_db ON public.views USING btree (databa
 
 CREATE UNIQUE INDEX views_tenant_id_id_uq ON public.views USING btree (tenant_id, id);
 
-GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.views TO semprec_data;
-GRANT SELECT ON TABLE public.views TO semprec_side;
+GRANT SELECT,INSERT,DELETE,UPDATE ON TABLE public.views TO alldots_data;
+GRANT SELECT ON TABLE public.views TO alldots_side;
 
 -- ====================================================================================================
 -- Foreign keys
@@ -3038,8 +3435,23 @@ ALTER TABLE ONLY public.approval_requests
 ALTER TABLE ONLY public.blobs
     ADD CONSTRAINT blobs_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
+ALTER TABLE ONLY public.calendar_account_sync_state
+    ADD CONSTRAINT calendar_account_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.calendar_event_push_state
+    ADD CONSTRAINT calendar_event_push_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.calendar_remote_state
+    ADD CONSTRAINT calendar_remote_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 ALTER TABLE ONLY public.credential_access_log
     ADD CONSTRAINT credential_access_log_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
@@ -3179,6 +3591,9 @@ ALTER TABLE ONLY public.mail_drafts
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
+ALTER TABLE ONLY public.mail_message_content_cache
+    ADD CONSTRAINT mail_message_content_cache_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.mail_message_flag_sync_state
     ADD CONSTRAINT mail_message_flag_sync_state_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
@@ -3203,11 +3618,20 @@ ALTER TABLE ONLY public.mail_oauth_states
 ALTER TABLE ONLY public.mail_oauth_states
     ADD CONSTRAINT mail_oauth_states_user_id_tenant_fkey FOREIGN KEY (tenant_id, user_id) REFERENCES public.users(tenant_id, id) ON DELETE CASCADE;
 
+ALTER TABLE ONLY public.mail_sent_copies
+    ADD CONSTRAINT mail_sent_copies_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
 ALTER TABLE ONLY public.mail_thread_aliases
     ADD CONSTRAINT mail_thread_aliases_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 ALTER TABLE ONLY public.mail_thread_aliases
     ADD CONSTRAINT mail_thread_aliases_to_thread_fkey FOREIGN KEY (tenant_id, to_thread_id) REFERENCES public.mail_threads(tenant_id, id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.mail_thread_change_counters
+    ADD CONSTRAINT mail_thread_change_counters_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
+
+ALTER TABLE ONLY public.mail_thread_changes
+    ADD CONSTRAINT mail_thread_changes_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 ALTER TABLE ONLY public.mail_threads
     ADD CONSTRAINT mail_threads_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
@@ -3268,6 +3692,9 @@ ALTER TABLE ONLY public.project_mcp_grants
 
 ALTER TABLE ONLY public.project_mcp_grants
     ADD CONSTRAINT project_mcp_grants_mcp_tool_registration_id_tenant_fkey FOREIGN KEY (tenant_id, mcp_tool_registration_id) REFERENCES public.mcp_tool_registrations(tenant_id, id);
+
+ALTER TABLE ONLY public.project_mail_signals
+    ADD CONSTRAINT project_mail_signals_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
 
 ALTER TABLE ONLY public.project_mcp_grants
     ADD CONSTRAINT project_mcp_grants_tenant_id_fkey FOREIGN KEY (tenant_id) REFERENCES public.tenants(id);
@@ -3461,8 +3888,29 @@ ALTER TABLE ONLY public.views
 ALTER TABLE ONLY public.agent_database_grants
     ADD CONSTRAINT agent_database_grants_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.calendar_account_sync_state
+    ADD CONSTRAINT calendar_account_sync_state_account_item_id_tenant_fkey FOREIGN KEY (tenant_id, account_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_event_push_state
+    ADD CONSTRAINT calendar_event_push_state_event_item_id_tenant_fkey FOREIGN KEY (tenant_id, event_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.calendar_feed_state
     ADD CONSTRAINT calendar_feed_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_account_item_id_tenant_fkey FOREIGN KEY (tenant_id, account_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_push_channels
+    ADD CONSTRAINT calendar_push_channels_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.calendar_remote_state
+    ADD CONSTRAINT calendar_remote_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_event_item_id_tenant_fkey FOREIGN KEY (tenant_id, event_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.event_remote_state
+    ADD CONSTRAINT event_remote_state_calendar_item_id_tenant_fkey FOREIGN KEY (tenant_id, calendar_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY public.docs
     ADD CONSTRAINT docs_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
@@ -3503,11 +3951,17 @@ ALTER TABLE ONLY public.mail_drafts
 ALTER TABLE ONLY public.mail_folder_sync_state
     ADD CONSTRAINT mail_folder_sync_state_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY public.mail_message_content_cache
+    ADD CONSTRAINT mail_message_content_cache_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 ALTER TABLE ONLY public.mail_message_flag_sync_state
     ADD CONSTRAINT mail_message_flag_sync_state_message_item_id_tenant_fkey FOREIGN KEY (tenant_id, message_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY public.mail_oauth_states
     ADD CONSTRAINT mail_oauth_states_mailbox_item_id_tenant_fkey FOREIGN KEY (tenant_id, mailbox_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.mail_sent_copies
+    ADD CONSTRAINT mail_sent_copies_mailbox_item_id_tenant_fkey FOREIGN KEY (tenant_id, mailbox_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY public.mcp_server_connection_state
     ADD CONSTRAINT mcp_server_connection_state_mcp_server_item_id_tenant_fkey FOREIGN KEY (tenant_id, mcp_server_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
@@ -3517,6 +3971,9 @@ ALTER TABLE ONLY public.person_email_index
 
 ALTER TABLE ONLY public.project_kept_dates
     ADD CONSTRAINT project_kept_dates_item_id_tenant_fkey FOREIGN KEY (tenant_id, item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY public.project_mail_signals
+    ADD CONSTRAINT project_mail_signals_project_item_id_tenant_fkey FOREIGN KEY (tenant_id, project_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY public.recording_requests
     ADD CONSTRAINT recording_requests_file_item_id_tenant_fkey FOREIGN KEY (tenant_id, file_item_id) REFERENCES public.items(tenant_id, id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
@@ -3637,11 +4094,41 @@ CREATE POLICY tenant_isolation ON public.blobs AS RESTRICTIVE USING ((tenant_id 
 
 CREATE POLICY tenant_rows ON public.blobs USING (true) WITH CHECK (true);
 
+ALTER TABLE public.calendar_account_sync_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_account_sync_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_account_sync_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_event_push_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_event_push_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_event_push_state USING (true) WITH CHECK (true);
+
 ALTER TABLE public.calendar_feed_state ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant_isolation ON public.calendar_feed_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.calendar_feed_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_push_channels ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_push_channels AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_push_channels USING (true) WITH CHECK (true);
+
+ALTER TABLE public.calendar_remote_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.calendar_remote_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.calendar_remote_state USING (true) WITH CHECK (true);
+
+ALTER TABLE public.event_remote_state ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.event_remote_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.event_remote_state USING (true) WITH CHECK (true);
 
 ALTER TABLE public.credential_access_log ENABLE ROW LEVEL SECURITY;
 
@@ -3781,6 +4268,12 @@ CREATE POLICY tenant_isolation ON public.mail_folder_sync_state AS RESTRICTIVE U
 
 CREATE POLICY tenant_rows ON public.mail_folder_sync_state USING (true) WITH CHECK (true);
 
+ALTER TABLE public.mail_message_content_cache ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_message_content_cache AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_message_content_cache USING (true) WITH CHECK (true);
+
 ALTER TABLE public.mail_message_flag_sync_state ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant_isolation ON public.mail_message_flag_sync_state AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
@@ -3805,11 +4298,29 @@ CREATE POLICY tenant_isolation ON public.mail_oauth_states AS RESTRICTIVE USING 
 
 CREATE POLICY tenant_rows ON public.mail_oauth_states USING (true) WITH CHECK (true);
 
+ALTER TABLE public.mail_sent_copies ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_sent_copies AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_sent_copies USING (true) WITH CHECK (true);
+
 ALTER TABLE public.mail_thread_aliases ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY tenant_isolation ON public.mail_thread_aliases AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.mail_thread_aliases USING (true) WITH CHECK (true);
+
+ALTER TABLE public.mail_thread_change_counters ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_thread_change_counters AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_thread_change_counters USING (true) WITH CHECK (true);
+
+ALTER TABLE public.mail_thread_changes ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.mail_thread_changes AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.mail_thread_changes USING (true) WITH CHECK (true);
 
 ALTER TABLE public.mail_threads ENABLE ROW LEVEL SECURITY;
 
@@ -3876,6 +4387,12 @@ ALTER TABLE public.project_kept_dates ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation ON public.project_kept_dates AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
 
 CREATE POLICY tenant_rows ON public.project_kept_dates USING (true) WITH CHECK (true);
+
+ALTER TABLE public.project_mail_signals ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON public.project_mail_signals AS RESTRICTIVE USING ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default))) WITH CHECK ((tenant_id = ( SELECT public.app_tenant_default() AS app_tenant_default)));
+
+CREATE POLICY tenant_rows ON public.project_mail_signals USING (true) WITH CHECK (true);
 
 ALTER TABLE public.project_mcp_grants ENABLE ROW LEVEL SECURITY;
 
@@ -4001,7 +4518,7 @@ CREATE POLICY tenant_rows ON public.views USING (true) WITH CHECK (true);
 -- Default privileges
 -- ====================================================================================================
 
-ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public GRANT SELECT,USAGE ON SEQUENCES TO semprec_side;
+ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public GRANT SELECT,USAGE ON SEQUENCES TO alldots_side;
 
 -- ====================================================================================================
 -- Migration bookkeeping
@@ -4009,7 +4526,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public GRANT SELECT,USA
 -- The runner (db/migrate.ts) creates schema_migrations before it applies this file.
 -- ====================================================================================================
 
-COMMENT ON TABLE schema_migrations IS 'semprec:tenancy=global';
+COMMENT ON TABLE schema_migrations IS 'alldots:tenancy=global';
 
 -- ====================================================================================================
 -- Data

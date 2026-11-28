@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@semprec/data/testSupport";
+import { createTenantZeroUser, getTestPool, inTenantZero, resetDatabase } from "@alldots/data/testSupport";
 import {
   ApprovalRequiredError,
   createAgentRun,
@@ -18,8 +18,8 @@ import {
   type ChokePoint,
   type CollectionMetadataResolver,
   type DatabaseRow,
-} from "@semprec/data";
-import { CAPABILITY_IDS, type AuthenticatedActor } from "@semprec/shared";
+} from "@alldots/data";
+import { CAPABILITY_IDS, type AuthenticatedActor } from "@alldots/shared";
 import { createGenericOperationGateway, replayApprovedGenericOperation } from "../genericOperationGateway.js";
 
 // The page operations of an agent run, held to its project's grant on the database that owns the page and to the
@@ -59,7 +59,7 @@ const mcpHumanSession = (): AuthenticatedActor => ({ userId });
 async function setGrant(actor: AuthenticatedActor, database: DatabaseRow, access: AgentDatabaseAccess) {
   if (actor.agentProjectItemId === undefined) throw new Error("Not an agent actor");
   const projectItemId = actor.agentProjectItemId;
-  // The user-only admin store is not exported from `@semprec/data`, so a fixture writes the decision directly.
+  // The user-only admin store is not exported from `@alldots/data`, so a fixture writes the decision directly.
   await withTransaction(pool, (client) =>
     client.query(
       `INSERT INTO agent_database_grants (project_item_id, database_id, access) VALUES ($1, $2, $3)
@@ -217,7 +217,7 @@ describe("agent access to pages through the generic operation gateway (issue #18
         format: "markdown",
       });
       expect("markdown" in markdown ? markdown.markdown : "").toContain(
-        `[Release checklist](semprec://page/${subpage.pageItemId})`,
+        `[Release checklist](alldots://page/${subpage.pageItemId})`,
       );
       const summary = await gateway().invoke("page.get", agent, ALL_CAPABILITIES, { itemId: project });
       expect("blocks" in summary ? summary.blocks : []).toEqual(
@@ -691,7 +691,7 @@ describe("agent access to pages through the generic operation gateway (issue #18
         await expect(
           gateway().invoke("page.replace", agent, ALL_CAPABILITIES, {
             itemId: host.item.id,
-            markdown: `[Elsewhere](semprec://page/${host.item.id})`,
+            markdown: `[Elsewhere](alldots://page/${host.item.id})`,
             expectedEtag: await etagOf(host.item.id),
           }),
         ).rejects.toMatchObject({ status: 400 });

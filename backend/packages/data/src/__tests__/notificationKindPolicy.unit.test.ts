@@ -29,14 +29,22 @@ describe("notification kind policy", () => {
     }
   });
 
-  it("never pushes info kinds, and pushes only approvals, Semp problems and calendar invitations (issues #1466, gh-1954)", () => {
+  it("never pushes info kinds, and pushes only approvals, Semp problems, calendar invitations and calendar changes", () => {
     for (const kind of NOTIFICATION_KINDS) {
       const policy = policyForKind(kind);
       const isInfo = policy.category === "problems" && policy.severity === "info";
       expect(policy.push && isInfo, kind).toBe(false);
     }
     const pushed = NOTIFICATION_KINDS.filter((kind) => policyForKind(kind).push).sort();
-    expect(pushed).toEqual(["approval_pending", "calendar_invitation", "semp_problem"]);
+    expect(pushed).toEqual([
+      "approval_pending",
+      "calendar_change_overwritten",
+      "calendar_event_added",
+      "calendar_event_cancelled",
+      "calendar_event_changed",
+      "calendar_invitation",
+      "semp_problem",
+    ]);
   });
 
   it("classifies the listed kinds", () => {
@@ -44,6 +52,10 @@ describe("notification kind policy", () => {
       approval_pending: "approvals",
       semp_problem: "problems/payload",
       calendar_invitation: "invites",
+      calendar_event_added: "calendarChanges",
+      calendar_event_changed: "calendarChanges",
+      calendar_event_cancelled: "calendarChanges",
+      calendar_change_overwritten: "calendarChanges",
       mail_sync_error: "problems/critical",
       mail_sync_stalled: "problems/critical",
       backup_restore_failed: "problems/critical",

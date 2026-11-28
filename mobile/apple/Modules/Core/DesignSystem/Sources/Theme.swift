@@ -13,6 +13,14 @@ public enum Theme {
         /// The strongest fill of the app: primary buttons and the app mark. Black in light mode, white in dark mode;
         /// text on it uses `.foregroundStyle(.background)`.
         public static let brand = Color.primary
+        /// The accent colour every control of the app tints with: the deep blue of the design's primary buttons, a
+        /// lighter shade of it in dark appearance.
+        public static let appAccent = Color(light: 0x164A78, dark: 0x4A82BA)
+        /// The selected period wherever the app picks a day, a month or a year: the diary's axis, the calendar's week
+        /// strip. It is the app's accent, on a flat capsule.
+        public static let selection = appAccent
+        /// Today's date (its day, month and year) wherever the app shows dates to pick from, in the diary's gold.
+        public static let today = Color(light: 0xB08D45, dark: 0xD6B36B)
         /// A refused or destructive state.
         public static let destructive = Color.red
         /// The page behind grouped cards.
@@ -38,6 +46,8 @@ public enum Theme {
 
         /// The content of a control while it is pressed.
         public static let pressed: Double = 0.5
+        /// The fill of a selected chip in its own color.
+        public static let selectedFill: Double = 0.18
     }
 
     // MARK: - Spacing
@@ -73,3 +83,45 @@ public enum Theme {
         public static let body = Font.body
     }
 }
+
+// MARK: - Adaptive colours
+extension Color {
+
+    /// A colour that is `light` in light appearance and `dark` in dark appearance, both `0xRRGGBB`.
+    public init(light: UInt32, dark: UInt32) {
+        #if os(iOS)
+            self.init(uiColor: UIColor { traits in
+                UIColor(rgb: traits.userInterfaceStyle == .dark ? dark : light)
+            })
+        #else
+            self.init(nsColor: NSColor(name: nil) { appearance in
+                let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                return NSColor(rgb: isDark ? dark : light)
+            })
+        #endif
+    }
+}
+
+#if os(iOS)
+    private extension UIColor {
+        convenience init(rgb: UInt32) {
+            self.init(
+                red: CGFloat((rgb >> 16) & 0xFF) / 255,
+                green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                blue: CGFloat(rgb & 0xFF) / 255,
+                alpha: 1
+            )
+        }
+    }
+#else
+    private extension NSColor {
+        convenience init(rgb: UInt32) {
+            self.init(
+                srgbRed: CGFloat((rgb >> 16) & 0xFF) / 255,
+                green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                blue: CGFloat(rgb & 0xFF) / 255,
+                alpha: 1
+            )
+        }
+    }
+#endif

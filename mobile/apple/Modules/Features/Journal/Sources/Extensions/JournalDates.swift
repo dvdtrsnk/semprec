@@ -1,3 +1,4 @@
+import CoreKit
 import Foundation
 
 /// Reads and writes the days the shared layer names as `YYYY-MM-DD` and formats them for the person's locale. The
@@ -13,6 +14,15 @@ enum JournalDates {
         return calendar
     }()
     private static var formatters: [String: DateFormatter] = [:]
+    /// Made once: a formatter is costly to make, and the cards of a month ask for a range each.
+    private static let weekRangeFormatter: DateIntervalFormatter = {
+        let formatter = DateIntervalFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = .current
+        formatter.dateTemplate = "dM"
+        return formatter
+    }()
 
     // MARK: - Parsing
     /// The device's current day. The server answers with its own today, which the diary adopts once it is loaded.
@@ -50,23 +60,18 @@ enum JournalDates {
         date(key).map { calendar.component(.year, from: $0) } ?? 0
     }
 
-    /// The months a quarter spans: `Říjen – Prosinec 2026`.
+    /// The months a quarter spans: `Říjen – Prosinec`.
     static func quarterSpan(start: String) -> String {
         guard let first = date(start), let last = calendar.date(byAdding: .month, value: 2, to: first) else {
             return start
         }
-        return "\(formatted(first, template: "LLLL")) – \(formatted(last, template: "LLLLy"))"
+        return "\(formatted(first, template: "LLLL")) – \(formatted(last, template: "LLLL"))"
     }
 
     /// The week's days: `12.–18. 10.`.
     static func weekRange(first: String, last: String) -> String {
         guard let start = date(first), let end = date(last) else { return "\(first) – \(last)" }
-        let formatter = DateIntervalFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.locale = .current
-        formatter.dateTemplate = "dM"
-        return formatter.string(from: start, to: end)
+        return weekRangeFormatter.string(from: start, to: end)
     }
 
     // MARK: - Axis labels

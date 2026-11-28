@@ -9,10 +9,11 @@ final class MacSandboxEntitlementsTests: XCTestCase {
         XCTAssertEqual(try entitlements()["com.apple.security.network.client"] as? Bool, true)
     }
 
-    func testTheSandboxIsOnAndTheRecorderAndTheImportCanUseTheirResources() throws {
+    func testTheSandboxIsOnAndTheRecorderTheWakeGuardAndTheImportCanUseTheirResources() throws {
         let granted = try entitlements()
         XCTAssertEqual(granted["com.apple.security.app-sandbox"] as? Bool, true)
         XCTAssertEqual(granted["com.apple.security.device.audio-input"] as? Bool, true)
+        XCTAssertEqual(granted["com.apple.security.device.camera"] as? Bool, true)
         XCTAssertEqual(granted["com.apple.security.files.user-selected.read-only"] as? Bool, true)
     }
 }
@@ -24,7 +25,7 @@ private extension MacSandboxEntitlementsTests {
         let file = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-            .appendingPathComponent("Entitlements/Semprec.entitlements")
+            .appendingPathComponent("Entitlements/Alldots.entitlements")
         let data = try Data(contentsOf: file)
         let plist = try PropertyListSerialization.propertyList(from: data, format: nil)
         return try XCTUnwrap(plist as? [String: Any])

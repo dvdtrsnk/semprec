@@ -1,23 +1,22 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { Agent, type AgentMessage, type StreamFn } from "@earendil-works/pi-agent-core";
+import type { Message } from "@earendil-works/pi-ai";
 import {
-  Agent,
-  DEFAULT_COMPACTION_SETTINGS,
-  estimateContextTokens,
-  shouldCompact,
-  type AgentMessage,
   compact as lowLevelCompact,
-  type CompactionPreparation,
-  type StreamFn,
-} from "@earendil-works/pi-agent-core";
-import {
   createAgentSession,
+  DEFAULT_COMPACTION_SETTINGS,
   DefaultResourceLoader,
+  estimateTokens,
   ModelRuntime,
   SessionManager,
   SettingsManager,
+  shouldCompact,
 } from "@earendil-works/pi-coding-agent";
+
+/** pi-coding-agent no longer exports the name of `compact()`'s first parameter. */
+type CompactionPreparation = Parameters<typeof lowLevelCompact>[0];
 
 /**
  * Contract suite for the pinned pi runtime (`pi-ai`, `pi-agent-core`, `pi-coding-agent`), run against the real
@@ -88,14 +87,10 @@ describe("pi runtime contract", () => {
     }
   });
 
-  it("estimateContextTokens accepts a bare message array with no running session", () => {
-    const messages: AgentMessage[] = [
-      { kind: "message", role: "user", content: [{ type: "text", text: "hello" }] } as unknown as AgentMessage,
-    ];
+  it("estimateTokens sizes a bare message with no running session", () => {
+    const message: Message = { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 0 };
 
-    const estimate = estimateContextTokens(messages);
-
-    expect(estimate.tokens).toBeGreaterThan(0);
+    expect(estimateTokens(message)).toBeGreaterThan(0);
   });
 
   it("shouldCompact accepts bare numbers and settings with no running session", () => {

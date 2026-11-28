@@ -1,4 +1,4 @@
-import { parseMarkdown } from "@semprec/block-model";
+import { parseMarkdown } from "@alldots/block-model";
 import type { PoolClient } from "pg";
 import { writeComputedAndAnnounce } from "../chokePoint/itemWrites.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";

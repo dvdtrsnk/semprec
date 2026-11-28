@@ -1,0 +1,10 @@
+[Unit]
+Description=Alldots backup
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/alldots/shared/env/postgres.env
+EnvironmentFile=/opt/alldots/shared/env/settings.env
+EnvironmentFile=/opt/alldots/shared/env/backup.env
+SyslogIdentifier=alldots-backup
+ExecStart=/bin/bash /opt/alldots/shared/bin/alldots-backup.sh

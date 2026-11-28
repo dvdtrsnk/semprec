@@ -1,4 +1,4 @@
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -53,7 +53,7 @@ async function twoTenantsAsRuntimeRole(client: PoolClient): Promise<Tenants> {
   const { rows } = await client.query<{ id: string }>("INSERT INTO tenants (status) VALUES ('active') RETURNING id");
   const b = rows[0]?.id;
   if (!b) throw new Error("second tenant was not inserted");
-  await client.query("SET LOCAL ROLE semprec_data");
+  await client.query("SET LOCAL ROLE alldots_data");
   return { a, b };
 }
 
@@ -76,6 +76,8 @@ async function insertMessage(
   } = {},
 ) {
   return upsertMailMessageMeta(client, {
+    arrival: "live",
+    contentState: "full",
     itemId: await newItemId(client),
     mailboxItemId: extra.mailboxItemId ?? randomUUID(),
     messageId,
@@ -123,8 +125,8 @@ describe("mail identities stay within a tenant", () => {
         const itemId = await newItemId(client);
         const error = await client
           .query(
-            `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id)
-             VALUES ($1, $2, '{}'::jsonb, $3)`,
+            `INSERT INTO mail_message_meta (item_id, message_id, envelope, mailbox_item_id, arrival, content_state)
+             VALUES ($1, $2, '{}'::jsonb, $3, 'live', 'full')`,
             [itemId, "<u1@x>", row.mailboxItemId],
           )
           .then(
@@ -154,7 +156,7 @@ describe("mail identities stay within a tenant", () => {
   async function withSeededTenants(run: (runtime: Pool, a: string, b: string) => Promise<void>): Promise<void> {
     const a = await createTestTenant(pool);
     const b = await createTestTenant(pool);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       for (const tenant of [a, b]) await runInTenant(tenant, () => seedSystem(runtime));
       await run(runtime, a, b);

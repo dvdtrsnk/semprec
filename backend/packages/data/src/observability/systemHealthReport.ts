@@ -229,14 +229,10 @@ export interface OperatorHealthReport {
   tenantAggregates: OperatorTenantAggregates;
 }
 
-/**
- * Excludes global per-mailbox rows (their key and `detail` carry tenant data): the check task
- * purges them only on its next tick, so they may still exist.
- */
 async function getGlobalAlertingChecks(client: Queryable): Promise<AlertingCheck[]> {
   const { rows } = await client.query<{ check_key: string; detail: Record<string, unknown>; changed_at: Date }>(
     `SELECT check_key, detail, changed_at FROM observability_checks
-     WHERE status = 'alerting' AND check_key NOT LIKE 'mail:%' AND check_key NOT LIKE 'process:mailsync:%'
+     WHERE status = 'alerting'
      ORDER BY changed_at`,
   );
   return rows.map((row) => ({ checkKey: row.check_key, detail: row.detail, changedAt: row.changed_at.toISOString() }));
@@ -256,7 +252,7 @@ async function getTenantStatusCounts(client: Queryable): Promise<TenantStatusCou
 }
 
 /**
- * Runs as `semprec_router` behind `ops_health_counts()`. A missing row means broken grants and
+ * Runs as `alldots_router` behind `ops_health_counts()`. A missing row means broken grants and
  * throws rather than reporting zero errors.
  */
 async function getOperatorTenantAggregates(client: Queryable): Promise<OperatorTenantAggregates> {

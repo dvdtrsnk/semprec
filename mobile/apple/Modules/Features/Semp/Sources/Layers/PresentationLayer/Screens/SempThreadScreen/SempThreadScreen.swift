@@ -148,12 +148,12 @@ private extension SempThreadScreen {
 
     @ToolbarContentBuilder var toolbar: some ToolbarContent {
         if state.type != .tick {
-            ToolbarItem(placement: .navigation) {
+            PlainToolbarItem(placement: .navigation) {
                 Button { viewModel.send(.open(.history)) } label: { Image(systemName: "text.alignleft") }
                     .accessibilityLabel(Text("semp.history.open", bundle: .module))
                     .accessibilityIdentifier(SempIdentifiers.history)
             }
-            ToolbarItem(placement: .primaryAction) {
+            PlainToolbarItem(placement: .primaryAction) {
                 Button { viewModel.send(.open(.newChat)) } label: { Image(systemName: "square.and.pencil") }
                     .accessibilityLabel(Text("semp.newChat.open", bundle: .module))
                     .accessibilityIdentifier(SempIdentifiers.newChat)

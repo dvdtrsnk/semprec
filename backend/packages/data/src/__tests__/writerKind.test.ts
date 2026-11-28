@@ -20,7 +20,7 @@ import {
 import { SYSTEM_WRITER, type WriterIdentity } from "../chokePoint/writerKind.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
 import { createInboxTypeWithClient } from "../inbox/inboxTypesStore.js";
-import { createSemprecTickAction } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction } from "../inbox/inboxTickAction.js";
 import { confirmProposalWithClient } from "../inbox/proposalActions.js";
 import * as itemsStore from "../chokePoint/itemsStore.js";
 import * as relationsStore from "../chokePoint/relationsStore.js";
@@ -215,7 +215,7 @@ describe("writer identity threaded into item and relation writes (issue #1415)",
         type: type.id,
       }),
     );
-    await createSemprecTickAction(pool, async () => ({ properties: { name: "Buy milk" } }))(
+    await createAlldotsTickAction(pool, async () => ({ properties: { name: "Buy milk" } }))(
       { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
       { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
     );
@@ -248,7 +248,7 @@ describe("writer identity threaded into item and relation writes (issue #1415)",
         type: type.id,
       }),
     );
-    await createSemprecTickAction(pool, async () => ({ properties: { name: "Buy milk" } }))(
+    await createAlldotsTickAction(pool, async () => ({ properties: { name: "Buy milk" } }))(
       { inboxDatabaseId: inboxId, inboxItemTypesDatabaseId: typesId, processingProposalsDatabaseId: proposalsId },
       { heartbeatId: "hb", projectItemId: "proj", itemId: item.id },
     );

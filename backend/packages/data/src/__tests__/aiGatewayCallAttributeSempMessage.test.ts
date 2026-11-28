@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { ForbiddenError } from "../errors.js";
 import {
@@ -67,7 +67,7 @@ describe("attributeGatewayCallsToSempMessage", () => {
     await resetDatabase(adminPool);
     tenantA = await createTestTenant(adminPool);
     tenantB = await createTestTenant(adminPool);
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
   });
 
   afterEach(async () => {

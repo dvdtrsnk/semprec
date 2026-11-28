@@ -1,8 +1,8 @@
 [
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5565683502",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/228#issuecomment-5565683502",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/228",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5565683502",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/228#issuecomment-5565683502",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/228",
     "id": 5565683502,
     "node_id": "IC_kwDOUFuQ4c8AAAABS72XLg",
     "user": {
@@ -32,7 +32,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5565683502/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5565683502/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -88,9 +88,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5565852023",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/228#issuecomment-5565852023",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/228",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5565852023",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/228#issuecomment-5565852023",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/228",
     "id": 5565852023,
     "node_id": "IC_kwDOUFuQ4c8AAAABS8Apdw",
     "user": {
@@ -116,11 +116,11 @@
     },
     "created_at": "2026-09-07T06:10:00Z",
     "updated_at": "2026-09-07T06:10:00Z",
-    "body": "Relay BB run pushed an update.\n\nPull request: #320\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-228-agent-runtime-01-08-persist-agent-life-thr_7g8jw5h4py`.\n\n## Summary\n\nImplements issue #228 ([agent-runtime 01/08] Persist agent lifecycle events):\n\n- **Migration** `0013_agent_run_events.sql`: adds the `agent_run_events` turn-level log table (bigserial cursor, FK to `agent_runs`, `kind` CHECK-constrained to `turn_start`/`message`/`tool_use`/`tool_result`/`turn_end`/`run_status`, `payload jsonb`) plus its `(agent_run_id, id)` index.\n- **`agentRunEventsStore.ts`** in `@semprec/data`: `insertAgentRunEvent` / `listAgentRunEvents` (ordered by `id ASC` for monotonic reconstruction), exported from the package's public entry point.\n- **New `packages/agent-runtime` package**: a `runAgentSession()` adapter that creates the `agent_runs` row on start, consumes an ordered sequence of `AgentMessage`s, persists one `agent_run_events` row per lifecycle event, drops `message_update` streaming deltas entirely, and finalizes `agent_runs` (status/result snapshot/`finished_at`) on completion or error. `unit` defaults to `'invocation'` with `'session'` selectable by the caller.\n\nSince the external `pi-agent-core` package has no published API yet (it's an empty npm placeholder), the adapter models its expected shape as a local TypeScript contract and takes `createAgentSession` as an injected dependency — this keeps the wrapper fully buildable and testable now, with a one-line wiring change needed once the real package ships matching types.\n\n**Verification:** build clean across all workspace packages, dependency-boundary check clean, migration-numbering check clean, unit tests 83/83, integration tests 407/407 (confirmed one transient failure during a mid-session run was pre-existing, unrelated flakiness in an untouched concurrency test — reproduced passing on immediate re-run), e2e tests 5/5.\n\nRelay-Step-Status: pass",
+    "body": "Relay BB run pushed an update.\n\nPull request: #320\n\nTokens: 0 · Cost: $0.0000\n\nPushed successfully to branch `bb/relay-228-agent-runtime-01-08-persist-agent-life-thr_7g8jw5h4py`.\n\n## Summary\n\nImplements issue #228 ([agent-runtime 01/08] Persist agent lifecycle events):\n\n- **Migration** `0013_agent_run_events.sql`: adds the `agent_run_events` turn-level log table (bigserial cursor, FK to `agent_runs`, `kind` CHECK-constrained to `turn_start`/`message`/`tool_use`/`tool_result`/`turn_end`/`run_status`, `payload jsonb`) plus its `(agent_run_id, id)` index.\n- **`agentRunEventsStore.ts`** in `@alldots/data`: `insertAgentRunEvent` / `listAgentRunEvents` (ordered by `id ASC` for monotonic reconstruction), exported from the package's public entry point.\n- **New `packages/agent-runtime` package**: a `runAgentSession()` adapter that creates the `agent_runs` row on start, consumes an ordered sequence of `AgentMessage`s, persists one `agent_run_events` row per lifecycle event, drops `message_update` streaming deltas entirely, and finalizes `agent_runs` (status/result snapshot/`finished_at`) on completion or error. `unit` defaults to `'invocation'` with `'session'` selectable by the caller.\n\nSince the external `pi-agent-core` package has no published API yet (it's an empty npm placeholder), the adapter models its expected shape as a local TypeScript contract and takes `createAgentSession` as an injected dependency — this keeps the wrapper fully buildable and testable now, with a one-line wiring change needed once the real package ships matching types.\n\n**Verification:** build clean across all workspace packages, dependency-boundary check clean, migration-numbering check clean, unit tests 83/83, integration tests 407/407 (confirmed one transient failure during a mid-session run was pre-existing, unrelated flakiness in an untouched concurrency test — reproduced passing on immediate re-run), e2e tests 5/5.\n\nRelay-Step-Status: pass",
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5565852023/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5565852023/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -176,9 +176,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5565962049",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/228#issuecomment-5565962049",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/228",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5565962049",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/228#issuecomment-5565962049",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/228",
     "id": 5565962049,
     "node_id": "IC_kwDOUFuQ4c8AAAABS8HXQQ",
     "user": {
@@ -208,7 +208,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5565962049/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5565962049/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -264,9 +264,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5566125314",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/228#issuecomment-5566125314",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/228",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5566125314",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/228#issuecomment-5566125314",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/228",
     "id": 5566125314,
     "node_id": "IC_kwDOUFuQ4c8AAAABS8RVAg",
     "user": {
@@ -296,7 +296,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5566125314/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5566125314/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,
@@ -352,9 +352,9 @@
     "minimized": null
   },
   {
-    "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5566210008",
-    "html_url": "https://github.com/dvdtrsnk/semprec/issues/228#issuecomment-5566210008",
-    "issue_url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/228",
+    "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5566210008",
+    "html_url": "https://github.com/dvdtrsnk/alldots/issues/228#issuecomment-5566210008",
+    "issue_url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/228",
     "id": 5566210008,
     "node_id": "IC_kwDOUFuQ4c8AAAABS8Wf2A",
     "user": {
@@ -384,7 +384,7 @@
     "author_association": "CONTRIBUTOR",
     "pin": null,
     "reactions": {
-      "url": "https://api.github.com/repos/dvdtrsnk/semprec/issues/comments/5566210008/reactions",
+      "url": "https://api.github.com/repos/dvdtrsnk/alldots/issues/comments/5566210008/reactions",
       "total_count": 0,
       "+1": 0,
       "-1": 0,

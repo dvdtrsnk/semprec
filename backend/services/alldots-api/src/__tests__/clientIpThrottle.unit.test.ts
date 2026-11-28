@@ -1,0 +1,391 @@
+import { describe, expect, it } from "vitest";
+import {
+  CLIENT_IP_THROTTLE_LIMITS,
+  createClientIpThrottle,
+  throttleKeyForIp,
+  type ThrottledAction,
+} from "../clientIpThrottle.js";
+
+function makeClock(startMs = 1_000_000): { now: () => number; advanceSeconds: (seconds: number) => void } {
+  let current = startMs;
+  return {
+    now: () => current,
+    advanceSeconds: (seconds) => {
+      current += seconds * 1000;
+    },
+  };
+}
+
+const SMALL_LIMITS = {
+  login: { maxEvents: 2, windowSeconds: 100 },
+  passwordResetRequest: { maxEvents: 2, windowSeconds: 100 },
+  passwordResetConsume: { maxEvents: 2, windowSeconds: 100 },
+  invitationAccept: { maxEvents: 2, windowSeconds: 100 },
+  mailboxCredentialVerification: { maxEvents: 2, windowSeconds: 100 },
+  mailContentFetch: { maxEvents: 2, windowSeconds: 100 },
+  mailRemoteSearch: { maxEvents: 2, windowSeconds: 100 },
+  mailHistoryUpload: { maxEvents: 2, windowSeconds: 100 },
+  mailSignalPreview: { maxEvents: 2, windowSeconds: 100 },
+};
+
+describe("CLIENT_IP_THROTTLE_LIMITS", () => {
+  it("states the limit of each throttled action", () => {
+    expect(CLIENT_IP_THROTTLE_LIMITS).toEqual({
+      login: { maxEvents: 30, windowSeconds: 900 },
+      passwordResetRequest: { maxEvents: 10, windowSeconds: 3600 },
+      passwordResetConsume: { maxEvents: 10, windowSeconds: 3600 },
+      invitationAccept: { maxEvents: 10, windowSeconds: 3600 },
+      mailboxCredentialVerification: { maxEvents: 10, windowSeconds: 900 },
+      mailContentFetch: { maxEvents: 120, windowSeconds: 900 },
+      mailRemoteSearch: { maxEvents: 30, windowSeconds: 900 },
+      mailHistoryUpload: { maxEvents: 600, windowSeconds: 900 },
+      mailSignalPreview: { maxEvents: 120, windowSeconds: 900 },
+      mailOauthCallback: { maxEvents: 30, windowSeconds: 900 },
+      calendarWebhook: { maxEvents: 300, windowSeconds: 60 },
+      mailWebhook: { maxEvents: 300, windowSeconds: 60 },
+    });
+  });
+});
+
+describe("throttleKeyForIp", () => {
+  it("keeps an IPv4 address as is", () => {
+    expect(throttleKeyForIp("192.0.2.1")).toBe("192.0.2.1");
+  });
+
+  it("maps an IPv4-mapped IPv6 address to its IPv4 address", () => {
+    expect(throttleKeyForIp("::ffff:192.0.2.1")).toBe("192.0.2.1");
+    expect(throttleKeyForIp("::ffff:c000:201")).toBe("192.0.2.1");
+  });
+
+  it("groups IPv6 addresses by their /64 prefix", () => {
+    expect(throttleKeyForIp("2001:db8:1:2:aaaa:bbbb:cccc:dddd")).toBe(throttleKeyForIp("2001:db8:1:2::1"));
+    expect(throttleKeyForIp("2001:DB8:1:2:0:0:0:9")).toBe(throttleKeyForIp("2001:db8:1:2::9"));
+    expect(throttleKeyForIp("2001:db8:1:2::1")).not.toBe(throttleKeyForIp("2001:db8:1:3::1"));
+  });
+
+  it("does not confuse an IPv6 prefix with an IPv4 address", () => {
+    expect(throttleKeyForIp("::1")).toBe("0:0:0:0::/64");
+  });
+});
+
+describe("createClientIpThrottle", () => {
+  it("refuses the N+1-th event with the seconds until the oldest one expires, then allows again", () => {
+    const clock = makeClock();
+    const throttle = createClientIpThrottle({ now: clock.now, limits: SMALL_LIMITS });
+
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBeNull();
+    throttle.record("login", "192.0.2.1");
+    clock.advanceSeconds(10);
+    throttle.record("login", "192.0.2.1");
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(90);
+
+    clock.advanceSeconds(50);
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(40);
+
+    clock.advanceSeconds(40);
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBeNull();
+    throttle.record("login", "192.0.2.1");
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(10);
+
+    clock.advanceSeconds(10);
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBeNull();
+  });
+
+  it("rounds a fractional remainder up to a whole second of at least 1", () => {
+    let nowMs = 0;
+    const throttle = createClientIpThrottle({ now: () => nowMs, limits: SMALL_LIMITS });
+    throttle.record("login", "192.0.2.1");
+    throttle.record("login", "192.0.2.1");
+    nowMs = 99_900;
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(1);
+  });
+
+  it("is under the limit until the limit is reached", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
+    throttle.record("login", "192.0.2.1");
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBeNull();
+  });
+
+  it("keeps the actions' counters separate", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
+    const actions: ThrottledAction[] = [
+      "login",
+      "passwordResetRequest",
+      "passwordResetConsume",
+      "invitationAccept",
+      "mailboxCredentialVerification",
+      "mailContentFetch",
+      "mailRemoteSearch",
+    ];
+    for (const action of actions) {
+      throttle.record(action, "192.0.2.1");
+      throttle.record(action, "192.0.2.1");
+      for (const other of actions) {
+        const expected = actions.indexOf(other) <= actions.indexOf(action) ? 100 : null;
+        expect(throttle.retryAfterSeconds(other, "192.0.2.1")).toBe(expected);
+      }
+    }
+  });
+
+  it("shares a counter within an IPv6 /64 and between a mapped and plain IPv4, but not across them", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
+    throttle.record("login", "2001:db8:1:2::1");
+    throttle.record("login", "2001:db8:1:2:ffff::7");
+    expect(throttle.retryAfterSeconds("login", "2001:db8:1:2::99")).toBe(100);
+    expect(throttle.retryAfterSeconds("login", "2001:db8:1:3::1")).toBeNull();
+
+    throttle.record("login", "::ffff:192.0.2.1");
+    throttle.record("login", "192.0.2.1");
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(100);
+    expect(throttle.retryAfterSeconds("login", "::ffff:192.0.2.1")).toBe(100);
+    expect(throttle.retryAfterSeconds("login", "192.0.2.2")).toBeNull();
+  });
+
+  it("evicts a key whose events all expired before the least recently recorded live key", () => {
+    const clock = makeClock();
+    // Different windows per action, so the expired key is not also the least recently recorded one.
+    const throttle = createClientIpThrottle({
+      now: clock.now,
+      maxKeys: 2,
+      limits: {
+        ...SMALL_LIMITS,
+        login: { maxEvents: 1, windowSeconds: 100 },
+        passwordResetRequest: { maxEvents: 1, windowSeconds: 1000 },
+      },
+    });
+    throttle.record("passwordResetRequest", "192.0.2.1");
+    clock.advanceSeconds(10);
+    throttle.record("login", "192.0.2.2");
+    clock.advanceSeconds(100);
+    // The login key expired; the reset key is live but recorded earlier. The expired-first sweep must drop the login
+    // key, where plain LRU eviction would drop the reset key.
+    throttle.record("passwordResetConsume", "192.0.2.3");
+
+    expect(throttle.retryAfterSeconds("passwordResetRequest", "192.0.2.1")).toBe(890);
+    expect(throttle.retryAfterSeconds("passwordResetConsume", "192.0.2.3")).toBeNull();
+    throttle.record("passwordResetConsume", "192.0.2.3");
+    expect(throttle.retryAfterSeconds("passwordResetConsume", "192.0.2.3")).toBe(100);
+  });
+
+  it("evicts the least recently recorded live key when no key has expired", () => {
+    const clock = makeClock();
+    const throttle = createClientIpThrottle({ now: clock.now, maxKeys: 2, limits: SMALL_LIMITS });
+    throttle.record("login", "192.0.2.1");
+    throttle.record("login", "192.0.2.1");
+    clock.advanceSeconds(1);
+    throttle.record("login", "192.0.2.2");
+    throttle.record("login", "192.0.2.2");
+    clock.advanceSeconds(1);
+    throttle.record("login", "192.0.2.1");
+    throttle.record("login", "192.0.2.3");
+    throttle.record("login", "192.0.2.3");
+
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(98);
+    expect(throttle.retryAfterSeconds("login", "192.0.2.2")).toBeNull();
+    expect(throttle.retryAfterSeconds("login", "192.0.2.3")).toBe(100);
+  });
+
+  it.each([
+    { elapsedSeconds: 30, reason: "the least recently recorded live key" },
+    { elapsedSeconds: 105, reason: "an expired key behind a live key" },
+  ])("evicts $reason after releasing its newest reservation", ({ elapsedSeconds }) => {
+    const clock = makeClock();
+    const throttle = createClientIpThrottle({ now: clock.now, maxKeys: 2, limits: SMALL_LIMITS });
+    throttle.record("login", "192.0.2.1");
+    clock.advanceSeconds(10);
+    throttle.record("login", "192.0.2.2");
+    throttle.record("login", "192.0.2.2");
+    clock.advanceSeconds(10);
+    const acquisition = throttle.tryAcquire("login", "192.0.2.1");
+    if (!acquisition.granted) throw new Error("expected the attempt to be granted");
+    acquisition.reservation.release();
+    clock.advanceSeconds(elapsedSeconds - 20);
+    throttle.record("login", "192.0.2.3");
+    throttle.record("login", "192.0.2.3");
+
+    expect(throttle.retryAfterSeconds("login", "192.0.2.2")).toBe(110 - elapsedSeconds);
+    expect(throttle.retryAfterSeconds("login", "192.0.2.3")).toBe(100);
+    expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(true);
+    expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(true);
+  });
+
+  it("counts keys of every action toward maxKeys and evicts the oldest across actions", () => {
+    const clock = makeClock();
+    const throttle = createClientIpThrottle({ now: clock.now, maxKeys: 2, limits: SMALL_LIMITS });
+    throttle.record("login", "192.0.2.1");
+    throttle.record("login", "192.0.2.1");
+    clock.advanceSeconds(1);
+    throttle.record("passwordResetRequest", "192.0.2.1");
+    throttle.record("passwordResetRequest", "192.0.2.1");
+    clock.advanceSeconds(1);
+    throttle.record("passwordResetConsume", "192.0.2.1");
+
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBeNull();
+    expect(throttle.retryAfterSeconds("passwordResetRequest", "192.0.2.1")).toBe(99);
+  });
+
+  it("stops counting an expired key toward maxKeys once it is read", () => {
+    const clock = makeClock();
+    const throttle = createClientIpThrottle({ now: clock.now, maxKeys: 2, limits: SMALL_LIMITS });
+    throttle.record("login", "192.0.2.1");
+    clock.advanceSeconds(100);
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBeNull();
+    // Two live keys fit in maxKeys 2 only if the pruned key freed its slot.
+    throttle.record("login", "192.0.2.2");
+    throttle.record("login", "192.0.2.2");
+    throttle.record("login", "192.0.2.3");
+    expect(throttle.retryAfterSeconds("login", "192.0.2.2")).toBe(100);
+  });
+});
+
+describe("tryAcquire", () => {
+  it("counts each granted attempt at once, so attempts still in flight hold the window", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
+    expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(true);
+    expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(true);
+    expect(throttle.tryAcquire("login", "192.0.2.1")).toEqual({ granted: false, retryAfterSeconds: 100 });
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(100);
+    expect(throttle.tryAcquire("passwordResetRequest", "192.0.2.1").granted).toBe(true);
+  });
+
+  it("uncounts a released attempt exactly once", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
+    const first = throttle.tryAcquire("login", "192.0.2.1");
+    throttle.tryAcquire("login", "192.0.2.1");
+    if (!first.granted) throw new Error("expected the first attempt to be granted");
+    first.reservation.release();
+    first.reservation.release();
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBeNull();
+    expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(true);
+    expect(throttle.tryAcquire("login", "192.0.2.1").granted).toBe(false);
+  });
+
+  it("frees the key's maxKeys slot when its only event is released", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, maxKeys: 2, limits: SMALL_LIMITS });
+    const acquisition = throttle.tryAcquire("login", "192.0.2.1");
+    if (!acquisition.granted) throw new Error("expected the attempt to be granted");
+    acquisition.reservation.release();
+    throttle.record("login", "192.0.2.2");
+    throttle.record("login", "192.0.2.2");
+    throttle.record("login", "192.0.2.3");
+    expect(throttle.retryAfterSeconds("login", "192.0.2.2")).toBe(100);
+  });
+
+  it("does not uncount a later event once the reserved one expired", () => {
+    const clock = makeClock();
+    const throttle = createClientIpThrottle({ now: clock.now, limits: SMALL_LIMITS });
+    const stale = throttle.tryAcquire("login", "192.0.2.1");
+    if (!stale.granted) throw new Error("expected the attempt to be granted");
+    clock.advanceSeconds(100);
+    throttle.record("login", "192.0.2.1");
+    stale.reservation.release();
+    throttle.record("login", "192.0.2.1");
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(100);
+  });
+});
+
+describe.each([
+  { action: "mailContentFetch" as const, maxEvents: 120 },
+  { action: "mailRemoteSearch" as const, maxEvents: 30 },
+  { action: "mailHistoryUpload" as const, maxEvents: 600 },
+  { action: "mailSignalPreview" as const, maxEvents: 120 },
+])("$action", ({ action, maxEvents }) => {
+  const USER = "0b0e0c4e-6f0e-4d53-9d0b-6f3c5a2f1a11";
+  const OTHER_USER = "7c1d2a90-3b54-4e0f-8a55-1f2e3d4c5b66";
+
+  it(`grants a user ${maxEvents} in 15 minutes, refuses the next and counts each user apart`, () => {
+    const clock = makeClock();
+    const throttle = createClientIpThrottle({ now: clock.now });
+    for (let attempt = 0; attempt < maxEvents; attempt++) {
+      expect(throttle.tryAcquire(action, USER).granted).toBe(true);
+    }
+    expect(throttle.tryAcquire(action, USER)).toEqual({ granted: false, retryAfterSeconds: 900 });
+    expect(throttle.tryAcquire(action, OTHER_USER).granted).toBe(true);
+    clock.advanceSeconds(900);
+    expect(throttle.tryAcquire(action, USER).granted).toBe(true);
+  });
+
+  it("takes the user id as the key, without the address grouping", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
+    throttle.record(action, "2001:db8:1:2::1");
+    throttle.record(action, "2001:db8:1:2::1");
+    expect(throttle.retryAfterSeconds(action, "2001:db8:1:2::1")).toBe(100);
+    expect(throttle.retryAfterSeconds(action, "2001:db8:1:2::2")).toBeNull();
+  });
+});
+
+describe("mailboxCredentialVerification (issue gh-1750)", () => {
+  const USER = "0b0e0c4e-6f0e-4d53-9d0b-6f3c5a2f1a11";
+  const OTHER_USER = "7c1d2a90-3b54-4e0f-8a55-1f2e3d4c5b66";
+
+  it("grants a user ten attempts in 15 minutes, refuses the eleventh and grants again once the earliest are 15 minutes old", () => {
+    const clock = makeClock();
+    const throttle = createClientIpThrottle({ now: clock.now });
+    for (let attempt = 0; attempt < 4; attempt++) {
+      expect(throttle.tryAcquire("mailboxCredentialVerification", USER).granted).toBe(true);
+    }
+    clock.advanceSeconds(300);
+    for (let attempt = 0; attempt < 6; attempt++) {
+      expect(throttle.tryAcquire("mailboxCredentialVerification", USER).granted).toBe(true);
+    }
+    expect(throttle.tryAcquire("mailboxCredentialVerification", USER)).toEqual({
+      granted: false,
+      retryAfterSeconds: 600,
+    });
+
+    clock.advanceSeconds(599);
+    expect(throttle.tryAcquire("mailboxCredentialVerification", USER)).toEqual({
+      granted: false,
+      retryAfterSeconds: 1,
+    });
+
+    clock.advanceSeconds(1);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      expect(throttle.tryAcquire("mailboxCredentialVerification", USER).granted).toBe(true);
+    }
+    expect(throttle.tryAcquire("mailboxCredentialVerification", USER)).toEqual({
+      granted: false,
+      retryAfterSeconds: 300,
+    });
+  });
+
+  it("counts each user apart", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
+    throttle.record("mailboxCredentialVerification", USER);
+    throttle.record("mailboxCredentialVerification", USER);
+    expect(throttle.tryAcquire("mailboxCredentialVerification", USER).granted).toBe(false);
+    expect(throttle.tryAcquire("mailboxCredentialVerification", OTHER_USER).granted).toBe(true);
+    expect(throttle.retryAfterSeconds("mailboxCredentialVerification", USER)).toBe(100);
+  });
+
+  it("takes the key as it is given, without the address grouping the other actions apply", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
+    // Two keys of one IPv6 /64, and a mapped and a plain IPv4: one counter each under `login`.
+    throttle.record("mailboxCredentialVerification", "2001:db8:1:2::1");
+    throttle.record("mailboxCredentialVerification", "2001:db8:1:2::1");
+    throttle.record("mailboxCredentialVerification", "::ffff:192.0.2.1");
+    throttle.record("mailboxCredentialVerification", "::ffff:192.0.2.1");
+    expect(throttle.retryAfterSeconds("mailboxCredentialVerification", "2001:db8:1:2::1")).toBe(100);
+    expect(throttle.retryAfterSeconds("mailboxCredentialVerification", "2001:db8:1:2::2")).toBeNull();
+    expect(throttle.retryAfterSeconds("mailboxCredentialVerification", "::ffff:192.0.2.1")).toBe(100);
+    expect(throttle.retryAfterSeconds("mailboxCredentialVerification", "192.0.2.1")).toBeNull();
+
+    throttle.record("login", "2001:db8:1:2::1");
+    throttle.record("login", "2001:db8:1:2::1");
+    throttle.record("login", "::ffff:192.0.2.1");
+    throttle.record("login", "::ffff:192.0.2.1");
+    expect(throttle.retryAfterSeconds("login", "2001:db8:1:2::2")).toBe(100);
+    expect(throttle.retryAfterSeconds("login", "192.0.2.1")).toBe(100);
+  });
+
+  it("uncounts a released attempt, as for every other action", () => {
+    const throttle = createClientIpThrottle({ now: makeClock().now, limits: SMALL_LIMITS });
+    const first = throttle.tryAcquire("mailboxCredentialVerification", USER);
+    expect(throttle.tryAcquire("mailboxCredentialVerification", USER).granted).toBe(true);
+    expect(throttle.tryAcquire("mailboxCredentialVerification", USER).granted).toBe(false);
+    if (!first.granted) throw new Error("expected the first attempt to be granted");
+    first.reservation.release();
+    expect(throttle.tryAcquire("mailboxCredentialVerification", USER).granted).toBe(true);
+    expect(throttle.tryAcquire("mailboxCredentialVerification", USER).granted).toBe(false);
+  });
+});

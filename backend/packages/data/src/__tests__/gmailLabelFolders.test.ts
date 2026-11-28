@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import "../domainWriteHooks.js";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { createRuntimeRolePool, getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import { createItemWithClient } from "../chokePoint/itemWrites.js";
 import { getDatabaseByModuleId } from "../chokePoint/databasesStore.js";
@@ -16,6 +16,8 @@ import {
   type GmailMailClient,
 } from "../mail/gmailReconcile.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
+import { gmailHistory, recentGmailListing } from "../testSupport/gmailListing.js";
+import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -185,13 +187,8 @@ const LABELS: GmailLabelRef[] = [
 function gmailClient(messages: Record<string, string[]>): GmailMailClient {
   return {
     getCurrentHistoryId: async () => "100",
-    listHistorySince: async () => ({
-      invalidated: false,
-      newHistoryId: "101",
-      changedMessageIds: Object.keys(messages),
-      removedMessageIds: [],
-    }),
-    listAllMessageIds: async () => Object.keys(messages),
+    listHistorySince: async () => gmailHistory("101", Object.keys(messages)),
+    listMessageIds: recentGmailListing(Object.keys(messages)),
     fetchMessage: async (id) => ({
       id,
       threadId: `t-${id}`,
@@ -248,7 +245,7 @@ async function setup(scopeTenant = tenantId): Promise<Setup> {
 
 async function sync(params: Setup, messages: Record<string, string[]>): Promise<void> {
   await runInTenant(tenantId, () =>
-    withTransaction(pool, (client) => reconcileGmailAccount(client, gmailClient(messages), params)),
+    reconcileGmailAccount(pool, gmailClient(messages), { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }),
   );
 }
 
@@ -276,7 +273,7 @@ async function foldersOf(params: Setup, providerMessageId: string): Promise<stri
 describe("Gmail label folders (issue #1496)", () => {
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
 
   beforeEach(async () => {
@@ -328,25 +325,89 @@ describe("Gmail label folders (issue #1496)", () => {
     expect(await foldersOf(params, "m1")).toEqual([GMAIL_ARCHIVE_PROVIDER_ID]);
   });
 
-  it("rejects missing and system tenant scope before Gmail reconciliation queries", async () => {
+  it("trashes a message Gmail reports deleted and drops its meta row, leaving the others", async () => {
     const params = await setup();
-    const client = await admin.connect();
-    const query = vi.spyOn(client, "query");
+    await sync(params, { m1: ["INBOX"], m2: ["INBOX"] });
+    const deletedGmail: GmailMailClient = {
+      ...gmailClient({ m2: ["INBOX"] }),
+      listHistorySince: async () => gmailHistory("102", [], ["m1"]),
+      fetchMessage: async () => null,
+    };
+    await runInTenant(tenantId, () =>
+      reconcileGmailAccount(pool, deletedGmail, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }),
+    );
+    const { rows } = await admin.query<{ subject: string; trashed: boolean; meta: boolean }>(
+      `SELECT i.properties ->> 'name' AS subject, i.deleted_at IS NOT NULL AS trashed,
+              EXISTS (SELECT 1 FROM mail_message_meta m WHERE m.item_id = i.id) AS meta
+         FROM items i WHERE i.database_id = $1 ORDER BY 1`,
+      [params.emailsDatabaseId],
+    );
+    expect(rows).toEqual([
+      { subject: "m1", trashed: true, meta: false },
+      { subject: "m2", trashed: false, meta: true },
+    ]);
+    expect(await foldersOf(params, "m2")).toEqual(["INBOX"]);
+  });
+
+  it("renames the Folder of a renamed label and retires the Folder of a deleted label once it is empty", async () => {
+    const params = await setup();
+    const withLabels = (labels: GmailLabelRef[], messages: Record<string, string[]>): GmailMailClient => ({
+      ...gmailClient(messages),
+      listLabels: async () => labels,
+    });
+    const work = (name: string): GmailLabelRef => ({ id: "Label_1", name, type: "user" });
+    const systemLabels = LABELS.filter((label) => label.type === "system");
+    const pass = (gmail: GmailMailClient) =>
+      runInTenant(tenantId, () => reconcileGmailAccount(pool, gmail, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }));
+    const folderNames = async (): Promise<Array<{ pid: string; name: string }>> => {
+      const { rows } = await admin.query<{ pid: string; name: string }>(
+        `SELECT properties ->> 'providerId' AS pid, properties ->> 'name' AS name FROM items
+          WHERE database_id = $1 AND deleted_at IS NULL AND properties ->> 'providerId' = 'Label_1'`,
+        [params.foldersDatabaseId],
+      );
+      return rows;
+    };
+
+    await pass(withLabels([...systemLabels, work("Work")], { m1: ["INBOX", "Label_1"] }));
+    await pass(withLabels([...systemLabels, work("Práce")], { m1: ["INBOX", "Label_1"] }));
+    expect(await folderNames()).toEqual([{ pid: "Label_1", name: "Práce" }]);
+
+    // Gone from the label list while a message is still linked to it: kept until the message leaves it.
+    const stillLinked = withLabels(systemLabels, {});
+    stillLinked.listHistorySince = async () => gmailHistory("103");
+    await pass(stillLinked);
+    expect(await folderNames()).toEqual([{ pid: "Label_1", name: "Práce" }]);
+
+    const relabelled = withLabels(systemLabels, { m1: ["INBOX"] });
+    relabelled.listHistorySince = async () => gmailHistory("104", ["m1"]);
+    await pass(relabelled);
+    expect(await foldersOf(params, "m1")).toEqual(["INBOX"]);
+    await pass(stillLinked);
+    expect(await folderNames()).toEqual([]);
+    expect(await folderProviderIds(params)).toEqual(["DRAFT", "INBOX", "SENT", GMAIL_ARCHIVE_PROVIDER_ID].sort());
+  });
+
+  it("rejects missing and system tenant scope before Gmail reconciliation queries or provider calls", async () => {
+    const params = await setup();
+    const connect = vi.spyOn(pool, "connect");
+    const gmail = gmailClient({});
+    const listLabels = vi.spyOn(gmail, "listLabels");
     try {
-      await expect(reconcileGmailAccount(client, gmailClient({}), params)).rejects.toThrow(/tenant scope/i);
+      const passParams = { ...params, pass: UNGUARDED_MAIL_SYNC_PASS };
+      await expect(reconcileGmailAccount(pool, gmail, passParams)).rejects.toThrow(/tenant scope/i);
       await expect(
-        runAsSystem("gmail-scope-test", () => reconcileGmailAccount(client, gmailClient({}), params)),
+        runAsSystem("gmail-scope-test", () => reconcileGmailAccount(pool, gmail, passParams)),
       ).rejects.toThrow(/tenant scope/i);
-      expect(query).not.toHaveBeenCalled();
+      expect(connect).not.toHaveBeenCalled();
+      expect(listLabels).not.toHaveBeenCalled();
     } finally {
-      query.mockRestore();
-      client.release();
+      connect.mockRestore();
     }
   });
 
-  it("settles and closes an owned reconcile that times out before the provider barrier", async () => {
+  it("settles and closes an owned reconcile that times out before the provider call after its first transaction", async () => {
     const params = await setup();
-    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const operationPool = await createRuntimeRolePool(admin, "alldots_data");
     const capturedBackends: OwnedBackend[] = [];
     const capture = capturePoolPids(operationPool, capturedBackends);
     const holder = await admin.connect();
@@ -370,14 +431,15 @@ describe("Gmail label folders (issue #1496)", () => {
             `mail-thread-mutation:v1:${tenantId.toLowerCase()}`,
           ]),
         );
+        // A first pass captures the history id after its prepare transaction, which waits for the guard.
         const gmail = gmailClient({});
-        gmail.listLabels = async () => {
+        gmail.getCurrentHistoryId = async () => {
           barrierReached = true;
-          return LABELS;
+          return "100";
         };
         operation = runInTenant(tenantId, () =>
-          withTransaction(operationPool, (client) => reconcileGmailAccount(client, gmail, params)),
-        );
+          reconcileGmailAccount(operationPool, gmail, { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }),
+        ).then(() => undefined);
         const operationSettled = Promise.allSettled([operation]);
         let participantPid: number | undefined;
         const deadline = Date.now() + 3000;
@@ -459,7 +521,7 @@ describe("Gmail label folders (issue #1496)", () => {
   }, 120_000);
 
   it("settles an owned pool when fixture rollback fails", async () => {
-    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const operationPool = await createRuntimeRolePool(admin, "alldots_data");
     const backends: OwnedBackend[] = [];
     const capture = capturePoolPids(operationPool, backends);
     const holder = await admin.connect();
@@ -517,7 +579,7 @@ describe("Gmail label folders (issue #1496)", () => {
   }, 120_000);
 
   it("preserves a body failure when rollback also fails and the owned pool settles", async () => {
-    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const operationPool = await createRuntimeRolePool(admin, "alldots_data");
     const backends: OwnedBackend[] = [];
     const capture = capturePoolPids(operationPool, backends);
     const holder = await admin.connect();
@@ -610,7 +672,7 @@ describe("Gmail label folders (issue #1496)", () => {
 
   it("settles a connection acquired after owned pool cleanup starts", async () => {
     const params = await setup();
-    const operationPool = await createRuntimeRolePool(admin, "semprec_data");
+    const operationPool = await createRuntimeRolePool(admin, "alldots_data");
     const capturedBackends: OwnedBackend[] = [];
     const capture = capturePoolPids(operationPool, capturedBackends);
     const control = await admin.connect();
@@ -657,8 +719,8 @@ describe("Gmail label folders (issue #1496)", () => {
         );
         expect(refused.rows[0]?.locked).toBe(false);
         operation = runInTenant(tenantId, () =>
-          withTransaction(operationPool, (client) => reconcileGmailAccount(client, gmailClient({}), params)),
-        );
+          reconcileGmailAccount(operationPool, gmailClient({}), { ...params, pass: UNGUARDED_MAIL_SYNC_PASS }),
+        ).then(() => undefined);
         const result = Promise.allSettled([operation]);
         await bounded(connecting);
         expect(capturedBackends).toEqual([]);

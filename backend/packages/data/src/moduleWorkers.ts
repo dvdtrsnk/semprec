@@ -1,7 +1,7 @@
-import type { ModuleRegistry, ModuleWorkerProjection } from "@semprec/module-registry";
+import type { ModuleRegistry, ModuleWorkerProjection } from "@alldots/module-registry";
 
 /**
- * One worker process that should exist: one per active row (e.g. `semprec-mailsync@<mailboxId>`), or exactly one
+ * One worker process that should exist: one per active row (e.g. `alldots-mailsync@<mailboxId>`), or exactly one
  * with `rowId: null` for a singleton.
  */
 export interface DesiredWorkerInstance {

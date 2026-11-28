@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ImapFlow } from "imapflow";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { withTransaction } from "../db/pool.js";
 import { drainGmailMoves, drainGraphMoves, drainImapMoves } from "../mail/mailMessageMoveSync.js";
 import { logger } from "../mail/logger.js";
@@ -48,6 +48,8 @@ import {
   getTestPool,
   resetDatabase,
 } from "../testSupport/testDb.js";
+import { UNGUARDED_MAIL_SYNC_PASS } from "../testSupport/mailSyncPass.js";
+import { fakeImapRange } from "../testSupport/fakeImapMessages.js";
 
 let admin: Pool;
 let pool: Pool;
@@ -93,7 +95,7 @@ const gmailEvidence = (messageId: string, labels: { inTrash?: boolean; inInbox?:
 /** The provider adapters must run outside any database transaction held by the move worker. */
 async function assertNoMoveTransaction(): Promise<void> {
   const activity = await admin.query<{ pid: number; xact_start: Date | null }>(
-    "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'semprec_data'",
+    "SELECT pid, xact_start FROM pg_stat_activity WHERE datname = current_database() AND usename = 'alldots_data'",
   );
   expect(activity.rows.length).toBeGreaterThan(0);
   expect(activity.rows.every((row) => row.xact_start === null)).toBe(true);
@@ -117,6 +119,8 @@ async function fixture(
     const providerMessageId = `fake-${randomUUID()}`;
     await withTransaction(pool, (client) =>
       upsertMailMessageMeta(client, {
+        arrival: "live",
+        contentState: "full",
         itemId: messageItemId,
         mailboxItemId,
         messageId: `<${randomUUID()}@example.test>`,
@@ -150,6 +154,8 @@ async function replaceProviderMessageId(messageItemId: string, mailboxItemId: st
     const existing = await getMailMessageMetaByItemId(client, messageItemId);
     if (!existing) throw new Error("missing fixture metadata");
     await upsertMailMessageMeta(client, {
+      arrival: "live",
+      contentState: "full",
       itemId: existing.itemId,
       mailboxItemId,
       messageId: existing.messageId,
@@ -182,7 +188,14 @@ async function imapFixture(folders: { path: string; purpose: string; uidValidity
       { allowedSystemKeys: ["name"] },
     );
     const messageId = `<${randomUUID()}@example.test>`;
-    await upsertMailMessageMeta(client, { itemId: message.id, mailboxItemId: mailbox.id, messageId, envelope: {} });
+    await upsertMailMessageMeta(client, {
+      arrival: "live",
+      contentState: "full",
+      itemId: message.id,
+      mailboxItemId: mailbox.id,
+      messageId,
+      envelope: {},
+    });
     const folderIds: string[] = [];
     for (const folder of folders) {
       const id = await ensureFolderItem(client, {
@@ -199,7 +212,10 @@ async function imapFixture(folders: { path: string; purpose: string; uidValidity
         itemId: id,
         uidvalidity: folder.uidValidity,
         uidnext: folder.uidNext,
+        liveFromUid: folder.uidNext,
+        backfillBelowUid: null,
         highestmodseq: null,
+        messageCount: "0",
       });
       folderIds.push(id);
     }
@@ -527,7 +543,7 @@ describe("mail move intent store", () => {
 
   beforeAll(async () => {
     admin = getTestPool();
-    pool = await createRuntimeRolePool(admin, "semprec_data");
+    pool = await createRuntimeRolePool(admin, "alldots_data");
   });
   beforeEach(async () => {
     await resetDatabase(admin);
@@ -1294,21 +1310,34 @@ describe("mail move intent store", () => {
     const reconciledFlag = vi.fn(async () => {});
     const reconcileClient = {
       getCapabilities: async () => new Set<string>(),
-      listFolders: async () => [{ path: "Archive", specialUse: "\\Archive" }],
-      selectFolder: async () => ({ uidvalidity: 43, uidnext: 30, highestModSeq: null }),
-      fetchMessagesSince: async () => [],
-      fetchVanishedSince: async () => null,
+      listFolders: async () => [
+        { path: "INBOX", specialUse: "\\Inbox" },
+        { path: "Archive", specialUse: "\\Archive" },
+      ],
+      selectFolder: async (path: string) => ({
+        uidvalidity: path === "INBOX" ? 42 : 43,
+        uidnext: 30,
+        highestModSeq: null,
+        messages: 0,
+      }),
+      fetchMessagesSince: async () => fakeImapRange([]),
+      fetchMessagesBefore: async () => fakeImapRange([]),
+      fetchSnippets: async () => new Map<number, string>(),
+      fetchChangesSince: async () => null,
       fetchAllUids: async () => [23],
       fetchFlagsChangedSince: async () => [],
       setMessageFlag: reconciledFlag,
       appendMessage: async () => {},
       close: async () => {},
     } satisfies ImapMailClient;
-    await inTenant(async (client) => {
+    const { files, attachments } = await inTenant(async (client) => {
       const files = await getDatabaseByModuleId(client, "files");
       const attachments = await getPropertyByKey(client, fx.emailsDatabaseId, "attachments");
       if (!files || !attachments) throw new Error("missing attachment schema");
-      await reconcileImapAccount(client, reconcileClient, {
+      return { files, attachments };
+    });
+    await runInTenant(a, () =>
+      reconcileImapAccount(pool, reconcileClient, {
         mailboxItemId: fx.mailboxItemId,
         emailsDatabaseId: fx.emailsDatabaseId,
         filesDatabaseId: files.id,
@@ -1318,8 +1347,9 @@ describe("mail move intent store", () => {
         attachmentsRelationPropertyId: attachments.id,
         storage: new LocalFsBlobStorageWriter("/private/tmp/unused-move-test"),
         storageKeyPrefix: fx.mailboxItemId,
-      });
-    });
+        pass: UNGUARDED_MAIL_SYNC_PASS,
+      }),
+    );
     expect(reconciledFlag).toHaveBeenCalledWith("Archive", 23, "\\Seen", true);
 
     // A native MOVE that answers false stays uncertain and is not replayed.
@@ -1373,6 +1403,8 @@ describe("mail move intent store", () => {
     const observe = () =>
       inTenant((client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: fx.emailsDatabaseId,
           filesDatabaseId: randomUUID(),
           folderRelationPropertyId: fx.folderPropertyId,
@@ -1404,5 +1436,80 @@ describe("mail move intent store", () => {
     expect(first.source_evidence).toEqual(source);
     expect(next.source_evidence).toEqual(source);
     expect(next.desired_revision).toBe("2");
+  });
+
+  describe("IMAP move drain connections", () => {
+    const folders = [
+      { path: "INBOX", purpose: "inbox", uidValidity: "42", uidNext: "30" },
+      { path: "Archive", purpose: "archive", uidValidity: "43", uidNext: "30" },
+    ];
+
+    /** Another message of `fx`'s mailbox, in its INBOX under `uid`, which the user moved to Archive. */
+    async function anotherArchivedMessage(fx: ImapFixture, uid: number): Promise<void> {
+      const [inboxId, archiveId] = fx.folderIds as [string, string];
+      const messageItemId = await inTenant(async (client) => {
+        const message = await createItemWithClient(
+          client,
+          { databaseId: fx.emailsDatabaseId, properties: { name: `Message ${uid}` } },
+          { allowedSystemKeys: ["name"] },
+        );
+        await upsertMailMessageMeta(client, {
+          itemId: message.id,
+          mailboxItemId: fx.mailboxItemId,
+          messageId: `<${randomUUID()}@example.test>`,
+          envelope: {},
+          arrival: "live",
+          contentState: "full",
+        });
+        await linkFolder(client, { ...fx, messageItemId: message.id }, inboxId, uid);
+        return message.id;
+      });
+      await moveImapLocally(
+        { ...fx, messageItemId },
+        "archive",
+        { folderId: inboxId, path: "INBOX", uid, uidValidity: "42" },
+        archiveId,
+      );
+    }
+
+    /** A provider client that moves natively and reports itself reusable or not after each move. */
+    function movingClient(reusable: boolean) {
+      const moved: number[] = [];
+      const close = vi.fn(async () => {});
+      const client = {
+        prepareMove: async () => ({ uidValidity: "42", capabilities: new Set(["MOVE"]), found: true }),
+        executeMoveStep: async (_step: string, _sourcePath: string, uid: number) => {
+          moved.push(uid);
+          return { kind: "acknowledged" as const, targetUid: 100 + uid, targetUidValidity: "43" };
+        },
+        isReusable: () => reusable,
+        close,
+      } as unknown as ImapMailClient;
+      return { client, moved, close };
+    }
+
+    it.each([
+      ["one connection for every move while it stays reusable", true, 1],
+      ["a new connection for each move after one that left it in doubt", false, 3],
+    ])("drains three pending moves on %s", async (_name, reusable, connections) => {
+      const fx = await imapFixture(folders);
+      const [inboxId, archiveId] = fx.folderIds as [string, string];
+      await moveImapLocally(fx, "archive", { folderId: inboxId, path: "INBOX", uid: 7, uidValidity: "42" }, archiveId);
+      await anotherArchivedMessage(fx, 8);
+      await anotherArchivedMessage(fx, 9);
+      expect(await pendingMoves(fx.mailboxItemId)).toHaveLength(3);
+
+      const opened: Array<ReturnType<typeof movingClient>> = [];
+      await drainImap(fx, async () => {
+        const next = movingClient(reusable);
+        opened.push(next);
+        return next.client;
+      });
+
+      expect(opened).toHaveLength(connections);
+      expect(opened.every((connection) => connection.close.mock.calls.length === 1)).toBe(true);
+      expect(opened.flatMap((connection) => connection.moved).sort()).toEqual([7, 8, 9]);
+      expect(await pendingMoves(fx.mailboxItemId)).toEqual([]);
+    });
   });
 });

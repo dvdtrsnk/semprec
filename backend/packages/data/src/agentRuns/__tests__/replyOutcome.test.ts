@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createUser } from "../../auth/usersStore.js";
 import { withTransaction } from "../../db/pool.js";
 import { createPendingApprovalRequest } from "../../mcp/approvalRequestsStore.js";
@@ -172,7 +172,7 @@ describe("whether a Semp reply left a failed tool call (issue #1890)", () => {
   beforeAll(async () => {
     const admin = getTestPool();
     await resetDatabase(admin);
-    const runtime: Pool = await createRuntimeRolePool(admin, "semprec_data");
+    const runtime: Pool = await createRuntimeRolePool(admin, "alldots_data");
     const role = await runtime.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
       "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
     );

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { enqueueJob } from "@semprec/queue";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { enqueueJob } from "@alldots/queue";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import { getTestPool, insertItemsWithIds, resetDatabase } from "../testSupport/testDb.js";
 import {
   createRuntimeRolePool,
@@ -99,7 +99,7 @@ describe("getOperatorHealthReport (issue #1038)", () => {
     for (const process of ["api", "agents", "transcribe", "ai-gateway"]) {
       await upsertProcessHeartbeat(pool, { process, pid: 1, version: "1.2.3" }, new Date());
     }
-    const dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    const dataPool = await createRuntimeRolePool(pool, "alldots_data");
     let mailboxItemId: string;
     try {
       // A live Mailbox with a sync-state row, so the process list includes `mailsync:<id>`.
@@ -172,22 +172,6 @@ describe("getOperatorHealthReport (issue #1038)", () => {
     expect(report.alertingChecks.map((check) => check.checkKey)).toEqual(["queue:backlog"]);
   });
 
-  it("omits legacy per-mailbox global checks that carry a mailbox id and its lastError", async () => {
-    const mailboxItemId = randomUUID();
-    // Raw SQL: legacy global rows no writer produces; they survive until the check-system tick purges them.
-    for (const checkKey of [`mail:${mailboxItemId}`, `process:mailsync:${mailboxItemId}`, "queue:backlog"]) {
-      await pool.query(`INSERT INTO observability_checks (check_key, status, detail) VALUES ($1, 'alerting', $2)`, [
-        checkKey,
-        JSON.stringify({ mailboxItemId, lastError: "SECRET-MAILBOX-ERROR" }),
-      ]);
-    }
-
-    const report = await getOperatorHealthReport(pool);
-
-    expect(report.alertingChecks.map((check) => check.checkKey)).toEqual(["queue:backlog"]);
-    expect(JSON.stringify(report.alertingChecks.map((check) => check.checkKey))).not.toContain(mailboxItemId);
-  });
-
   it("throws instead of reporting zero errors when ops_health_counts() returns no row", async () => {
     const client = await pool.connect();
     try {
@@ -206,9 +190,9 @@ describe("getOperatorHealthReport (issue #1038)", () => {
     }
   });
 
-  it("lets semprec_data count every tenant through ops_health_counts() while it sees no tenant row directly", async () => {
+  it("lets alldots_data count every tenant through ops_health_counts() while it sees no tenant row directly", async () => {
     await seedTwoTenantErrors();
-    const dataPool = await createRuntimeRolePool(pool, "semprec_data");
+    const dataPool = await createRuntimeRolePool(pool, "alldots_data");
     try {
       await runAsSystem("test", async () => {
         const counts = await dataPool.query<{
@@ -238,8 +222,8 @@ describe("getOperatorHealthReport (issue #1038)", () => {
     }
   });
 
-  it("refuses ops_health_counts() to semprec_side", async () => {
-    const sidePool = await createRuntimeRolePool(pool, "semprec_side");
+  it("refuses ops_health_counts() to alldots_side", async () => {
+    const sidePool = await createRuntimeRolePool(pool, "alldots_side");
     try {
       await expect(runAsSystem("test", () => sidePool.query("SELECT * FROM ops_health_counts()"))).rejects.toThrow(
         /permission denied/,
@@ -249,28 +233,28 @@ describe("getOperatorHealthReport (issue #1038)", () => {
     }
   });
 
-  it("owns ops_health_counts() as semprec_router, SECURITY DEFINER with a pinned search_path", async () => {
+  it("owns ops_health_counts() as alldots_router, SECURITY DEFINER with a pinned search_path", async () => {
     const { rows } = await pool.query<{ owner: string; secdef: boolean; config: string[] | null }>(
       `SELECT p.proowner::regrole::text AS owner, p.prosecdef AS secdef, p.proconfig AS config
          FROM pg_proc p WHERE p.proname = 'ops_health_counts'`,
     );
     expect(rows).toEqual([
-      { owner: "semprec_router", secdef: true, config: ["search_path=pg_catalog, public, pg_temp"] },
+      { owner: "alldots_router", secdef: true, config: ["search_path=pg_catalog, public, pg_temp"] },
     ]);
   });
 
-  it("grants semprec_router only the listed SELECT columns on the three counted tables", async () => {
+  it("grants alldots_router only the listed SELECT columns on the three counted tables", async () => {
     const tables = ["agent_runs", "item_automation", "tenant_observability_checks"];
     const tablePrivileges = await pool.query<{ table_name: string; privilege_type: string }>(
       `SELECT table_name, privilege_type FROM information_schema.table_privileges
-        WHERE grantee = 'semprec_router' AND table_schema = 'public' AND table_name = ANY($1)`,
+        WHERE grantee = 'alldots_router' AND table_schema = 'public' AND table_name = ANY($1)`,
       [tables],
     );
     expect(tablePrivileges.rows).toEqual([]);
 
     const columnPrivileges = await pool.query<{ table_name: string; column_name: string; privilege_type: string }>(
       `SELECT table_name, column_name, privilege_type FROM information_schema.column_privileges
-        WHERE grantee = 'semprec_router' AND table_schema = 'public' AND table_name = ANY($1)
+        WHERE grantee = 'alldots_router' AND table_schema = 'public' AND table_name = ANY($1)
         ORDER BY table_name, column_name, privilege_type`,
       [tables],
     );

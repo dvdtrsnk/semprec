@@ -1,6 +1,6 @@
-# Semprec mobile
+# Alldots mobile
 
-The native Semprec apps. Kotlin Multiplatform shares everything from the screen
+The native Alldots apps. Kotlin Multiplatform shares everything from the screen
 ViewModels down (presentation, domain, data and core), and each platform renders
 those ViewModels with its own UI toolkit: Jetpack Compose on Android, and SwiftUI on
 Apple, where one codebase builds both the iOS/iPadOS app and a native macOS app (not
@@ -28,8 +28,8 @@ mobile/
     project.properties        identity, version, Android SDK levels, Apple minimum versions
     wrapper/                  Gradle wrapper and gradle-wrapper.jar.sha256
   gradlew  gradlew.bat
-  build-logic/                convention plugins semprec.kmp, semprec.android.library,
-                              semprec.android.compose, semprec.android.application
+  build-logic/                convention plugins alldots.kmp, alldots.android.library,
+                              alldots.android.compose, alldots.android.application
   config/detekt/detekt.yml
   scripts/
     verify                    the whole mobile pipeline (see Verify below)
@@ -53,7 +53,7 @@ mobile/
     Tuist/                    Package.swift, Package.resolved, ProjectDescriptionHelpers/
     Modules/Core/             CoreKit/  DesignSystem/  Dependencies/
     Modules/Features/         Home/  Settings/
-    Projects/App/             the Semprec app target, its tests (Tests/) and its iOS UI tests (UITests/)
+    Projects/App/             the Alldots app target, its tests (Tests/) and its iOS UI tests (UITests/)
     docs/auth-bridge.md
     review-rules/
 ```
@@ -74,15 +74,15 @@ two files disagree on `appleBundleId`, `frameworkName`, `versionName`,
 
 | | Value | Key |
 | --- | --- | --- |
-| Display name | `Semprec` | not a property: Android's `app_name` string and Apple's `ProjectConfiguration.appName` (`CFBundleDisplayName`) |
-| Android application id | `cz.semprec.app`; debug builds `cz.semprec.app.debug` | `androidApplicationId`; the suffix is in `android/app/build.gradle.kts` |
-| Android namespace | `cz.semprec.app` for the app; a library appends its Gradle path (`cz.semprec.app.android.feature.home`) | `namespace` |
-| Apple bundle id | `cz.semprec.app`; modules and tests `cz.semprec.app.<Target>` | `appleBundleId` |
-| Kotlin framework | `SharedSDK`, dynamic, bundle id `cz.semprec.app.SharedSDK` | `frameworkName` |
-| Gradle root project | `semprec-mobile` | `projectName` |
+| Display name | `Alldots` | not a property: Android's `app_name` string and Apple's `ProjectConfiguration.appName` (`CFBundleDisplayName`) |
+| Android application id | `cz.alldots.app`; debug builds `cz.alldots.app.debug` | `androidApplicationId`; the suffix is in `android/app/build.gradle.kts` |
+| Android namespace | `cz.alldots.app` for the app; a library appends its Gradle path (`cz.alldots.app.android.feature.home`) | `namespace` |
+| Apple bundle id | `cz.alldots.app`; modules and tests `cz.alldots.app.<Target>` | `appleBundleId` |
+| Kotlin framework | `SharedSDK`, dynamic, bundle id `cz.alldots.app.SharedSDK` | `frameworkName` |
+| Gradle root project | `alldots-mobile` | `projectName` |
 | Version | `0.1.0`, build `1` | `versionName`, `versionCode` |
 | Android SDK | min 28, compile and target 36, build tools 36.0.0 | `androidMinSdk`, `androidCompileSdk`, `androidTargetSdk`, `androidBuildTools` |
-| Apple minimum | iOS 26.0, macOS 26.0 | `iosMinimum`, `macosMinimum` |
+| Apple minimum | iOS 27.0, macOS 26.0 | `iosMinimum`, `macosMinimum` |
 
 ## Toolchain
 
@@ -119,7 +119,7 @@ The machine provides the rest:
   Java 17 bytecode on the JDK that runs Gradle.
 - **Android SDK** with platform 36 and build tools 36.0.0, through `ANDROID_HOME`,
   `ANDROID_SDK_ROOT` or `sdk.dir` in `local.properties`.
-- **An Apple silicon Mac with a full Xcode** whose SDKs cover iOS 26 and macOS 26.
+- **An Apple silicon Mac with a full Xcode** whose SDKs cover iOS 27 and macOS 26.
   The shared modules have arm64 Apple targets only (`iosArm64`,
   `iosSimulatorArm64`, `macosArm64`). When `xcode-select -p` points at the Command
   Line Tools, export `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` in
@@ -148,9 +148,9 @@ tuist generate
 
 `tuist install` fetches the Swift packages pinned in
 `apple/Tuist/Package.resolved`, and `tuist generate` writes the Xcode projects and
-`apple/Semprec.xcworkspace` (all ignored) and opens the workspace (`--no-open`
-skips that). Build, run and test the `Semprec` scheme on an iOS simulator or on
-My Mac; the `SemprecUITests` scheme runs the XCUITest flows of
+`apple/Alldots.xcworkspace` (all ignored) and opens the workspace (`--no-open`
+skips that). Build, run and test the `Alldots` scheme on an iOS simulator or on
+My Mac; the `AlldotsUITests` scheme runs the XCUITest flows of
 `apple/Projects/App/UITests/` on an iOS simulator only, because XCUITest on macOS
 needs the Accessibility permission.
 
@@ -195,9 +195,9 @@ order, stops at the first failing step and prints a PASS/FAIL summary. A step
 that needs a device runs only when its flag is given, and the summary reports it as
 NOT RUN otherwise; verify never picks, boots or shuts down a device. The `apple`
 step builds Debug and Release for the iOS Simulator, an iOS device (no device or
-signing needed) and macOS, builds the `SemprecUITests` UI tests for the iOS
+signing needed) and macOS, builds the `AlldotsUITests` UI tests for the iOS
 Simulator without running them, and tests on macOS; `--ios-simulator` adds the
-Swift tests and the `SemprecUITests` UI tests on that simulator. On the BB
+Swift tests and the `AlldotsUITests` UI tests on that simulator. On the BB
 host, reserve the devices with `bb device-lab reserve --platform ios` and
 `bb device-lab reserve --platform android` (`bb device-lab list --json` shows each
 device's `udid` and adb `serial`) and release them with

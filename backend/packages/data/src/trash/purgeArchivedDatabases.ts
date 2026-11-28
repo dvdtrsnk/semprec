@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { currentTenantScope } from "@semprec/shared";
+import { currentTenantScope } from "@alldots/shared";
 import * as databasesStore from "../chokePoint/databasesStore.js";
 import { runItemPurgeHooks } from "../chokePoint/hooks.js";
 import { deleteItemDependents } from "../chokePoint/itemTrash.js";
@@ -10,7 +10,6 @@ import { runAfterCommit, withTransaction } from "../db/pool.js";
 import type { BlobStorageWriter } from "../mail/blobStorage.js";
 import { notifyInvalidation } from "../realtimeHook.js";
 import { findRollupPropertiesOfOtherDatabasesDependingOn } from "../rollup/purgeDependencies.js";
-import { RETENTION_DAYS } from "../trashRetention.js";
 import { logger } from "./logger.js";
 
 const ITEM_CHUNK_SIZE = 500;
@@ -142,17 +141,15 @@ async function purgeDatabase(run: PurgeRun, databaseId: string, ancestors: Reado
 
 /**
  * Purges every archived user database of the current tenant whose `purge_at` has passed, with items, edges,
- * dependent schema and blobs. Must run in a tenant scope (RLS limits every statement). A database
- * without a deadline first gets one `RETENTION_DAYS` 24-hour days from now. A failed database is logged and the
- * rest continue; failures are thrown together as one `AggregateError` (raw errors, must not be logged) so the task
- * retries. Returns how many root databases were fully purged.
+ * dependent schema and blobs. Must run in a tenant scope (RLS limits every statement). A failed database is
+ * logged and the rest continue; failures are thrown together as one `AggregateError` (raw errors, must not be
+ * logged) so the task retries. Returns how many root databases were fully purged.
  */
 export async function purgeExpiredArchivedDatabases(
   pool: Pool,
   storage: BlobStorageWriter,
   alternateStorage?: BlobStorageWriter,
 ): Promise<number> {
-  await withTransaction(pool, (client) => databasesStore.assignMissingPurgeDeadlines(client, RETENTION_DAYS));
   const expiredIds = await withTransaction(pool, (client) => databasesStore.listExpiredArchivedDatabaseIds(client));
   const failures: unknown[] = [];
   let purged = 0;

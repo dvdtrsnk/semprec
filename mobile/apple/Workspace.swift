@@ -10,8 +10,8 @@ let workspace = Workspace(
         "Modules/Core/CoreKit",
         "Modules/Core/Dependencies",
         "Modules/Core/DesignSystem",
+        "Modules/Core/NoteEditor",
         "Modules/Features/Account",
-        "Modules/Features/Areas",
         "Modules/Features/Auth",
         "Modules/Features/Calendar",
         "Modules/Features/Collections",
@@ -34,8 +34,8 @@ let workspace = Workspace(
                 [
                     .testableTarget(target: .project(path: "Modules/Core/CoreKit", target: "CoreKitTests")),
                     .testableTarget(target: .project(path: "Modules/Core/DesignSystem", target: "DesignSystemTests")),
+                    .testableTarget(target: .project(path: "Modules/Core/NoteEditor", target: "NoteEditorTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Account", target: "AccountFeatureTests")),
-                    .testableTarget(target: .project(path: "Modules/Features/Areas", target: "AreasFeatureTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Auth", target: "AuthFeatureTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Calendar", target: "CalendarFeatureTests")),
                     .testableTarget(target: .project(path: "Modules/Features/Collections", target: "CollectionsFeatureTests")),
@@ -55,7 +55,7 @@ let workspace = Workspace(
             runAction: .runAction(configuration: .debug),
             archiveAction: .archiveAction(configuration: .release)
         ),
-        // The app's XCUITest bundle, on an iOS simulator only (see SemprecUITests in Projects/App/Project.swift), so
+        // The app's XCUITest bundle, on an iOS simulator only (see AlldotsUITests in Projects/App/Project.swift), so
         // the tests of the scheme above keep running on macOS without the Accessibility permission.
         .scheme(
             name: "\(app)UITests",

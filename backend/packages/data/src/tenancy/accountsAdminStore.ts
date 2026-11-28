@@ -111,7 +111,7 @@ export class LastAdminError extends ChokePointError {
  * target row so the guard's count cannot go stale.
  */
 export async function lockAdminMembership(client: PoolClient): Promise<void> {
-  await client.query("SELECT pg_advisory_xact_lock(hashtext('semprec_admin_membership'))");
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('alldots_admin_membership'))");
 }
 
 /** Throws `LastAdminError` when no other admin belongs to an `active` tenant; only meaningful under `lockAdminMembership`. */

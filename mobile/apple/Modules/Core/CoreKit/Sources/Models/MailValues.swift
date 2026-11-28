@@ -8,23 +8,20 @@ public enum MailListBox: Equatable, Hashable, Sendable {
     case sempDrafts
 }
 
-/// The thread list a screen starts with: everything of the person, or the threads of an area, a project, a folder.
+/// The thread list a screen starts with: everything of the person, or the threads of a project, a folder.
 public struct MailListStart: Equatable, Hashable, Sendable {
 
-    public var areaId: String?
     public var projectId: String?
     public var box: MailListBox
     public var mailboxId: String?
     public var folderId: String?
 
     public init(
-        areaId: String? = nil,
         projectId: String? = nil,
         box: MailListBox = .inbox,
         mailboxId: String? = nil,
         folderId: String? = nil
     ) {
-        self.areaId = areaId
         self.projectId = projectId
         self.box = box
         self.mailboxId = mailboxId

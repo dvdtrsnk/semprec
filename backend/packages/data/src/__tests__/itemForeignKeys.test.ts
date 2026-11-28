@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runAsSystem, runInTenant } from "@semprec/shared";
+import { runAsSystem, runInTenant } from "@alldots/shared";
 import "../domainWriteHooks.js";
 import { createUser } from "../auth/usersStore.js";
 import { createBlob } from "../blobs/blobsStore.js";
@@ -25,7 +25,7 @@ import {
 /**
  * The foreign keys to `items` (decision table: docs/architecture/data-model-and-writes.md, Storage). Dependent rows
  * are raw INSERTs: no production flow writes one row into every dependent table of one item, and several writers
- * check the item first, so they would never reach the key. Every assertion runs on a `semprec_data` pool, under
+ * check the item first, so they would never reach the key. Every assertion runs on a `alldots_data` pool, under
  * row-level security. Interpolated identifiers come from the closed `KEYS` list; values are bound.
  */
 
@@ -64,6 +64,68 @@ const KEYS: ItemKey[] = [
     column: "calendar_item_id",
     behaviour: "cascade",
     insert: (c, id) => c.query("INSERT INTO calendar_feed_state (calendar_item_id) VALUES ($1)", [id]),
+  },
+  {
+    table: "calendar_account_sync_state",
+    column: "account_item_id",
+    behaviour: "cascade",
+    insert: (c, id) => c.query("INSERT INTO calendar_account_sync_state (account_item_id) VALUES ($1)", [id]),
+  },
+  {
+    table: "calendar_event_push_state",
+    column: "event_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query("INSERT INTO calendar_event_push_state (event_item_id, operation) VALUES ($1, 'create')", [id]),
+  },
+  {
+    table: "calendar_remote_state",
+    column: "calendar_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query("INSERT INTO calendar_remote_state (calendar_item_id, remote_id) VALUES ($1, 'remote')", [id]),
+  },
+  {
+    table: "calendar_push_channels",
+    column: "account_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query(
+        `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, secret, expires_at)
+         VALUES ('graph', $2, $1, 'secret', now())`,
+        [id, randomUUID()],
+      ),
+  },
+  {
+    table: "calendar_push_channels",
+    column: "calendar_item_id",
+    behaviour: "cascade",
+    insert: async (c, id, _s, other) =>
+      c.query(
+        `INSERT INTO calendar_push_channels (provider, channel_id, account_item_id, calendar_item_id, resource_id, secret, expires_at)
+         VALUES ('google', $3, $2, $1, 'resource', 'secret', now())`,
+        [id, await other(), randomUUID()],
+      ),
+  },
+  {
+    table: "event_remote_state",
+    column: "event_item_id",
+    behaviour: "cascade",
+    insert: async (c, id, _s, other) =>
+      c.query("INSERT INTO event_remote_state (event_item_id, calendar_item_id, remote_id) VALUES ($1, $2, 'remote')", [
+        id,
+        await other(),
+      ]),
+  },
+  {
+    table: "event_remote_state",
+    column: "calendar_item_id",
+    behaviour: "cascade",
+    insert: async (c, id, _s, other) =>
+      c.query("INSERT INTO event_remote_state (event_item_id, calendar_item_id, remote_id) VALUES ($1, $2, 'remote')", [
+        await other(),
+        id,
+      ]),
   },
   {
     table: "docs",
@@ -192,6 +254,16 @@ const KEYS: ItemKey[] = [
     insert: (c, id) => c.query("INSERT INTO mail_folder_sync_state (item_id) VALUES ($1)", [id]),
   },
   {
+    table: "mail_message_content_cache",
+    column: "item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query(
+        "INSERT INTO mail_message_content_cache (item_id, body_text, expires_at) VALUES ($1, 'probe', now() + interval '1 day')",
+        [id],
+      ),
+  },
+  {
     table: "mail_message_flag_sync_state",
     column: "message_item_id",
     behaviour: "cascade",
@@ -207,10 +279,21 @@ const KEYS: ItemKey[] = [
     behaviour: "cascade",
     insert: (c, id, s) =>
       c.query(
-        `INSERT INTO mail_oauth_states (user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, mailbox_item_id)
-         VALUES ($1, 'gmail', $2, '\\x00', '\\x00', $3)`,
+        `INSERT INTO mail_oauth_states
+           (user_id, provider, state_hash, code_verifier_ciphertext, code_verifier_nonce, mailbox_item_id, services)
+         VALUES ($1, 'gmail', $2, '\\x00', '\\x00', $3, '{mail}')`,
         [s.userId, randomUUID(), id],
       ),
+  },
+  {
+    table: "mail_sent_copies",
+    column: "mailbox_item_id",
+    behaviour: "cascade",
+    insert: (c, id) =>
+      c.query("INSERT INTO mail_sent_copies (mailbox_item_id, message_id, raw) VALUES ($1, $2, '\\x00')", [
+        id,
+        `<${randomUUID()}@example.com>`,
+      ]),
   },
   {
     table: "mcp_server_connection_state",
@@ -230,6 +313,12 @@ const KEYS: ItemKey[] = [
     column: "item_id",
     behaviour: "cascade",
     insert: (c, id) => c.query("INSERT INTO project_kept_dates (item_id, kept_date) VALUES ($1, '{}')", [id]),
+  },
+  {
+    table: "project_mail_signals",
+    column: "project_item_id",
+    behaviour: "cascade",
+    insert: (c, id) => c.query("INSERT INTO project_mail_signals (project_item_id) VALUES ($1)", [id]),
   },
   {
     table: "recording_requests",
@@ -282,10 +371,10 @@ const KEYS: ItemKey[] = [
     column: "item_id",
     behaviour: "noAction",
     insert: (c, id) =>
-      c.query("INSERT INTO mail_message_meta (item_id, message_id) VALUES ($1, $2)", [
-        id,
-        `<${randomUUID()}@example.com>`,
-      ]),
+      c.query(
+        "INSERT INTO mail_message_meta (item_id, message_id, arrival, content_state) VALUES ($1, $2, 'live', 'full')",
+        [id, `<${randomUUID()}@example.com>`],
+      ),
   },
   {
     table: "value_link_sources",
@@ -498,7 +587,7 @@ function deleteItem(client: PoolClient, itemId: string) {
 describe("foreign keys to items", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    pool = await createRuntimeRolePool(adminPool, "semprec_data");
+    pool = await createRuntimeRolePool(adminPool, "alldots_data");
     const role = await runAsSystem("test:item-foreign-key-role", () =>
       pool.query<{ rolsuper: boolean; rolbypassrls: boolean }>(
         "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",

@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import { describe, expect, it } from "vitest";
 import {
   BlockInputError,
+  INLINE_COLORS,
   getBlocksMap,
   getOrderArray,
   readPageBlocks,
@@ -101,12 +102,43 @@ describe("readPageBlocks", () => {
     expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
   });
 
+  it("reads strike, underline and known color keys and drops unknown color keys without writing", () => {
+    const doc = new Y.Doc();
+    const text = new Y.Text();
+    rawBlock(doc, "a", { "sys:flavour": "text", text });
+    text.insert(0, "known", { strike: true, underline: true, color: "red", highlight: "yellow" });
+    text.insert(5, "unknown", { color: "teal", highlight: 3, strike: "yes" });
+    const before = Y.encodeStateAsUpdate(doc);
+    expect(readPageBlocks(doc)[0]?.text).toEqual([
+      { insert: "known", attributes: { strike: true, underline: true, color: "red", highlight: "yellow" } },
+      { insert: "unknown" },
+    ]);
+    expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
+  });
+
+  it("reads toggle only on headings", () => {
+    const doc = new Y.Doc();
+    doc.transact(() => {
+      rawBlock(doc, "h", { "sys:flavour": "h2", toggle: true });
+      rawBlock(doc, "t", { "sys:flavour": "text", toggle: true });
+      rawBlock(doc, "g", { "sys:flavour": "toggle", toggle: true });
+      rawBlock(doc, "s", { "sys:flavour": "h1", toggle: "true" });
+      getOrderArray(doc).push(["h", "t", "g", "s"]);
+    });
+    expect(readPageBlocks(doc).map((block) => [block.type, block.toggle])).toEqual([
+      ["h2", true],
+      ["text", false],
+      ["toggle", false],
+      ["h1", false],
+    ]);
+  });
+
   it("reads an empty doc as one synthetic empty text block and writes nothing", () => {
     const doc = new Y.Doc();
     const before = Y.encodeStateAsUpdate(doc);
 
     expect(readPageBlocks(doc)).toEqual([
-      { id: null, type: "text", indent: 0, done: false, text: [], pageId: null, synthetic: true },
+      { id: null, type: "text", indent: 0, done: false, toggle: false, text: [], pageId: null, synthetic: true },
     ]);
     expect(Y.encodeStateAsUpdate(doc)).toEqual(before);
   });
@@ -135,6 +167,7 @@ describe("writeBlock", () => {
         type: "todo",
         indent: 2,
         done: true,
+        toggle: false,
         text: [
           { insert: "plain " },
           { insert: "bold", attributes: { bold: true } },
@@ -173,6 +206,17 @@ describe("writeBlock", () => {
     if (!(stored instanceof Y.Text)) throw new Error("expected the stored page title to be a Y.Text");
     doc.transact(() => stored.format(0, 7, { bold: true, link: { href: "https://example.com" } }));
     expect(readPageBlocks(doc)[0]?.text).toEqual([{ insert: "Release checklist" }]);
+  });
+
+  it("stores toggle on a heading and removes it when the block becomes another type", () => {
+    const doc = new Y.Doc();
+    doc.transact(() => writeBlock(doc, { id: "x", type: "h1", toggle: true, text: "Section" }));
+    expect(getBlocksMap(doc).get("x")?.get("toggle")).toBe(true);
+    expect(readPageBlocks(doc)[0]).toMatchObject({ type: "h1", toggle: true });
+
+    doc.transact(() => writeBlock(doc, { id: "x", type: "toggle", text: "Section" }));
+    expect(getBlocksMap(doc).get("x")?.has("toggle")).toBe(false);
+    expect(readPageBlocks(doc)[0]).toMatchObject({ type: "toggle", toggle: false });
   });
 
   it("replaces the text of an existing block", () => {
@@ -230,10 +274,51 @@ describe("validateBlockInput", () => {
     expect(issues.map((issue) => [issue.path, issue.code])).toEqual([["text[0].attributes", "invalid_text"]]);
   });
 
+  it.each(INLINE_COLORS)("accepts the color key %s as color and highlight", (color) => {
+    expect(validateBlockInput({ id: "a", type: "text", text: [{ insert: "x", attributes: { color } }] })).toEqual([]);
+    expect(
+      validateBlockInput({ id: "a", type: "text", text: [{ insert: "x", attributes: { highlight: color } }] }),
+    ).toEqual([]);
+  });
+
+  it("accepts strike and underline and rejects unknown color keys and non-true marks", () => {
+    expect(
+      validateBlockInput({
+        id: "a",
+        type: "toggle",
+        text: [{ insert: "x", attributes: { strike: true, underline: true } }],
+      }),
+    ).toEqual([]);
+    const issues = (attributes: Record<string, unknown>): Array<[string, string]> =>
+      validateBlockInput({ id: "a", type: "text", text: [{ insert: "x", attributes }] }).map((issue) => [
+        issue.path,
+        issue.code,
+      ]);
+    expect(issues({ color: "teal" })).toEqual([["text[0].attributes.color", "invalid_text"]]);
+    expect(issues({ highlight: "" })).toEqual([["text[0].attributes.highlight", "invalid_text"]]);
+    expect(issues({ strike: false })).toEqual([["text[0].attributes.strike", "invalid_text"]]);
+    expect(issues({ underline: "yes" })).toEqual([["text[0].attributes.underline", "invalid_text"]]);
+  });
+
+  it.each(["h1", "h2", "h3"])("accepts toggle on %s", (type) => {
+    expect(validateBlockInput({ id: "a", type, toggle: true })).toEqual([]);
+    expect(validateBlockInput({ id: "a", type, toggle: false })).toEqual([]);
+  });
+
+  it.each(["text", "toggle", "todo", "bullet", "quote", "page"])("rejects toggle on %s", (type) => {
+    expect(codes({ id: "a", type, toggle: true, ...(type === "page" ? { pageId: "p" } : {}) })).toEqual([
+      "toggle_not_allowed",
+    ]);
+  });
+
+  it("rejects a non-boolean toggle on a heading", () => {
+    expect(codes({ id: "a", type: "h2", toggle: "true" })).toEqual(["invalid_toggle"]);
+  });
+
   it("rejects malformed text", () => {
     expect(codes({ id: "a", type: "text", text: 5 })).toEqual(["invalid_text"]);
     expect(codes({ id: "a", type: "text", text: [{ insert: 1 }] })).toEqual(["invalid_text"]);
-    expect(codes({ id: "a", type: "text", text: [{ insert: "x", attributes: { underline: true } }] })).toEqual([
+    expect(codes({ id: "a", type: "text", text: [{ insert: "x", attributes: { shadow: true } }] })).toEqual([
       "invalid_text",
     ]);
     expect(codes({ id: "a", type: "text", text: [{ insert: "x", attributes: { link: {} } }] })).toEqual([

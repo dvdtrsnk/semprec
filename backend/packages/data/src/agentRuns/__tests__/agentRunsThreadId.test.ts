@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import {
   createTenantZeroUser,
   createRuntimeRolePool,
@@ -101,7 +101,7 @@ describe("agent_runs.thread_id (issue #1452)", () => {
     const threadB = await insertThread(tenantB);
     const threadA = await insertThread();
     const parentA = await createAgentRun(pool, { triggeredBy: "user", task: "chat", threadId: threadA });
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       await withTenantTransaction(runtime, getTenantZeroId(), async (client) => {
         const child = await createAgentRun(client, { triggeredBy: "supervisor", task: "sub", parentRunId: parentA.id });
@@ -132,7 +132,7 @@ describe("agent_runs.thread_id (issue #1452)", () => {
       tenantId: tenantB,
     });
     const { rows } = await pool.query<{ id: string }>("SELECT id FROM users WHERE tenant_id = $1", [tenantA]);
-    const runtime = await createRuntimeRolePool(pool, "semprec_data");
+    const runtime = await createRuntimeRolePool(pool, "alldots_data");
     try {
       for (const [tenantId, userId] of [
         [tenantA, rows[0]!.id],

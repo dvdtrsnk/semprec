@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { itemDeleteWithClient } from "../../chokePoint/itemTrash.js";
 import { createItemWithClient } from "../../chokePoint/itemWrites.js";
 import { getItemById, lockItemById } from "../../chokePoint/itemsStore.js";
@@ -114,6 +114,8 @@ async function mailFixture(tenantId: string) {
     inTenant(tenantId, async (client) => {
       const references = input.references ?? [];
       const { itemId, created } = await ingestEmailMessage(client, {
+        arrival: "live",
+        contentState: "full",
         emailsDatabaseId: ids.emailsDatabaseId,
         filesDatabaseId: ids.filesDatabaseId,
         folderRelationPropertyId: ids.emailFolderProperty,
@@ -248,8 +250,8 @@ function recordThreadAnnouncements(): void {
 
 beforeAll(async () => {
   admin = getTestPool();
-  runtime = await createRuntimeRolePool(admin, "semprec_data");
-  storageRoot = await mkdtemp(join(tmpdir(), "semprec-draft-retirement-"));
+  runtime = await createRuntimeRolePool(admin, "alldots_data");
+  storageRoot = await mkdtemp(join(tmpdir(), "alldots-draft-retirement-"));
   storage = new LocalFsBlobStorageWriter(storageRoot);
 });
 
@@ -340,6 +342,8 @@ describe("retireSupersededSempDrafts (issue gh-1902)", () => {
     const { received, draftId, threadId } = await threadWithSempDraft(f, "being-sent");
     await inTenant(tenant, (client) =>
       upsertMailMessageMeta(client, {
+        arrival: "live",
+        contentState: "full",
         itemId: draftId,
         mailboxItemId: f.mailboxId,
         messageId: ID("claim-of-the-send"),
@@ -589,10 +593,8 @@ describe("a send of the user's own (issue gh-1902)", () => {
     expect(await hasSempDraft(tenant, threadId)).toBe(false);
     expect((await stateOf(tenant, mine)).sentAt).toEqual(expect.any(Date));
     expect(await stateOf(tenant, otherUserDraft)).toEqual(UNTOUCHED);
-    expect(events).toEqual([
-      { scope: "mailThread", threadId },
-      { scope: "mailThread", threadId },
-    ]);
+    // One invalidation per thread per transaction, however many of its writes changed the row.
+    expect(events).toEqual([{ scope: "mailThread", threadId }]);
   });
 
   it("changes nothing else when the user sends the Semp draft itself", async () => {
@@ -663,10 +665,8 @@ describe("an own message that is ingested (issue gh-1902)", () => {
     expect(own.created).toBe(true);
     expect(await stateOf(tenant, draftId)).toEqual(RETIRED);
     expect(await hasSempDraft(tenant, threadId)).toBe(false);
-    expect(events).toEqual([
-      { scope: "mailThread", threadId },
-      { scope: "mailThread", threadId },
-    ]);
+    // One invalidation per thread per transaction, however many of its writes changed the row.
+    expect(events).toEqual([{ scope: "mailThread", threadId }]);
   });
 
   it("retires it for a message in the Sent folder whose sender is not a registered address", async () => {

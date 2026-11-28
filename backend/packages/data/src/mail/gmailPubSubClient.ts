@@ -77,15 +77,26 @@ function parseReceivedMessage(raw: unknown): GmailPubSubNotification {
     JSON.parse(Buffer.from(message.data, "base64").toString("utf8")),
     `Pub/Sub notification payload for ackId ${received.ackId}`,
   );
-  if (typeof decoded.emailAddress !== "string" || typeof decoded.historyId !== "string") {
+  const historyId = historyIdText(decoded.historyId);
+  if (typeof decoded.emailAddress !== "string" || historyId === null) {
     throw new Error(`Pub/Sub notification payload for ackId ${received.ackId} is missing emailAddress/historyId`);
   }
-  return { ackId: received.ackId, emailAddress: decoded.emailAddress, historyId: decoded.historyId };
+  return { ackId: received.ackId, emailAddress: decoded.emailAddress, historyId };
 }
 
 /**
- * Gmail `users.watch` plus Pub/Sub `pull`/`acknowledge` over plain `fetch` (no vendor SDK). Not
- * covered by tests; the lifecycle is tested against a fake transport.
+ * Gmail documents `historyId` as a string but publishes it as a JSON number; both are accepted. A
+ * number is taken only while it is a non-negative safe integer, so its decimal text is exact.
+ */
+function historyIdText(value: unknown): string | null {
+  if (typeof value === "string") return /^\d+$/.test(value) ? value : null;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return String(value);
+  return null;
+}
+
+/**
+ * Gmail `users.watch` plus Pub/Sub `pull`/`acknowledge` over plain `fetch` (no vendor SDK). The
+ * lifecycle is tested against a fake transport; `pull`'s payload parsing has its own unit test.
  */
 export function createGmailPubSubTransport(options: GmailPubSubClientOptions): GmailWatchTransport {
   const maxMessages = options.maxPullMessages ?? 100;
@@ -100,14 +111,11 @@ export function createGmailPubSubTransport(options: GmailPubSubClientOptions): G
           ...(options.labelIds ? { labelIds: options.labelIds } : {}),
         }),
       });
-      if (typeof json.historyId !== "string" || !json.historyId) {
-        throw new Error("users.watch response is missing a string historyId");
-      }
       // Google returns `expiration` as a string of milliseconds-since-epoch, not an ISO date.
       if (typeof json.expiration !== "string" || !json.expiration) {
         throw new Error("users.watch response is missing a string expiration");
       }
-      return { historyId: json.historyId, expiresAt: new Date(Number(json.expiration)) };
+      return { expiresAt: new Date(Number(json.expiration)) };
     },
 
     async pull(): Promise<GmailPubSubNotification[]> {

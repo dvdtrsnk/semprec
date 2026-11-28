@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { createBlob } from "../blobs/blobsStore.js";
 import { getItemById } from "../chokePoint/itemsStore.js";
 import { getPropertyByKey } from "../chokePoint/propertiesStore.js";
@@ -12,7 +12,7 @@ import { withTransaction } from "../db/pool.js";
 import { audioKindForDuration, type InboxAttachmentMetadata } from "../inbox/inboxAttachmentMetadata.js";
 import { listInboxAttachments, recordInboxAttachmentMetadata } from "../inbox/inboxAttachmentsStore.js";
 import { createInboxItemWithClient } from "../inbox/inboxStore.js";
-import { createSemprecTickAction, type ComputeSemprecProposalFn } from "../inbox/inboxTickAction.js";
+import { createAlldotsTickAction, type ComputeAlldotsProposalFn } from "../inbox/inboxTickAction.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import { getTenantZeroId, getTestPool, resetDatabase } from "../testSupport/testDb.js";
 import type { ItemRow } from "../types.js";
@@ -23,7 +23,7 @@ import type { ItemRow } from "../types.js";
 let pool: Pool;
 let databaseIds: { inboxDatabaseId: string; inboxItemTypesDatabaseId: string; processingProposalsDatabaseId: string };
 
-const compute = vi.fn<ComputeSemprecProposalFn>(async () => ({ properties: {}, candidates: [] }));
+const compute = vi.fn<ComputeAlldotsProposalFn>(async () => ({ properties: {}, candidates: [] }));
 
 async function databaseIdFor(moduleId: string): Promise<string> {
   const { rows } = await pool.query<{ id: string }>("SELECT id FROM databases WHERE owner_module_id = $1", [moduleId]);
@@ -80,7 +80,7 @@ async function itemWith(attachments: Attachment[], text?: string): Promise<strin
 }
 
 async function runTick(itemId: string): Promise<void> {
-  const tick = createSemprecTickAction(pool, compute);
+  const tick = createAlldotsTickAction(pool, compute);
   await runInTenant(getTenantZeroId(), () =>
     tick(databaseIds, { heartbeatId: "hb", projectItemId: randomUUID(), itemId }),
   );

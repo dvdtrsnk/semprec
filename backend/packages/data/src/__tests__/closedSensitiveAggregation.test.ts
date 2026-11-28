@@ -2,7 +2,7 @@ import "../domainWriteHooks.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { runInTenant } from "@semprec/shared";
+import { runInTenant } from "@alldots/shared";
 import { listClosedSensitiveDatabaseIds } from "../agentGrants/agentDatabaseAccess.js";
 import { removeAgentDatabaseGrant, setAgentDatabaseGrant } from "../agentGrants/agentDatabaseGrantsAdminStore.js";
 import type { AgentDatabaseAccess } from "../agentGrants/agentDatabaseGrantsStore.js";
@@ -18,7 +18,7 @@ import { withTransaction } from "../db/pool.js";
 import { recomputeRollupCell } from "../rollup/recompute.js";
 import { seedSystem } from "../seed/seedSystem.js";
 import {
-  AREAS_MODULE_ID,
+  FILES_MODULE_ID,
   HEALTH_RECORDS_MODULE_ID,
   PEOPLE_MODULE_ID,
   PROJECTS_MODULE_ID,
@@ -124,7 +124,7 @@ function recompute(property: PropertyRow, item: ItemRow) {
 describe("filters and rollups over a sensitive database an agent cannot read (issue #2000)", () => {
   beforeAll(async () => {
     adminPool = getTestPool();
-    dataPool = await createRuntimeRolePool(adminPool, "semprec_data");
+    dataPool = await createRuntimeRolePool(adminPool, "alldots_data");
     await resetDatabase(adminPool);
     tenantId = await createTestTenant(adminPool);
     await inTenant(() => seedSystem(dataPool, createViewTypeRegistry()));
@@ -282,13 +282,13 @@ describe("filters and rollups over a sensitive database an agent cannot read (is
 
     it("refuses a path whose first hop reaches the closed database and one whose second hop does", async () => {
       const project = await newAgentProject();
-      const area = await inTenant(async () =>
-        cp.createItem({ databaseId: (await systemDatabase(AREAS_MODULE_ID)).id, properties: { name: "Body" } }),
+      const file = await inTenant(async () =>
+        cp.createItem({ databaseId: (await systemDatabase(FILES_MODULE_ID)).id, properties: { name: "Scan" } }),
       );
-      // Projects.healthRecords then Health records.area: the intermediate items are the closed ones.
-      const firstHop = { type: "relation_path_contains", path: ["healthRecords", "area"], value: area.id };
-      // Projects.area then Areas.healthRecord: the item the path ends on is the closed one.
-      const secondHop = { type: "relation_path_contains", path: ["area", "healthRecord"], value: diagnosis.id };
+      // Projects.healthRecords then Health records.files: the intermediate items are the closed ones.
+      const firstHop = { type: "relation_path_contains", path: ["healthRecords", "files"], value: file.id };
+      // Projects.files then Files.healthRecords: the item the path ends on is the closed one.
+      const secondHop = { type: "relation_path_contains", path: ["files", "healthRecords"], value: diagnosis.id };
       await expect(queryDatabase({ filter: firstHop }, project)).rejects.toMatchObject(FORBIDDEN);
       await expect(queryDatabase({ filter: secondHop }, project)).rejects.toMatchObject(FORBIDDEN);
 
@@ -579,8 +579,8 @@ describe("filters and rollups over a sensitive database an agent cannot read (is
       expect(text).not.toContain("Private diagnosis");
       expect(text).not.toContain(diagnosis.id);
 
-      const firstHop = { path: ["healthRecords", "area"] as [string, string] };
-      const secondHop = { path: ["area", "healthRecord"] as [string, string] };
+      const firstHop = { path: ["healthRecords", "files"] as [string, string] };
+      const secondHop = { path: ["files", "healthRecords"] as [string, string] };
       await expect(facets({ facets: [firstHop] }, project)).rejects.toMatchObject(FORBIDDEN);
       await expect(facets({ facets: [secondHop] }, project)).rejects.toMatchObject(FORBIDDEN);
 

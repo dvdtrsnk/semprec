@@ -2,11 +2,15 @@ import CoreKit
 import DesignSystem
 import SwiftUI
 
-/// What the card was made from, in a grey box: the captured text, the transcript, or the run that asked.
+/// What the card was made from, in a grey box: the captured text with its files, the transcript, or the run that
+/// asked. A tap on a file opens it; the one being made ready shows a progress indicator.
 struct InboxSourceView: View {
 
     // MARK: - Dependencies
     let card: InboxCard
+    /// The id of the attachment being made ready to preview.
+    let openingAttachment: String?
+    let send: (InboxAction) -> Void
 
     // MARK: - Body
     var body: some View {
@@ -40,6 +44,9 @@ private extension InboxSourceView {
         switch origin.kind {
         case .capture:
             if let text = origin.text, !text.isEmpty { Text(text).font(.body) }
+            ForEach(origin.attachments) { attachment in
+                attachmentButton(attachment)
+            }
         case .transcript:
             Label {
                 Text(origin.name ?? String(localized: "inbox.transcript", bundle: .module)).font(.subheadline.bold())
@@ -65,6 +72,31 @@ private extension InboxSourceView {
         case .run:
             return runSource(origin)
         }
+    }
+
+    func attachmentButton(_ attachment: InboxAttachment) -> some View {
+        let opening = openingAttachment == attachment.id
+        return Button {
+            send(.openAttachment(cardId: card.id, attachmentId: attachment.id))
+        } label: {
+            HStack(spacing: 6) {
+                Label(
+                    attachment.name ?? String(localized: "inbox.attachment", bundle: .module),
+                    systemImage: "paperclip"
+                )
+                .font(.subheadline)
+                .foregroundStyle(Theme.Colors.accent)
+                if opening {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityLabel(Text("inbox.attachment.opening", bundle: .module))
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .disabled(opening)
+        .accessibilityIdentifier(InboxIdentifiers.attachmentPrefix + attachment.id)
     }
 
     func runSource(_ origin: InboxOrigin) -> String {

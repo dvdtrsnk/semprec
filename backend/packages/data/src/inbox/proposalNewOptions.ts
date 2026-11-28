@@ -1,6 +1,6 @@
 import type { PoolClient } from "pg";
 import { z } from "zod";
-import { PropertyOptionAddInputSchema } from "@semprec/shared";
+import { PropertyOptionAddInputSchema } from "@alldots/shared";
 import * as propertiesStore from "../chokePoint/propertiesStore.js";
 import { runAfterCommit } from "../db/pool.js";
 import * as databasesStore from "../chokePoint/databasesStore.js";

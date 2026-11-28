@@ -28,7 +28,8 @@ import {
   type SendEmailModuleIds,
   type UserSendEmailInput,
 } from "../mail/send.js";
-import { createSentCopySaver, createSmtpMailTransport, type MailTransport } from "../mail/mailTransport.js";
+import { createSmtpMailTransport, type MailTransport } from "../mail/mailTransport.js";
+import { handleMailSentCopyTask } from "../mail/mailSentCopies.js";
 import { ImapFlowMailClient } from "../mail/imapFlowClient.js";
 import { upsertMailServerSettings } from "../mail/mailServerSettingsStore.js";
 import { ensureMailAccountSyncState } from "../mail/mailAccountSyncStateStore.js";
@@ -392,6 +393,8 @@ describe("drafts and authorized SMTP sending", () => {
         copied = Buffer.from(raw);
         return { destination: "Sent", uidValidity: 1n, uid: 7 };
       });
+      vi.spyOn(imap, "mailboxOpen").mockResolvedValue({ path: "Sent" } as never);
+      vi.spyOn(imap, "search").mockResolvedValue([]);
       vi.spyOn(imap, "logout").mockResolvedValue(undefined);
       vi.spyOn(imap, "close").mockImplementation(() => {});
       const smtp = createSmtpMailTransport(
@@ -407,9 +410,16 @@ describe("drafts and authorized SMTP sending", () => {
           },
           close: () => {},
         }),
-        createSentCopySaver(pool, mailboxId, { password: "fixture" }, async () => new ImapFlowMailClient(imap)),
       );
       const result = await sendAsUser(draft.id, sendAdapters(transportFor(smtp)));
+      expect(copied).toBeUndefined();
+      const { rows: copies } = await pool.query<{ id: string }>("SELECT id FROM mail_sent_copies");
+      expect(copies).toHaveLength(1);
+      await handleMailSentCopyTask(
+        pool,
+        { copyId: copies[0]!.id },
+        { jobId: "attempt-1", isFinalAttempt: false, openImap: async () => new ImapFlowMailClient(imap) },
+      );
 
       expect(copied).toBeDefined();
       expect(copied).toEqual(accepted);
@@ -420,6 +430,8 @@ describe("drafts and authorized SMTP sending", () => {
 
       const reconciled = await withTransaction(pool, async (client) =>
         ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId,
@@ -537,6 +549,8 @@ describe("drafts and authorized SMTP sending", () => {
       const attachmentsProperty = (await chokePoint.listProperties(emailsId)).find((p) => p.key === "attachments")!;
       await withTransaction(operationPool, async (client) => {
         await ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId,
@@ -582,15 +596,87 @@ describe("drafts and authorized SMTP sending", () => {
       return rows[0]!.n;
     }
 
+    /** The live Emails carrying `messageId`. */
+    async function liveCopies(messageId: string): Promise<string[]> {
+      const { rows } = await pool.query<{ item_id: string }>(
+        `SELECT m.item_id FROM mail_message_meta m JOIN items i ON i.id = m.item_id
+          WHERE m.message_id = $1 AND i.deleted_at IS NULL ORDER BY m.item_id`,
+        [messageId],
+      );
+      return rows.map((row) => row.item_id);
+    }
+
+    describe.each([
+      ["after the send is finalized", false],
+      ["before the send is finalized", true],
+    ])(
+      "a provider that files the sent message under a Message-ID of its own, its copy synced %s",
+      (_name, syncFirst) => {
+        tenantIt("keeps one Email under the provider's identity, in one thread", async () => {
+          const providerMessageId = "<provider-own-1@mail.gmail.com>";
+          const draftItemId = await newDraft();
+          // Mail to oneself: the synced copy is in the Inbox as well as in Sent.
+          const inboxFolderId = await withTransaction(pool, (client) =>
+            createFolderOf(client, mailboxId, "Inbox", "inbox"),
+          );
+          const syncCopy = async () => {
+            await ingestSynced(providerMessageId);
+            await ingestSynced(providerMessageId, mailboxId, inboxFolderId);
+          };
+          const provider = recordingTransport({
+            async send() {
+              if (syncFirst) await syncCopy();
+              return { providerMessageId: "gmail-1", providerThreadId: "gmail-thread-1", messageId: providerMessageId };
+            },
+          });
+
+          const result = await send(draftItemId, provider);
+          if (!syncFirst) await syncCopy();
+
+          expect(result.messageId).toBe(providerMessageId);
+          expect(await liveCopies(providerMessageId)).toEqual([draftItemId]);
+          const { rows } = await pool.query<{ provider_message_id: string; provider_thread_id: string }>(
+            `SELECT provider_message_id, provider_thread_id FROM mail_message_meta WHERE item_id = $1`,
+            [draftItemId],
+          );
+          expect(rows).toEqual([{ provider_message_id: "gmail-1", provider_thread_id: "gmail-thread-1" }]);
+          expect(await threadCount()).toBe(1);
+          const folders = await pool.query<{ purpose: string }>(
+            `SELECT f.properties ->> 'specialPurpose' AS purpose FROM item_relations r
+               JOIN items f ON f.id = CASE WHEN r.item_a = $1 THEN r.item_b ELSE r.item_a END AND f.database_id = $2
+              WHERE (r.item_a = $1 OR r.item_b = $1) ORDER BY 1`,
+            [draftItemId, foldersId],
+          );
+          expect(folders.rows.map((row) => row.purpose)).toEqual(["inbox", "sent"]);
+        });
+      },
+    );
+
+    tenantIt("threads a later reply naming the provider's Message-ID onto the sent message", async () => {
+      const providerMessageId = "<provider-own-2@mail.gmail.com>";
+      const draftItemId = await newDraft();
+      const sent = await send(
+        draftItemId,
+        recordingTransport({ send: async () => ({ providerMessageId: "gmail-2", messageId: providerMessageId }) }),
+      );
+
+      await ingestSynced("<answer-2@example.com>", mailboxId, undefined, providerMessageId, [providerMessageId]);
+
+      const { rows } = await pool.query<{ thread_id: string }>(
+        `SELECT thread_id FROM mail_message_meta WHERE message_id = '<answer-2@example.com>'`,
+      );
+      expect(rows).toEqual([{ thread_id: sent.threadId }]);
+    });
+
     for (const competitor of ["send", "ingest", "bridge"] as const) {
       for (const order of ["competitor-first", "cleanup-first"] as const) {
         tenantIt(
           `serializes ${competitor} and failed-send cleanup with ${order}`,
           async () => {
             const ownerPool = pool;
-            const runtimePool = await createRuntimeRolePool(ownerPool, "semprec_data");
-            const failedPool = await createRuntimeRolePool(ownerPool, "semprec_data");
-            const competitorPool = await createRuntimeRolePool(ownerPool, "semprec_data");
+            const runtimePool = await createRuntimeRolePool(ownerPool, "alldots_data");
+            const failedPool = await createRuntimeRolePool(ownerPool, "alldots_data");
+            const competitorPool = await createRuntimeRolePool(ownerPool, "alldots_data");
             const failedPids: Array<Promise<number>> = [];
             const competitorPids: Array<Promise<number>> = [];
             const recordPid = (client: PoolClient, pids: Array<Promise<number>>) => {
@@ -665,7 +751,7 @@ describe("drafts and authorized SMTP sending", () => {
               const runtimeRole = await runtimePool.query<{ name: string; bypass: boolean; superuser: boolean }>(
                 "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
               );
-              expect(runtimeRole.rows[0]).toEqual({ name: "semprec_data", bypass: false, superuser: false });
+              expect(runtimeRole.rows[0]).toEqual({ name: "alldots_data", bypass: false, superuser: false });
               const anchorIds: string[] = [];
               if (competitor === "bridge") {
                 for (const id of ["<bridge-anchor@example.com>", "<bridge-other@example.com>"]) {
@@ -976,11 +1062,11 @@ describe("drafts and authorized SMTP sending", () => {
 
     beforeEach(async () => {
       ownerPool = pool;
-      pool = await createRuntimeRolePool(ownerPool, "semprec_data");
+      pool = await createRuntimeRolePool(ownerPool, "alldots_data");
       const role = await pool.query<{ name: string; bypass: boolean; superuser: boolean }>(
         "SELECT current_user AS name, rolbypassrls AS bypass, rolsuper AS superuser FROM pg_roles WHERE rolname = current_user",
       );
-      expect(role.rows).toEqual([{ name: "semprec_data", bypass: false, superuser: false }]);
+      expect(role.rows).toEqual([{ name: "alldots_data", bypass: false, superuser: false }]);
       chokePoint = createChokePoint(pool);
     });
 
@@ -1054,6 +1140,8 @@ describe("drafts and authorized SMTP sending", () => {
           specialPurpose: "inbox",
         });
         const received = await ingestEmailMessage(client, {
+          arrival: "live",
+          contentState: "full",
           emailsDatabaseId: emailsId,
           filesDatabaseId: await databaseIdFor("files"),
           folderRelationPropertyId,
