@@ -9,7 +9,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** The largest attachment downloaded; the server accepts no larger file. */
+/** The largest attachment downloaded; a longer answer is refused rather than held in memory. */
 internal const val ATTACHMENT_MAX_BYTES = 100L * 1024 * 1024
 
 // A large scan over a slow connection takes far longer than a JSON call.

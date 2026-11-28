@@ -11,10 +11,11 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 
 private fun cardWithFiles(id: String) = inboxTaskCard(id).let { card ->
-    val origin = card.origin as InboxOrigin.Capture
+    val origin = assertIs<InboxOrigin.Capture>(card.origin)
     card.copy(origin = origin.copy(attachments = listOf(serverAttachment("f1", name = null), serverAttachment("f2"))))
 }
 

@@ -160,7 +160,8 @@ class ApiClient internal constructor(engine: HttpClientEngine?) {
 
     /**
      * Reads the bytes of a `GET`, with the media type the server named. With [maxBytes] a body longer than that is
-     * not read beyond it and fails as [FailureKind.INVALID_DATA]; [requestTimeoutMillis] replaces the default bound.
+     * read no further than one byte past it and fails as [FailureKind.INVALID_DATA]; [requestTimeoutMillis] replaces
+     * the default bound.
      */
     suspend fun download(
         serverUrl: String,

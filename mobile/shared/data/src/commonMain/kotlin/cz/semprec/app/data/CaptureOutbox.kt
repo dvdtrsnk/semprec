@@ -59,7 +59,7 @@ internal class CaptureOutbox(
     private val newId: () -> String,
     private val sender: () -> QueueSender?,
 ) {
-    /** The files of the captures; read the bytes of one through it ([KeptCaptures.bytes]), never write them. */
+    /** The files of the captures; [FileInboxAttachmentFiles] reads the bytes of a waiting capture through it. */
     val files = KeptCaptures(store)
     private val delivery = CaptureDelivery(files, state, clock)
     private val rounds = OneRoundAtATime(scope) { pass() }

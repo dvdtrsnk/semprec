@@ -653,6 +653,13 @@ and a file it cannot decode reads as nothing. `SyncMailThreadList` (`shared/doma
 is no cursor or the server answers a reset. `MailThreadsState.fromCache` is `true` until the server answered; a
 failed refresh keeps the kept rows and raises `actionFailed`. Searches are not kept, and writes stay server calls.
 
+The same directory holds the Inbox attachments the person opened, for the system preview: `FileInboxAttachmentFiles`
+(`shared/data`, behind the `InboxAttachmentFiles` port) downloads a server attachment with `GET /api/blobs/:id` once,
+at most 100 MB, into `inbox-attachments/<account>/blobs/<blobId>/<file name>` and answers that file afterwards, also
+offline; the file of a capture that waits in the outbox is copied from its `.bin` into `captures/<captureId>/` on every
+open. The file name is the attachment's own without any path or reserved characters, or one named after its source,
+with an extension of its media type (`attachmentFileName` in `shared/domain`). Every end of the session deletes them.
+
 ## Decisions
 
 - [`docs/adr/2026-10-24-monorepo-holds-backend-web-and-mobile.md`](../../docs/adr/2026-10-24-monorepo-holds-backend-web-and-mobile.md)
