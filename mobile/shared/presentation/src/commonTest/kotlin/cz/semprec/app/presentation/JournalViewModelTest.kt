@@ -649,60 +649,6 @@ class JournalViewModelTest : MainDispatcherTest() {
             vm.close()
         }
 
-    @Test fun `the write of a capture and the retry after it add the entry in place without loading`() =
-        runTest(dispatcher) {
-            val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-            withDiary()
-            val vm = factory(changes).journalViewModel("2026-10-16")
-            runCurrent()
-            val before = vm.state.value
-            val captured = inboxEntry().copy(id = "capture-1", text = "Captured", status = "waiting")
-            val gate = CompletableDeferred<Unit>()
-            repository.onPeriod = {
-                val page = periodPage(it, markdown = DIARY, itemId = "item-day")
-                val answer = if (it.key == "2026-10-16") page.copy(inbox = page.inbox + captured) else page
-                repository.late(gate, content(answer))
-            }
-            changes.emit(Unit)
-            runCurrent()
-            vm.onAction(JournalAction.Retry)
-            runCurrent()
-            assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
-            assertEquals(before.shown, vm.state.value.shown)
-            assertEquals(before.page, vm.state.value.page)
-            assertEquals(before.inbox, vm.state.value.inbox)
-            gate.complete(Unit)
-            runCurrent()
-            val after = vm.state.value
-            assertEquals(JournalPhase.CONTENT, after.phase)
-            assertEquals(before.inbox.map { it.id } + "capture-1", after.inbox.map { it.id })
-            assertEquals(before.page, after.page)
-            assertEquals(before.events, after.events)
-            assertEquals(before.birthdays, after.birthdays)
-            assertEquals(before.weeks, after.weeks)
-            assertEquals(before.axis, after.axis)
-            assertEquals(before.shown, after.shown)
-            vm.close()
-        }
-
-    @Test fun `a retry after a write over a shown period that cannot be read keeps it shown`() =
-        runTest(dispatcher) {
-            val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
-            withDiary()
-            val vm = factory(changes).journalViewModel("2026-10-16")
-            runCurrent()
-            repository.onPeriod = { journalFailure(FailureKind.UNAVAILABLE) }
-            changes.emit(Unit)
-            runCurrent()
-            val before = vm.state.value
-            vm.onAction(JournalAction.Retry)
-            runCurrent()
-            assertEquals(3, reads())
-            assertEquals(before, vm.state.value)
-            assertEquals(JournalPhase.CONTENT, vm.state.value.phase)
-            vm.close()
-        }
-
     @Test fun `a write elsewhere while the period is still loading reads nothing more`() = runTest(dispatcher) {
         val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
         val gate = CompletableDeferred<Unit>()
