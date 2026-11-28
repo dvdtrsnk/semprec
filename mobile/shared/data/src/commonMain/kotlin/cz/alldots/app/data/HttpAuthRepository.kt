@@ -7,6 +7,8 @@ import cz.alldots.app.core.SessionStorage
 import cz.alldots.app.core.StoredSession
 import cz.alldots.app.domain.AuthRepository
 import cz.alldots.app.domain.ItemChanges
+import cz.alldots.app.domain.PasswordResetOutcome
+import cz.alldots.app.domain.PasswordResetRefusal
 import cz.alldots.app.domain.RepositoryResult
 import cz.alldots.app.domain.Session
 import cz.alldots.app.domain.SessionStatus
@@ -16,6 +18,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.encodeToString
 
 /**
@@ -111,6 +114,20 @@ class HttpAuthRepository(
             body = ApiJson.encodeToString(PasswordResetRequest(email)),
         ).ignoreBody()
 
+    override suspend fun resetPassword(
+        serverUrl: String,
+        token: String,
+        newPassword: String,
+    ): RepositoryResult<PasswordResetOutcome> {
+        val body = ApiJson.encodeToString(PasswordResetConsumeRequest(token, newPassword))
+        return when (val response = client.send(serverUrl, HttpMethod.Post, CONSUME_PATH, body = body)) {
+            is ApiResponse.Success -> RepositoryResult.Content(PasswordResetOutcome.Done)
+            is ApiResponse.Failure -> response.resetRefusal()
+                ?.let { RepositoryResult.Content(PasswordResetOutcome.Refused(it)) }
+                ?: RepositoryResult.Failure(response.kind)
+        }
+    }
+
     override suspend fun signOut() {
         val stored = storage.load()
         forget()
@@ -146,9 +163,34 @@ class HttpAuthRepository(
     private fun FailureKind.forSignIn(): FailureKind =
         if (this == FailureKind.REJECTED) FailureKind.UNAUTHORIZED else this
 
+    /**
+     * The refusal a `400` of `password-reset/consume` names: one of the three token codes, or a `validation_failed`
+     * of the new password (too short). Any other answer is `null` and stays its [FailureKind].
+     */
+    private fun ApiResponse.Failure.resetRefusal(): PasswordResetRefusal? {
+        val error = body?.takeIf { status == BAD_REQUEST }?.let(::readResetError) ?: return null
+        return when (error.code) {
+            "password_reset_token_invalid" -> PasswordResetRefusal.TOKEN_INVALID
+            "password_reset_token_expired" -> PasswordResetRefusal.TOKEN_EXPIRED
+            "password_reset_token_consumed" -> PasswordResetRefusal.TOKEN_CONSUMED
+            "validation_failed" -> PasswordResetRefusal.WEAK_PASSWORD.takeIf { error.details?.field == "newPassword" }
+            else -> null
+        }
+    }
+
+    private fun readResetError(text: String): PasswordResetErrorDto? = try {
+        ApiJson.decodeFromString(PasswordResetErrorDto.serializer(), text)
+    } catch (_: SerializationException) {
+        null
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+
     private companion object {
         const val LOGIN_PATH = "/api/auth/login"
         const val LOGOUT_PATH = "/api/auth/logout"
         const val RESET_PATH = "/api/auth/password-reset/request"
+        const val CONSUME_PATH = "/api/auth/password-reset/consume"
+        const val BAD_REQUEST = 400
     }
 }

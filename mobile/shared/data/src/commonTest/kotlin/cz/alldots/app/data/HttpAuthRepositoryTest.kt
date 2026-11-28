@@ -8,6 +8,8 @@ import cz.alldots.app.core.InMemorySessionStorage
 import cz.alldots.app.core.StoredSession
 import cz.alldots.app.domain.MailThreadList
 import cz.alldots.app.domain.MailThreadQuery
+import cz.alldots.app.domain.PasswordResetOutcome
+import cz.alldots.app.domain.PasswordResetRefusal
 import cz.alldots.app.domain.RepositoryResult
 import cz.alldots.app.domain.RevokePushSubscription
 import cz.alldots.app.domain.SessionStatus
@@ -479,6 +481,67 @@ class HttpAuthRepositoryTest {
 
         assertIs<RepositoryResult.Content<Unit>>(result)
         assertEquals("""{"email":"a@b.cz"}""", bodies.single())
+    }
+
+    @Test
+    fun aResetPostsTheTokenAndTheNewPasswordWithoutASessionAndSetsNoSession() = runTest {
+        val storage = InMemorySessionStorage()
+        val repo = repository(storage) { json("""{"ok":true}""") }
+
+        val result = repo.resetPassword("https://alldots.app", "tok-1", "new secret")
+
+        assertEquals(PasswordResetOutcome.Done, assertIs<RepositoryResult.Content<PasswordResetOutcome>>(result).value)
+        val request = requests.single()
+        assertEquals(HttpMethod.Post, request.method)
+        assertEquals("https://alldots.app/api/auth/password-reset/consume", request.url.toString())
+        assertNull(request.headers[HttpHeaders.Authorization])
+        val body = Json.parseToJsonElement(bodies.single()).jsonObject
+        assertEquals(setOf("token", "newPassword"), body.keys)
+        assertEquals("tok-1", body.getValue("token").jsonPrimitive.content)
+        assertEquals("new secret", body.getValue("newPassword").jsonPrimitive.content)
+        assertNull(storage.load())
+        assertEquals(SessionStatus.Restoring, repo.status.value)
+    }
+
+    @Test
+    fun eachRefusalTheServerNamesIsItsOwnOutcome() = runTest {
+        val cases = listOf(
+            """{"error":"x","code":"password_reset_token_invalid"}""" to PasswordResetRefusal.TOKEN_INVALID,
+            """{"error":"x","code":"password_reset_token_expired"}""" to PasswordResetRefusal.TOKEN_EXPIRED,
+            """{"error":"x","code":"password_reset_token_consumed"}""" to PasswordResetRefusal.TOKEN_CONSUMED,
+            """{"error":"x","code":"validation_failed","details":{"field":"newPassword"}}""" to
+                PasswordResetRefusal.WEAK_PASSWORD,
+        )
+        for ((answer, refusal) in cases) {
+            val repo = repository { json(answer, HttpStatusCode.BadRequest) }
+            val result = repo.resetPassword("https://alldots.app", "tok", "short")
+            assertEquals(
+                PasswordResetOutcome.Refused(refusal),
+                assertIs<RepositoryResult.Content<PasswordResetOutcome>>(result).value,
+                answer,
+            )
+        }
+    }
+
+    @Test
+    fun anyOtherFailureOfAResetStaysItsFailureKind() = runTest {
+        val cases = listOf(
+            """{"error":"x","code":"validation_failed","details":{"field":"token"}}""" to HttpStatusCode.BadRequest,
+            """{"error":"x","code":"validation_failed"}""" to HttpStatusCode.BadRequest,
+            """{"error":"x","code":"something_else"}""" to HttpStatusCode.BadRequest,
+            "not json" to HttpStatusCode.BadRequest,
+            """{"error":"x","code":"password_reset_token_invalid"}""" to HttpStatusCode.Conflict,
+            """{"error":"Too many attempts","code":"rate_limited"}""" to HttpStatusCode.TooManyRequests,
+            """{"error":"Internal server error"}""" to HttpStatusCode.InternalServerError,
+        )
+        for ((answer, status) in cases) {
+            val repo = repository { json(answer, status) }
+            val result = repo.resetPassword("https://alldots.app", "tok", "secret12")
+            assertEquals(failureKind(status), assertIs<RepositoryResult.Failure>(result).kind, answer)
+        }
+        val offline = repository { throw IllegalStateException("offline") }
+        val unreachable = offline.resetPassword("https://alldots.app", "tok", "secret12")
+        assertEquals(FailureKind.UNAVAILABLE, assertIs<RepositoryResult.Failure>(unreachable).kind)
     }
 
     @Test

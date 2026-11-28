@@ -206,6 +206,9 @@ class HomeSDK(
 
     fun loginViewModel(): LoginViewModel = viewModels.loginViewModel()
 
+    /** The form that sets a new password with a reset link. */
+    val passwordReset: PasswordResetSDK = PasswordResetSDK(viewModels)
+
     /** The diary. */
     val journal: JournalSDK = JournalSDK(auth.api, attachmentFiles)
 

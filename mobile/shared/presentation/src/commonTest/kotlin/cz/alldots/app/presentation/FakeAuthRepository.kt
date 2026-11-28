@@ -2,6 +2,7 @@ package cz.alldots.app.presentation
 
 import cz.alldots.app.core.FailureKind
 import cz.alldots.app.domain.AuthRepository
+import cz.alldots.app.domain.PasswordResetOutcome
 import cz.alldots.app.domain.RepositoryResult
 import cz.alldots.app.domain.Session
 import cz.alldots.app.domain.SessionStatus
@@ -12,19 +13,26 @@ import kotlinx.coroutines.flow.StateFlow
 
 val testSession = Session("https://s.example", SessionUser("u1", "a@b.cz", "cs", "member"))
 
-/** Scripted auth: [signInAnswer] is what [signIn] returns, once [gate] (if set) is completed. */
+/**
+ * Scripted auth: [signInAnswer] is what [signIn] returns and [passwordResetAnswer] what [resetPassword] returns, once
+ * [gate] (if set) is completed; with [passwordResetError] set, [resetPassword] throws it instead.
+ */
 class FakeAuthRepository(
     initial: SessionStatus = SessionStatus.Restoring,
     var restoreTo: SessionStatus = SessionStatus.SignedOut,
     var signInAnswer: RepositoryResult<Session> = RepositoryResult.Content(testSession),
     var resetAnswer: RepositoryResult<Unit> = RepositoryResult.Content(Unit),
+    var passwordResetAnswer: RepositoryResult<PasswordResetOutcome> =
+        RepositoryResult.Content(PasswordResetOutcome.Done),
     var gate: CompletableDeferred<Unit>? = null,
+    var passwordResetError: Exception? = null,
 ) : AuthRepository {
     private val mutableStatus = MutableStateFlow(initial)
     override val status: StateFlow<SessionStatus> = mutableStatus
 
     val signIns = mutableListOf<Triple<String, String, String>>()
     val resets = mutableListOf<Pair<String, String>>()
+    val passwordResets = mutableListOf<Triple<String, String, String>>()
     var restores = 0
         private set
     var signOuts = 0
@@ -46,6 +54,17 @@ class FakeAuthRepository(
     override suspend fun requestPasswordReset(serverUrl: String, email: String): RepositoryResult<Unit> {
         resets += serverUrl to email
         return resetAnswer
+    }
+
+    override suspend fun resetPassword(
+        serverUrl: String,
+        token: String,
+        newPassword: String,
+    ): RepositoryResult<PasswordResetOutcome> {
+        passwordResets += Triple(serverUrl, token, newPassword)
+        gate?.await()
+        passwordResetError?.let { throw it }
+        return passwordResetAnswer
     }
 
     override suspend fun signOut() {

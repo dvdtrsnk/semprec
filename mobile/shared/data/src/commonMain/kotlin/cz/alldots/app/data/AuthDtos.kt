@@ -34,3 +34,16 @@ internal data class SessionResponse(val user: UserDto)
 
 @Serializable
 internal data class PasswordResetRequest(val email: String)
+
+@Serializable
+internal data class PasswordResetConsumeRequest(val token: String, val newPassword: String)
+
+/**
+ * The error answer of `password-reset/consume`: `{ "error": message, "code", "details": { "field" } }`. Only the code
+ * and the refused field are read.
+ */
+@Serializable
+internal data class PasswordResetErrorDto(val code: String? = null, val details: PasswordResetErrorDetailsDto? = null)
+
+@Serializable
+internal data class PasswordResetErrorDetailsDto(val field: String? = null)

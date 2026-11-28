@@ -16,6 +16,17 @@ interface AuthRepository {
     /** Asks the server to send a reset link to [email]; the answer never says whether the address is known. */
     suspend fun requestPasswordReset(serverUrl: String, email: String): RepositoryResult<Unit>
 
+    /**
+     * Sets [newPassword] with the [token] of a reset link at [serverUrl]. A refusal the server names is a
+     * [PasswordResetOutcome.Refused]; every other failure is its [cz.alldots.app.core.FailureKind]. No session is
+     * created: the person signs in afterwards.
+     */
+    suspend fun resetPassword(
+        serverUrl: String,
+        token: String,
+        newPassword: String,
+    ): RepositoryResult<PasswordResetOutcome>
+
     /** Ends the session on the server where possible and always forgets it on this device. */
     suspend fun signOut()
 }
