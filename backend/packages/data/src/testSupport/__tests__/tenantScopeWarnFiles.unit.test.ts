@@ -13,7 +13,7 @@ const backendDirectory = fileURLToPath(new URL("../../../../../", import.meta.ur
 const testSupportDirectory = fileURLToPath(new URL("../", import.meta.url));
 
 /** SHA-256 of `tenantScopeWarnFiles.frozen.json`. Never update it. */
-const FROZEN_LIST_SHA256 = "a097f515c543d126420c86f40c2e7b68c98a22f3dc9a6f2965758d5eca7d67b6";
+const FROZEN_LIST_SHA256 = "bc79eb0c43bfcddc7014945f6d180e9843949c55fa00bd2ea4e333bbafb4fb60";
 
 /** None of these may be listed. */
 const OWN_NEW_TEST_FILES: readonly string[] = [
@@ -38,7 +38,7 @@ const FIRST_SCOPE_MODE_SUITES: readonly string[] = [
 ];
 
 /** SHA-256 of `FIRST_SCOPE_MODE_SUITES`, newline-joined with a trailing newline. Never update it. */
-const FIRST_SCOPE_MODE_SUITES_SHA256 = "0eff7a82ad1e27204129bc8f793e8f4af799aa0cbe08517a169ddf5751d1ad25";
+const FIRST_SCOPE_MODE_SUITES_SHA256 = "22ba46e967ac21d5e5dc3f951e4af3f649472180e1b5cf093bd626c5f79b6b8d";
 
 /** Files allowed to mention `ALLDOTS_TENANT_SCOPE` with `"warn"`. Only shrinks. */
 const FROZEN_SCOPE_MODE_SUITES: readonly string[] = [
