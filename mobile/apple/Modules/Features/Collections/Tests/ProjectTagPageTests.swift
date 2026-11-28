@@ -67,6 +67,19 @@ final class ProjectTagPageTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testTheTagListReadsTheTagsAgainOnEveryAppearanceButTheFirst() {
+        let model = ScriptedItemScreenModel(state: ItemState(phase: .content))
+        let viewModel = ItemViewModel(itemId: "p1", model: model, router: RouterSpy())
+        var hasAppeared = false
+        ProjectTagsScreen.appeared(&hasAppeared, send: viewModel.send)
+        XCTAssertEqual(model.actions, [])
+        ProjectTagsScreen.appeared(&hasAppeared, send: viewModel.send)
+        XCTAssertEqual(model.actions, [.refresh])
+        ProjectTagsScreen.appeared(&hasAppeared, send: viewModel.send)
+        XCTAssertEqual(model.actions, [.refresh, .refresh])
+    }
+
     func testEveryColourOfThePaletteHasAName() {
         let keys = ["red", "orange", "yellow", "green", "teal", "blue", "indigo", "purple", "pink", "brown", "gray"]
         for key in keys {

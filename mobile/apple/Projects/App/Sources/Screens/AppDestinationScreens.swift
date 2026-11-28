@@ -88,31 +88,35 @@ struct InboxDestination: View {
     }
 }
 
-/// The tags of the projects (`projectTags` and `projectTag`), each screen over a model of the project they were
-/// reached from.
+/// Every tag of the projects, over a model of the project `projectId` it was reached from.
 struct ProjectTagsDestination: View {
 
-    let destination: AppDestination
+    let projectId: String
     let composition: AppComposition
 
     var body: some View {
-        switch destination {
-        case .projectTags(let projectId):
-            CollectionsScreenFactory.projectTags(
-                projectId: projectId,
-                makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
-                router: composition.collectionsRouter
-            )
-        case .projectTag(let projectId, let tagKey):
-            CollectionsScreenFactory.projectTag(
-                projectId: projectId,
-                tagKey: tagKey,
-                makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
-                router: composition.collectionsRouter
-            )
-        default:
-            EmptyView()
-        }
+        CollectionsScreenFactory.projectTags(
+            projectId: projectId,
+            makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
+            router: composition.collectionsRouter
+        )
+    }
+}
+
+/// One tag of the projects (`tagKey`), over a model of the project `projectId` it was reached from.
+struct ProjectTagDestination: View {
+
+    let projectId: String
+    let tagKey: String
+    let composition: AppComposition
+
+    var body: some View {
+        CollectionsScreenFactory.projectTag(
+            projectId: projectId,
+            tagKey: tagKey,
+            makeModel: { composition.models.makeItem(itemId: projectId, databaseKey: "projects") },
+            router: composition.collectionsRouter
+        )
     }
 }
 

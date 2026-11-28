@@ -26,7 +26,14 @@ struct ProjectTagsScreen: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(CollectionsIdentifiers.projectTagsPage)
             .task { await viewModel.observe() }
-            .onAppear { if hasAppeared { viewModel.send(.refresh) } else { hasAppeared = true } }
+            .onAppear { Self.appeared(&hasAppeared, send: viewModel.send) }
+    }
+
+    // MARK: - Methods
+    /// One appearance of the screen: the first only records that it appeared, each later one, a return from a tag's
+    /// screen, reads the tags again.
+    static func appeared(_ hasAppeared: inout Bool, send: (ItemAction) -> Void) {
+        if hasAppeared { send(.refresh) } else { hasAppeared = true }
     }
 }
 
