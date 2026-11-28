@@ -1,6 +1,6 @@
 ---
 name: mobile-navigation
-description: "Who navigates in the mobile apps and how - a shared ViewModel only emits an effect, the feature maps it to a router it declares, and the app implements the router and owns every tab, stack and sheet: on Android through type-safe routes and the SceneNavigation queue that runs each command once across recreation and process death, on iOS and macOS through NavigationContext and one NavigatorUI stack per tab. Load this BEFORE adding or changing a route, router, tab, sheet, back behaviour or navigation command. Triggers on: any *Router or *Routing, router::handle, route(_:), SceneNavigation, NavigationCommand, QueuedNavigation, acknowledge(, AppSceneState, AppRoutes, DetailRoute, toRoute, launchSingleTop, NavHost, NavHostController, navigate(, popBackStack, BackHandler, AboutSheet, AppTab, NavigationContext, StackNavigating, AppDestination, ManagedNavigationStack, NavigatorUI, onNavigationProvidedView, navigationRoot, a deep link, onOpenURL. Skip only when no navigation changes."
+description: "Who navigates in the mobile apps and how - a shared ViewModel only emits an effect, the feature maps it to a router it declares, and the app implements the router and owns every tab, stack and sheet: on Android through type-safe routes and the SceneNavigation queue that runs each command once across recreation and process death, on iOS and macOS through NavigationContext and one NavigatorUI stack per tab. Load this BEFORE adding or changing a route, router, tab, sheet, back behaviour or navigation command. Triggers on: any *Router or *Routing, router::handle, route(_:), SceneNavigation, NavigationCommand, QueuedNavigation, acknowledge(, AppSceneState, AppRoutes, DetailRoute, toRoute, launchSingleTop, NavHost, NavHostController, navigate(, popBackStack, BackHandler, AboutSheet, AppTab, NavigationContext, StackNavigating, AppDestination, ManagedNavigationStack, NavigatorUI, onNavigationProvidedView, navigationRoot, a deep link, onOpenURL, onContinueUserActivity, a universal link, associated-domains, PasswordResetLink. Skip only when no navigation changes."
 ---
 
 # The app navigates. Features ask. Shared ViewModels only emit effects.
@@ -211,18 +211,30 @@ platform; the business outcome (which destination opens, once) must not. Both
 apps push a detail for every `OpenDetail`, except the detail of the same id
 already on top, so a repeated effect opens one detail on each.
 
-## 4. The apps declare no deep link yet
+## 4. One universal link on Apple, no deep link on Android
 
-There is no URL scheme, no `VIEW` intent filter, no `deepLink` in a Navigation
-graph and no `onOpenURL`. Navigation Compose still follows the deep-link
-extras of the intent that starts `MainActivity` (§2); the Android app strips
-them, and any data URI, in `MainActivity` before anything reads its intent.
-The first deep link is an architectural decision: write its ADR first
-(`adr-conventions`), and read it on purpose from the original intent in
-`MainActivity`, which otherwise discards it. It has to define strict parsing
-(unknown host, extra path components or a malformed id never navigate),
-queueing until the scene is ready, delivery exactly once, and which stack it
-resets.
+The Apple app's external entry points are exactly two
+(`docs/adr/2026-11-28-the-apple-app-opens-one-universal-link-for-password-resets.md`):
+the OAuth callback `alldots://oauth`, which the browser sign-in's own session
+catches, and the universal link
+`https://alldots.app/?page=password-reset#token=<token>` (Associated Domains
+`applinks:alldots.app` in both entitlements files). `PasswordResetLinks`, a
+modifier of `AppScene`, reads `onOpenURL` and `onContinueUserActivity`
+(`NSUserActivityTypeBrowsingWeb`) through the strict `PasswordResetLink`
+parser and opens the Auth feature's "Set a new password" sheet over the
+window; every other URL is ignored, and so is a link while the wake guard
+blocks navigation. Another scheme, domain or path is a new entry point and
+needs its own ADR, with the same strict parsing.
+
+Android has no URL scheme, no `VIEW` intent filter, no `deepLink` in a
+Navigation graph. Navigation Compose still follows the deep-link extras of the
+intent that starts `MainActivity` (§2); the Android app strips them, and any
+data URI, in `MainActivity` before anything reads its intent. Its first deep
+link is an architectural decision: write its ADR first (`adr-conventions`), and
+read it on purpose from the original intent in `MainActivity`, which otherwise
+discards it. It has to define strict parsing (unknown host, extra path
+components or a malformed id never navigate), queueing until the scene is
+ready, delivery exactly once, and which stack it resets.
 
 ## 5. Tests
 
@@ -253,7 +265,7 @@ the device tests on a reserved emulator and simulator (`mobile-verify`).
       `AppScene`, routed by an app router method through the scene's
       `NavigationContext`, and no closure handed to NavigatorUI captures
       `self`.
-- [ ] No deep link was added without an ADR, and `MainActivity` still
+- [ ] No deep link, URL scheme or universal link was added without an ADR, and `MainActivity` still
       replaces its launch intent and every new intent with
       `withoutLaunchContent()` before anything reads them.
 - [ ] The navigation tests of each touched platform cover the change.
