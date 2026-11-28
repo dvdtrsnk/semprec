@@ -1,5 +1,6 @@
 import AppIntents
 import CoreKit
+import DesignSystem
 import Foundation
 
 /// Writes a text down, or on iOS keeps a scanned document, into the Inbox, as the Action button runs it through

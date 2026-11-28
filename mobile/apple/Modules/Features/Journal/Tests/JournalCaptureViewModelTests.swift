@@ -1,4 +1,6 @@
 import CoreKit
+import Foundation
+import PDFKit
 import XCTest
 
 @testable import JournalFeature
@@ -29,6 +31,37 @@ final class JournalCaptureViewModelTests: XCTestCase {
     }
 
     @MainActor
+    func testAScanIsAttachedAsOnePdfOfEveryPageFromTheCamera() throws {
+        let model = ScriptedInboxCaptureScreenModel(state: InboxCaptureState())
+        let viewModel = JournalCaptureViewModel(model: model, onCaptured: {})
+        let parts = DateComponents(year: 2026, month: 11, day: 28, hour: 9, minute: 5)
+        let scannedAt = try XCTUnwrap(Calendar.current.date(from: parts))
+
+        XCTAssertTrue(viewModel.attachScan([page(width: 300), page(width: 400)], scannedAt: scannedAt))
+
+        XCTAssertEqual(model.actions.count, 1)
+        guard case let .attach(filename, mimeType, base64, source) = try XCTUnwrap(model.actions.first) else {
+            return XCTFail("A scan is attached, as a picked file is")
+        }
+        XCTAssertEqual(filename, "Scan 2026-11-28 09-05.pdf")
+        XCTAssertEqual(mimeType, "application/pdf")
+        XCTAssertEqual(source, .camera)
+        let document = try XCTUnwrap(PDFDocument(data: try XCTUnwrap(Data(base64Encoded: base64))))
+        let widths = (0..<document.pageCount).compactMap { document.page(at: $0)?.bounds(for: .mediaBox).width }
+        XCTAssertEqual(widths, [300, 400], "Every page is kept, in the order it was scanned in")
+    }
+
+    @MainActor
+    func testAScanWithoutAPageAttachesNothing() {
+        let model = ScriptedInboxCaptureScreenModel(state: InboxCaptureState())
+        let viewModel = JournalCaptureViewModel(model: model, onCaptured: {})
+
+        XCTAssertFalse(viewModel.attachScan([], scannedAt: .now))
+
+        XCTAssertEqual(model.actions, [])
+    }
+
+    @MainActor
     func testTheStateIsRepublishedAndEveryCaptureIsCountedAndReported() async throws {
         let model = ScriptedInboxCaptureScreenModel(state: InboxCaptureState())
         var reported = 0
@@ -46,6 +79,12 @@ final class JournalCaptureViewModelTests: XCTestCase {
         try await eventually { viewModel.captured == 2 }
         XCTAssertEqual(viewModel.captured, 2)
         XCTAssertEqual(reported, 2)
+    }
+
+    private func page(width: CGFloat) -> PDFPage {
+        let page = PDFPage()
+        page.setBounds(CGRect(x: 0, y: 0, width: width, height: 800), for: .mediaBox)
+        return page
     }
 
     @MainActor

@@ -1,3 +1,4 @@
+import DesignSystem
 import SwiftUI
 
 /// Shows the document scanner full screen over a scene while `presenter` asks for a scan and this scene claimed it,
@@ -18,8 +19,12 @@ struct ScanPresentation: ViewModifier {
         #if os(iOS)
         content
             .fullScreenCover(isPresented: showsScanner) {
-                DocumentScanner(presenter: presenter)
-                    .ignoresSafeArea()
+                DocumentScanner(
+                    onFinish: presenter.finish(pages:),
+                    onCancel: presenter.cancel,
+                    onFail: presenter.fail
+                )
+                .ignoresSafeArea()
             }
             .onChange(of: presenter.request, initial: true) { claimWhenActive() }
             .onChange(of: scenePhase, initial: true) { claimWhenActive() }

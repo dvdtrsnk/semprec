@@ -19,5 +19,6 @@ enum JournalIdentifiers {
     static let captureSend = "journal.capture.send"
     static let captureType = "journal.capture.type"
     static let captureAttach = "journal.capture.attach"
+    static let captureScan = "journal.capture.scan"
     static let captureRemove = "journal.capture.remove"
 }

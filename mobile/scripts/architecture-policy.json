@@ -1337,6 +1337,7 @@
         "journal.capture.photoName",
         "journal.capture.placeholder",
         "journal.capture.remove",
+        "journal.capture.scan",
         "journal.capture.send",
         "journal.capture.type",
         "journal.inbox.status.confirmed",

@@ -289,6 +289,22 @@
         }
       }
     },
+    "journal.capture.scan" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Naskenovat dokument"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Scan document"
+          }
+        }
+      }
+    },
     "journal.capture.send" : {
       "localizations" : {
         "cs" : {

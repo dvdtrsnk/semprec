@@ -1,12 +1,10 @@
-import CoreKit
 import Foundation
 import PDFKit
 import XCTest
 
-@testable import Semprec
+@testable import DesignSystem
 
-/// The PDF a finished scan becomes: every page in order, its name for the moment of the scan, its media type and its
-/// source.
+/// The PDF a finished scan becomes: every page in order, its name for the moment of the scan and its media type.
 final class ScanDocumentTests: XCTestCase {
 
     // MARK: - Tests
@@ -18,7 +16,6 @@ final class ScanDocumentTests: XCTestCase {
 
         XCTAssertEqual(file.filename, "Scan 2026-11-27 07-45.pdf")
         XCTAssertEqual(file.mimeType, "application/pdf")
-        XCTAssertEqual(file.source, .camera)
         let data = try XCTUnwrap(Data(base64Encoded: file.base64))
         let document = try XCTUnwrap(PDFDocument(data: data))
         XCTAssertEqual(document.pageCount, 3)

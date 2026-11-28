@@ -1,5 +1,6 @@
 import Combine
 import CoreKit
+import DesignSystem
 import Foundation
 import PDFKit
 
@@ -97,10 +98,16 @@ final class ScanPresenter: ObservableObject {
             return
         }
         let date = now()
-        guard let file = ScanDocument.file(pages: pages, scannedAt: date) else {
+        guard let scan = ScanDocument.file(pages: pages, scannedAt: date) else {
             end(with: .failed(Failed(kind: nil)))
             return
         }
+        let file = InboxShortcutCapture.File(
+            filename: scan.filename,
+            mimeType: scan.mimeType,
+            base64: scan.base64,
+            source: .camera
+        )
         guard let waiting = take() else { return }
         let capture = capture
         let captured = captured

@@ -1,6 +1,8 @@
 import Combine
 import CoreKit
+import DesignSystem
 import Foundation
+import PDFKit
 
 /// Thin adapter between the capture row of the diary's Inbox and its shared screen model: republishes the state and
 /// forwards intents. A capture that went through bumps `captured`, so the row clears its text and the diary shows the
@@ -50,6 +52,14 @@ final class JournalCaptureViewModel: ObservableObject {
 
     func attach(_ file: CaptureFile, source: InboxCaptureSource) {
         model.send(.attach(filename: file.filename, mimeType: file.mimeType, base64: file.base64, source: source))
+    }
+
+    /// Attaches the scanned `pages` as one PDF named for `date`, from the camera, as a picked file is attached; false
+    /// when the PDF could not be made, with nothing attached.
+    func attachScan(_ pages: [PDFPage], scannedAt date: Date) -> Bool {
+        guard let scan = ScanDocument.file(pages: pages, scannedAt: date) else { return false }
+        attach(CaptureFile(filename: scan.filename, mimeType: scan.mimeType, base64: scan.base64), source: .camera)
+        return true
     }
 
     func removeAttachment() {
