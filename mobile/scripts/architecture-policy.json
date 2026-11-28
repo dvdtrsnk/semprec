@@ -23,7 +23,7 @@
     "allowedImports": ["androidx.lifecycle.ViewModel", "androidx.lifecycle.viewModelScope"]
   },
   "apple": {
-    "systemModules": ["AVFoundation", "AlarmKit", "AppIntents", "AuthenticationServices", "BackgroundTasks", "Combine", "CoreGraphics", "CoreHaptics", "CoreImage", "Foundation", "ImageIO", "MediaPlayer", "PDFKit", "PhotosUI", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "VideoToolbox", "VisionKit", "XCTest"],
+    "systemModules": ["AVFoundation", "AlarmKit", "AppIntents", "AuthenticationServices", "BackgroundTasks", "Combine", "CoreGraphics", "CoreHaptics", "CoreImage", "Foundation", "ImageIO", "MediaPlayer", "PDFKit", "PhotosUI", "QuickLook", "Security", "SwiftUI", "Synchronization", "UniformTypeIdentifiers", "UserNotifications", "VideoToolbox", "VisionKit", "XCTest"],
     "externalModules": ["FactoryKit", "NavigatorUI"],
     "kotlinFrameworkTarget": "CoreKit",
     "targets": {
@@ -317,6 +317,9 @@
         "inbox.add",
         "inbox.approval.unknown",
         "inbox.approve",
+        "inbox.attachment",
+        "inbox.attachment.failed",
+        "inbox.attachment.opening",
         "inbox.captured",
         "inbox.choice.none",
         "inbox.clarify.hint",
@@ -1323,6 +1326,8 @@
         "journal.events.none",
         "journal.inbox",
         "journal.inbox.attachment",
+        "journal.attachment.failed",
+        "journal.attachment.opening",
         "journal.inbox.process",
         "journal.capture.attach",
         "journal.capture.failed",

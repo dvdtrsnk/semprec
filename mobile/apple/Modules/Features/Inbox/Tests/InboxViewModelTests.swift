@@ -36,7 +36,8 @@ final class InboxViewModelTests: XCTestCase {
             .setDate(cardId: "a", key: "date", date: "2026-10-17"), .setTime(cardId: "a", key: "date", time: "09:00"),
             .pick(cardId: "a", key: "project", choiceId: nil), .toggle(cardId: "a", key: "people", choiceId: "p"),
             .openPicker(cardId: "a", key: "project"), .closePicker, .setSecret(cardId: "a", text: "sk"), .approve,
-            .reject, .undo, .reset(cardId: "a"), .recompute(cardId: "a"), .openResult, .dismissResult, .dismissProblem
+            .reject, .undo, .reset(cardId: "a"), .recompute(cardId: "a"), .openResult, .dismissResult, .dismissProblem,
+            .openAttachment(cardId: "a", attachmentId: "f1"), .closeAttachment
         ]
         actions.forEach(viewModel.send)
         XCTAssertEqual(model.actions, actions)

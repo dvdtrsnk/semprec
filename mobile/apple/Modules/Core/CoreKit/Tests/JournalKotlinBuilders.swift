@@ -36,7 +36,8 @@ enum JournalKotlin {
         axis: [SharedSDK.JournalAxisRowState] = [],
         shown: SharedSDK.JournalSelection? = nil,
         before: SharedSDK.JournalPeriodContent? = nil,
-        after: SharedSDK.JournalPeriodContent? = nil
+        after: SharedSDK.JournalPeriodContent? = nil,
+        attachment: SharedSDK.AttachmentPreviewState? = nil
     ) -> SharedSDK.JournalState {
         SharedSDK.JournalState(
             phase: phase,
@@ -52,7 +53,8 @@ enum JournalKotlin {
             inbox: inbox,
             shown: shown,
             before: before,
-            after: after
+            after: after,
+            attachment: attachment
         )
     }
 

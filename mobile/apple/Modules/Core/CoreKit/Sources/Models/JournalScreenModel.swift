@@ -180,8 +180,8 @@ public struct JournalInboxItem: Equatable, Sendable, Identifiable {
     public let text: String?
     public let emoji: String?
     public let status: JournalInboxStatus
-    public let attachmentName: String?
-    public let attachmentCount: Int
+    /// Its files, in the order the item lists them.
+    public let attachments: [InboxAttachment]
 
     public init(
         id: String,
@@ -189,16 +189,14 @@ public struct JournalInboxItem: Equatable, Sendable, Identifiable {
         text: String? = nil,
         emoji: String? = nil,
         status: JournalInboxStatus = .none,
-        attachmentName: String? = nil,
-        attachmentCount: Int = 0
+        attachments: [InboxAttachment] = []
     ) {
         self.id = id
         self.time = time
         self.text = text
         self.emoji = emoji
         self.status = status
-        self.attachmentName = attachmentName
-        self.attachmentCount = attachmentCount
+        self.attachments = attachments
     }
 }
 
@@ -224,6 +222,8 @@ public struct JournalState: Equatable, Sendable {
     /// The periods of the same kind beside `shown`, once they have been read, to lay out beside it.
     public var before: JournalPeriodContent?
     public var after: JournalPeriodContent?
+    /// The Inbox attachment the person opened, while it is made ready, shown or failed.
+    public var attachment: AttachmentPreview?
 
     public init(
         phase: JournalPhase,
@@ -238,7 +238,8 @@ public struct JournalState: Equatable, Sendable {
         inbox: [JournalInboxItem] = [],
         shown: JournalSelection? = nil,
         before: JournalPeriodContent? = nil,
-        after: JournalPeriodContent? = nil
+        after: JournalPeriodContent? = nil,
+        attachment: AttachmentPreview? = nil
     ) {
         self.phase = phase
         self.selection = selection
@@ -253,6 +254,7 @@ public struct JournalState: Equatable, Sendable {
         self.shown = shown
         self.before = before
         self.after = after
+        self.attachment = attachment
     }
 }
 
@@ -298,6 +300,10 @@ public enum JournalAction: Equatable, Sendable {
     case showAxisAround(day: String)
     case openEvent(id: String)
     case openInbox
+    /// Makes the attachment `attachmentId` of the Inbox entry `entryId` ready to preview, in `JournalState.attachment`.
+    case openAttachment(entryId: String, attachmentId: String)
+    /// Ends the preview of an attachment, or its failure, and stops one being opened.
+    case closeAttachment
 }
 
 public enum JournalEffect: Equatable, Sendable {

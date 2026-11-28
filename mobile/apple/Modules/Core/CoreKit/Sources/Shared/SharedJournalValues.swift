@@ -203,8 +203,7 @@ extension JournalInboxItem {
             text: item.text,
             emoji: item.emoji,
             status: JournalInboxStatus(item.status),
-            attachmentName: item.attachmentName,
-            attachmentCount: Int(item.attachmentCount)
+            attachments: item.attachments.map(InboxAttachment.init)
         )
     }
 }

@@ -13,6 +13,8 @@ enum JournalIdentifiers {
     /// Followed by the event id.
     static let eventPrefix = "journal.event."
     static let inboxProcess = "journal.inbox.process"
+    /// Followed by the attachment id.
+    static let inboxAttachmentPrefix = "journal.inbox.attachment."
     static let captureText = "journal.capture.text"
     static let captureSend = "journal.capture.send"
     static let captureType = "journal.capture.type"

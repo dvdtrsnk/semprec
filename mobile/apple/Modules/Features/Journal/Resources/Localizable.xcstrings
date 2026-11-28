@@ -97,6 +97,38 @@
         }
       }
     },
+    "journal.attachment.failed" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Přílohu se nepodařilo otevřít"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The attachment could not be opened"
+          }
+        }
+      }
+    },
+    "journal.attachment.opening" : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Otevírá se příloha"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Opening the attachment"
+          }
+        }
+      }
+    },
     "journal.axis.label" : {
       "localizations" : {
         "cs" : {

@@ -64,7 +64,8 @@ extension SharedInboxScreenModel {
             result: state.result.map { InboxResult(label: $0.label, databaseKey: $0.databaseKey, itemId: $0.itemId) },
             problem: state.problem.map(problem),
             problemFailure: state.problemFailure.map(FailureKind.init),
-            picker: state.picker.map(picker)
+            picker: state.picker.map(picker),
+            attachment: state.attachment.map(AttachmentPreview.init)
         )
     }
 
@@ -86,6 +87,9 @@ extension SharedInboxScreenModel {
         case .dismissProblem: SharedSDK.InboxActionDismissProblem.shared
         case .reset(let cardId): SharedSDK.InboxActionReset(cardId: cardId)
         case .recompute(let cardId): SharedSDK.InboxActionRecompute(cardId: cardId)
+        case .openAttachment(let cardId, let attachmentId):
+            SharedSDK.InboxActionOpenAttachment(cardId: cardId, attachmentId: attachmentId)
+        case .closeAttachment: SharedSDK.InboxActionCloseAttachment.shared
         case .closePicker, .openPicker, .setSecret: pickerAction(action)
         case .setText, .setFlag, .setDate, .setTime, .pick, .toggle: fieldAction(action)
         }
@@ -217,7 +221,8 @@ extension SharedInboxScreenModel {
             sourceKind: origin.sourceKind,
             threadTitle: origin.threadTitle,
             heartbeatName: origin.heartbeatName,
-            mcpClientName: origin.mcpClientName
+            mcpClientName: origin.mcpClientName,
+            attachments: origin.attachments.map(InboxAttachment.init)
         )
     }
 }

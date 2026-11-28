@@ -20,7 +20,12 @@ struct InboxDeckView: View {
             ZStack {
                 cardBacks
                 if let top = content.cards.first {
-                    InboxCardView(card: top, focus: $focus, send: send)
+                    InboxCardView(
+                        card: top,
+                        openingAttachment: content.attachment?.openingId,
+                        focus: $focus,
+                        send: send
+                    )
                         .id(top.id)
                         .offset(x: dragOffset)
                         .rotationEffect(.degrees(Double(dragOffset) / Self.rotationDivisor))
@@ -36,6 +41,7 @@ struct InboxDeckView: View {
         .sheet(isPresented: pickerShown) {
             if let picker = content.picker { InboxPickerSheet(picker: picker, card: content.cards.first, send: send) }
         }
+        .inboxAttachmentPreview(content.attachment) { send(.closeAttachment) }
     }
 
     // MARK: - Constants

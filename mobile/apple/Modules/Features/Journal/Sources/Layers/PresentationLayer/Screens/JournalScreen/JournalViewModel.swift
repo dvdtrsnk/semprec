@@ -68,6 +68,14 @@ final class JournalViewModel: ObservableObject {
     func openInbox() {
         model.send(.openInbox)
     }
+
+    func openAttachment(_ item: JournalInboxItem, _ attachment: InboxAttachment) {
+        model.send(.openAttachment(entryId: item.id, attachmentId: attachment.id))
+    }
+
+    func closeAttachment() {
+        model.send(.closeAttachment)
+    }
 }
 
 // MARK: - Private

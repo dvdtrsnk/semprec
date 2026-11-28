@@ -12,6 +12,25 @@ final class SharedJournalActionMappingTests: XCTestCase {
         XCTAssertTrue(SharedJournalScreenModel.action(.retry) is SharedSDK.JournalActionRetry)
         XCTAssertTrue(SharedJournalScreenModel.action(.goToday) is SharedSDK.JournalActionGoToday)
         XCTAssertTrue(SharedJournalScreenModel.action(.openInbox) is SharedSDK.JournalActionOpenInbox)
+        XCTAssertTrue(
+            SharedJournalScreenModel.action(.closeAttachment) is SharedSDK.JournalActionCloseAttachment
+        )
+    }
+
+    func testOpeningAnAttachmentCarriesTheEntryAndTheAttachment() throws {
+        let open = try XCTUnwrap(
+            SharedJournalScreenModel.action(.openAttachment(entryId: "i1", attachmentId: "a1"))
+                as? SharedSDK.JournalActionOpenAttachment
+        )
+        XCTAssertEqual(open.entryId, "i1")
+        XCTAssertEqual(open.attachmentId, "a1")
+    }
+
+    func testTheStateCarriesTheAttachmentPreview() {
+        let preview = SharedSDK.AttachmentPreviewState(attachmentId: "a1", phase: .opening, path: nil, failure: nil)
+        let state = SharedJournalScreenModel.state(JournalKotlin.state(.content, attachment: preview))
+        XCTAssertEqual(state.attachment, AttachmentPreview(attachmentId: "a1", phase: .opening))
+        XCTAssertNil(SharedJournalScreenModel.state(JournalKotlin.state(.content)).attachment)
     }
 
     func testNavigationActionsCarryTheirArguments() throws {

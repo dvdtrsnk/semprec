@@ -191,6 +191,8 @@ public struct InboxOrigin: Equatable, Sendable {
     public let threadTitle: String?
     public let heartbeatName: String?
     public let mcpClientName: String?
+    /// The files of a capture, in the order the item lists them.
+    public let attachments: [InboxAttachment]
 
     public init(
         kind: InboxOriginKind,
@@ -203,7 +205,8 @@ public struct InboxOrigin: Equatable, Sendable {
         sourceKind: String? = nil,
         threadTitle: String? = nil,
         heartbeatName: String? = nil,
-        mcpClientName: String? = nil
+        mcpClientName: String? = nil,
+        attachments: [InboxAttachment] = []
     ) {
         self.kind = kind
         self.text = text
@@ -216,6 +219,7 @@ public struct InboxOrigin: Equatable, Sendable {
         self.threadTitle = threadTitle
         self.heartbeatName = heartbeatName
         self.mcpClientName = mcpClientName
+        self.attachments = attachments
     }
 }
 

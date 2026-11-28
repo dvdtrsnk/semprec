@@ -8,6 +8,8 @@ struct InboxCardView: View {
 
     // MARK: - Dependencies
     let card: InboxCard
+    /// The id of the attachment of the card's source being made ready to preview.
+    let openingAttachment: String?
     let focus: FocusState<String?>.Binding
     let send: (InboxAction) -> Void
 
@@ -16,7 +18,7 @@ struct InboxCardView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Spacing.small + 4) {
                 InboxCardHeader(card: card)
-                InboxSourceView(card: card)
+                InboxSourceView(card: card, openingAttachment: openingAttachment, send: send)
                 InboxNoticeView(card: card, send: send)
                 if card.type == .approval {
                     InboxApprovalView(card: card)

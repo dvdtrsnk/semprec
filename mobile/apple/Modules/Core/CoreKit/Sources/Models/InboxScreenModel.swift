@@ -45,6 +45,8 @@ public struct InboxContent: Equatable, Sendable {
     public var problem: InboxProblem?
     public var problemFailure: FailureKind?
     public var picker: InboxPicker?
+    /// The attachment of a card's source the person opened, while it is made ready, shown or failed.
+    public var attachment: AttachmentPreview?
 
     public init(
         cards: [InboxCard] = [],
@@ -56,7 +58,8 @@ public struct InboxContent: Equatable, Sendable {
         result: InboxResult? = nil,
         problem: InboxProblem? = nil,
         problemFailure: FailureKind? = nil,
-        picker: InboxPicker? = nil
+        picker: InboxPicker? = nil,
+        attachment: AttachmentPreview? = nil
     ) {
         self.cards = cards
         self.handled = handled
@@ -68,6 +71,7 @@ public struct InboxContent: Equatable, Sendable {
         self.problem = problem
         self.problemFailure = problemFailure
         self.picker = picker
+        self.attachment = attachment
     }
 }
 
@@ -100,6 +104,10 @@ public enum InboxAction: Equatable, Sendable {
     case openResult
     case dismissResult
     case dismissProblem
+    /// Makes the attachment `attachmentId` of the card's source ready to preview, in `InboxContent.attachment`.
+    case openAttachment(cardId: String, attachmentId: String)
+    /// Ends the preview of an attachment, or its failure, and stops one being opened.
+    case closeAttachment
 }
 
 /// One-time requests of the Inbox to the app.
