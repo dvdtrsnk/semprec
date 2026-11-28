@@ -212,7 +212,7 @@ async function countApprovals(): Promise<number> {
 interface Fixtures {
   database: { id: string };
   property: PropertyRow;
-  /** Target of the two REST-only option operations. */
+  /** Target of the three REST-only option operations. */
   optionProperty: PropertyRow;
   itemA: ItemRow;
   itemB: ItemRow;
@@ -379,6 +379,7 @@ const CASES: Record<GenericOperationName, Case> = {
   "property.option.update": {
     args: (fx) => ({ propertyId: fx.optionProperty.id, key: "herbs", label: "Fresh herbs" }),
   },
+  "property.option.remove": { args: (fx) => ({ propertyId: fx.optionProperty.id, key: "herbs" }) },
   "view.list": { args: () => ({}) },
   "view.get": { args: (fx) => ({ viewId: fx.view.id }) },
   "view.create": { args: (fx) => ({ databaseId: fx.database.id, type: "table", name: "All rows" }) },
@@ -893,7 +894,7 @@ describe("generic operation MCP contract", () => {
       await credentialHeader(await createProjectItem(), ["core.schema.write"]),
     );
     for (const names of [human, agent]) {
-      // So the two are absent for being REST-only, not ungranted.
+      // So the option operations are absent for being REST-only, not ungranted.
       expect(names).toContain("semprec.property.patch");
       for (const operation of REST_ONLY_OPERATION_NAMES) expect(names).not.toContain(`semprec.${operation}`);
     }

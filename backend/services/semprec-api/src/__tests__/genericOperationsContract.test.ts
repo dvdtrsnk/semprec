@@ -427,6 +427,15 @@ const CASES: Record<GenericOperationName, ContractCase> = {
     expect(updated).toEqual({ key: "herbs", label: "Fresh herbs" });
     expect((await chokePoint.getProperty(tags.id))?.config.options).toEqual([{ key: "herbs", label: "Fresh herbs" }]);
   },
+  "property.option.remove": async (fx, api) => {
+    const tags = await createTags(fx);
+    const item = await chokePoint.createItem({ databaseId: fx.database.id, properties: { tags: ["herbs"] } });
+    const res = await api(`/api/properties/${tags.id}/options/herbs`, "DELETE");
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe("");
+    expect((await chokePoint.getProperty(tags.id))?.config.options).toEqual([]);
+    expect((await chokePoint.getItem(fx.database.id, item.id))?.properties.tags).toEqual([]);
+  },
   "property.delete": async (fx, api) => {
     const scratch = await chokePoint.createProperty({
       databaseId: fx.database.id,

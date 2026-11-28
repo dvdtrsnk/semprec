@@ -78,7 +78,7 @@ async function createProjectItem(): Promise<string> {
 interface Fixtures {
   database: { id: string };
   property: PropertyRow;
-  /** A multi_select property with one option, the target of the two REST-only option operations. */
+  /** A multi_select property with one option, the target of the three REST-only option operations. */
   optionProperty: PropertyRow;
   itemA: ItemRow;
   itemB: ItemRow;
@@ -202,6 +202,7 @@ const CASES: Record<GenericOperationName, Case> = {
   "property.option.update": {
     args: (fx) => ({ propertyId: fx.optionProperty.id, key: "herbs", label: "Fresh herbs" }),
   },
+  "property.option.remove": { args: (fx) => ({ propertyId: fx.optionProperty.id, key: "herbs" }) },
   "view.list": { args: () => ({}) },
   "view.get": { args: (fx) => ({ viewId: fx.view.id }) },
   "view.create": { args: (fx) => ({ databaseId: fx.database.id, type: "table", name: "All rows" }) },

@@ -243,12 +243,23 @@ empties the write registries.
 - A seed schema-locks system databases (`databases.schema_locked`). `assertDatabaseSchemaUnlocked`
   (`data/chokePoint/propertiesStore.ts`) refuses create, retype, config change and delete with
   403 `schema_locked`; display names stay writable.
-- The only exception: `property.option.add` and `property.option.update` change `config.options` of
-  a select/multi-select on a locked database. They never remove, reorder or rekey an option.
+- The only exception: `property.option.add`, `property.option.update` and `property.option.remove`
+  change `config.options` of a select/multi-select on a locked database. Add and update never
+  remove, reorder or rekey an option.
   Labels are 1–60 UTF-16 units without NUL or lone surrogates; a label equal (case/diacritic-
   insensitive, against stored labels and both catalogs) to another option's is 409
-  `option_label_exists`; at most 100 options. Both run under `SELECT ... FOR UPDATE` on the
+  `option_label_exists`; at most 100 options. All three run under `SELECT ... FOR UPDATE` on the
   property row, as does `property.patch`.
+- `property.option.remove` (REST only, `DELETE /api/properties/:id/options/:key`, 204) refuses a
+  system-owned property (400 `system_owned`). In its transaction it drops the option and a
+  `config.default` naming it, then clears the key from every item value holding it, live and
+  trashed: a select becomes `null`, a multi_select loses the key. Live items are written through
+  `updateItemWithClient` as the system writer (hooks, item invalidation, search reindex); trashed
+  items get the value set directly (`setTrashedItemProperty`). A user or agent item create or update
+  holds every select/multi-select property its own keys name `FOR SHARE` from before the option
+  check (`assertSelectValuesKnown`) to commit, so a removal and such a write serialize on the
+  property row and no user or agent write stores the removed key after the removal commits.
+  System writers skip the option check and take no such lock.
 - Property read order is `initial_position ASC NULLS LAST, key`. `createDatabaseWithProperties`
   stores positions (title 0, then input order); every later property has a null position.
 

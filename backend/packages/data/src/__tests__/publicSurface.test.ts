@@ -1126,6 +1126,7 @@ const EXPECTED_CHOKE_POINT_METHODS = [
   "queryViewItems",
   "readAutomationForItems",
   "relinkValue",
+  "removePropertyOption",
   "removeViewItem",
   "renameDatabase",
   "renameProperty",
