@@ -195,6 +195,25 @@ describe("the mail draft routes (issue gh-1867)", () => {
     });
   }
 
+  /**
+   * Runs `work` and answers the rejections no handler claimed by the end of their microtask turn, letting one more
+   * turn pass after `work` so a rejection from its last request is reported too.
+   */
+  async function unhandledRejectionsDuring(work: () => Promise<void>): Promise<unknown[]> {
+    const reasons: unknown[] = [];
+    const listener = (reason: unknown) => {
+      reasons.push(reason);
+    };
+    process.on("unhandledRejection", listener);
+    try {
+      await work();
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+    return reasons;
+  }
+
   async function count(table: "mail_drafts" | "emails"): Promise<number> {
     const sql =
       table === "mail_drafts"
@@ -502,18 +521,20 @@ describe("the mail draft routes (issue gh-1867)", () => {
       });
       const before = await itemRow(providerDraft.id);
 
-      const attempts = [
-        updateDraft(providerDraft.id, { ifVersion: providerDraft.version, subject: "Změna" }),
-        discardDraft(providerDraft.id),
-      ];
-      for (const attempt of attempts) {
-        const refusal = await attempt.catch((error: unknown) => error);
-        if (!(refusal instanceof MailDraftNotEditableError)) throw new Error("Expected a MailDraftNotEditableError");
-        expect({ status: refusal.status, code: refusal.code }).toEqual({
-          status: 409,
-          code: "mail_draft_not_editable",
-        });
-      }
+      const escaped = await unhandledRejectionsDuring(async () => {
+        for (const attempt of [
+          () => updateDraft(providerDraft.id, { ifVersion: providerDraft.version, subject: "Změna" }),
+          () => discardDraft(providerDraft.id),
+        ]) {
+          const refusal = await attempt().catch((error: unknown) => error);
+          if (!(refusal instanceof MailDraftNotEditableError)) throw new Error("Expected a MailDraftNotEditableError");
+          expect({ status: refusal.status, code: refusal.code }).toEqual({
+            status: 409,
+            code: "mail_draft_not_editable",
+          });
+        }
+      });
+      expect(escaped, "each refusal rejects only the request that answers it").toEqual([]);
 
       expect(await itemRow(providerDraft.id)).toEqual(before);
       await expect(readDraft(providerDraft.id)).rejects.toBeInstanceOf(NotFoundError);
