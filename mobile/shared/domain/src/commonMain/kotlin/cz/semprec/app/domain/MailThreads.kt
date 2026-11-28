@@ -78,7 +78,6 @@ data class MailFacets(
     val total: Int,
     val projectsTotal: Int,
     val projects: List<MailFacetOption>,
-    val selectedProjectName: String?,
 )
 
 /** The counts of the mail smart boxes and the mailboxes that cannot sync until the person signs in again. */

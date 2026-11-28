@@ -433,22 +433,6 @@
         }
       }
     },
-    "search.count" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Projekty: %lld"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Projects: %lld"
-          }
-        }
-      }
-    },
     "search.empty" : {
       "localizations" : {
         "cs" : {
