@@ -49,27 +49,23 @@ Rejected:
   waits for it (a capture just added, a window, a retry after a backoff each wait for the round they started), so an
   expired task leaves no request of its own running while the system suspends the app. Nothing is lost: a capture is
   deleted only after the server created its item, and one sent again carries the same `Idempotency-Key`.
-- **When they are scheduled.** Both are scheduled together, and only while captures wait or the count failed: after a capture is added by
-  the intent (before its brief send, so they are submitted even when the system suspends the app during it), by the scanner (once the scan's capture is kept), or by the diary's capture row,
-  and when the app moves to the background. A new request replaces the pending one with the same identifier. A
-  refused submission is not retried; the next trigger schedules again.
+- **When they are scheduled.** Both are scheduled together, and only while captures wait or the count failed: after a
+  capture is added by the intent (before its brief send, so they are submitted even when the system suspends the app
+  during it), by the scanner (once the scan's capture is kept), or by the diary's capture row, and when the app moves to
+  the background. A new request replaces the pending one with the same identifier. A refused submission is not retried;
+  the next trigger schedules again.
 - **Sending when active.** When the app as a whole becomes active (`scenePhase` of `SemprecApp`), it runs one send
-  through the bridge, on iOS and macOS; while the send of an earlier activation still runs, it starts none. On macOS this is the only part that applies, and the BackgroundTasks code is
-  compiled only for iOS (`#if os(iOS)`).
+  through the bridge, on iOS and macOS; while the send of an earlier activation still runs, it starts none. On macOS
+  this is the only part that applies, and the BackgroundTasks code is compiled only for iOS (`#if os(iOS)`).
 - **One owner.** `CaptureSending` (one per process, in the app target) owns all of this. The app delegate, the app's
   phase, the intent, the scanner presenter and the diary report to it. A feature never imports BackgroundTasks. The
   Journal feature gets an `onCaptured` closure from the app through `JournalScreenFactory.journal`, and its capture
   ViewModel calls it for each `captured` effect. This is a plain closure, not a router method, because it is not
   navigation ([[2026-10-24-app-owned-mobile-navigation-through-feature-routers]] keeps routers for navigation).
-- **One bridge per process.** The app uses one `InboxShortcutCapture`, `InboxShortcutCapture.shared`, for the intent,
-  the type query, the scanner presenter, the background tasks, the send on activation and the diary hook. So the
-  process holds exactly one `InboxCaptureSDK` and one HTTP client for them. Every `InboxCaptureSDK` builds its own
-  `ApiClient`, whose Ktor client is never closed, so a bridge per call would add a client on every activation, task
-  run and intent run. This narrows the lifetime that
-  [[2026-11-27-apple-system-entry-points-run-in-the-app-over-a-headless-sdk]] gave the bridge (one per intent run or
-  entity query) for the Inbox captures. The rest of that decision stands: the bridge's SDK attaches its sender only
-  when no window has, and a window created later replaces it. Holding the bridge longer changes neither rule. Its
-  initializer over a session store and a directory stays internal for CoreKitTests.
+- **One bridge per process.** The background tasks, the send on activation and the diary hook use the bridge of the
+  intents, `InboxShortcutCapture.shared`
+  ([[2026-11-27-apple-system-entry-points-run-in-the-app-over-a-headless-sdk]]), so none of them adds a Kotlin SDK or
+  an HTTP client of its own.
 
 ## Consequences
 
@@ -78,8 +74,9 @@ Rejected:
   the headless sender, whose `401` ends no session, as the headless SDK ADR records.
 - A capture that can never be sent (a JSON file the outbox cannot read, which it still counts) keeps both tasks
   scheduled for as long as it stays. The system limits how often the tasks run.
-- An expired run, or an expiration that arrives after the run completed, schedules once more even when nothing waits.
-  The extra run then finds nothing to send and completes with success.
+- An expired run, or an expiration that arrives after the run completed, schedules once more even when nothing waits,
+  and so does an intent's capture that reaches the server during its brief send. The extra run then finds nothing to
+  send and completes with success.
 - `InboxCaptureSDK` exports `capturesWait()`, so Swift can ask whether captures wait without reading the outbox's
   files. A count that fails answers unknown rather than nothing waiting, so a failure schedules the tasks instead of
   leaving a capture without them.

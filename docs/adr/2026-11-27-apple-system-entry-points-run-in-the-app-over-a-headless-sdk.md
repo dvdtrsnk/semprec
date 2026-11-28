@@ -51,13 +51,18 @@ Rejected:
   (`AuthenticatedApi(takesOverSender = false)`), so a window's sender, whose `401` signs that window out, stays in
   charge whenever one exists; a window created later replaces the headless one, as every window replaces the sender
   before it.
-- **Lifetime.** A bridge, and its SDK, is created per intent run or entity query and released after it; the process's
-  `OfflineLayer` and what it keeps outlive it.
+- **Lifetime.** The app holds one bridge per process, `InboxShortcutCapture.shared`, for every intent run, entity
+  query and the other headless callers of the Inbox captures
+  ([[2026-11-27-apple-app-sends-waiting-inbox-captures-from-background-tasks]]), so the process holds exactly one
+  `InboxCaptureSDK` and one HTTP client for them: every `InboxCaptureSDK` builds its own `ApiClient`, whose Ktor client
+  is never closed, so a bridge per call would add a client on every run. Holding it changes neither rule about the
+  sender above. Its initializer over a session store and a directory stays internal for CoreKitTests.
 
 ## Consequences
 
 - An intent works offline whenever a window has kept the answers it reads; with nothing kept it gets the failure of
-  the read, and has to offer what it can without it (the type query offers only "No type").
+  the read, and has to offer what it can without it (the type query offers only "Scan", where the device can scan, and
+  "No type").
 - In a process without a window the headless sender carries the layer's rounds, and a `401` of one of them does not
   end the session; the next window's own call does. With a window open, an intent changes nothing about who sends.
 - A later system entry point (another intent, a control) follows the same shape: its own headless SDK entry and CoreKit

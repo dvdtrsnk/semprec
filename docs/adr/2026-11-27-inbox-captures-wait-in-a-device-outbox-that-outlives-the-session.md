@@ -52,18 +52,22 @@ once, as before.
 - **Lifetime.** Ending the session (`OfflineLayer.clear()`) and keeping one account's offline answers never delete
   `captures/`. A capture is deleted only after the server answered its `POST /api/inbox/items` with success. Nothing
   is ever dropped.
-- **Sending.** One round at a time per process, for the owner of the session signed in now, through the window's
-  sender (`QueueSender`, which also uploads raw bodies). A trigger while a round runs makes that round look at the
-  directory once more. Captures go out in creation order, one at a time: the file (`POST /api/blobs`) unless an
-  uploaded blob id is recorded, then `POST /api/inbox/items` with the body a direct capture sends and
-  `Idempotency-Key: <captureId>`. No answer, a `5xx`, a `429` or a `401` ends the round and keeps the capture, with no
-  limit on how often. A `409` of the item that names the type (`error.details.field` is `typeId`: another change holds
-  the type's lock) is transient: it ends the round and keeps the capture with its type. Any other refusal of the item
-  that names the type is sent again at once without the type, and the capture is written without it. A refusal of the item that names the blob
-  (`error.details.field` is `attachments`, or `error.details` has a `blobId`) is followed, once per delivery, by a new
-  upload and a new send. Any other refusal of either request keeps the capture, counts it and does not try it again
-  for 1 hour; the round goes on with the next capture. A capture whose file is missing and that was never uploaded is
-  left as it is and goes on waiting.
+- **Sending.** One round at a time per process, for the owner of the session signed in now, through the layer's sender
+  (`QueueSender`, which also uploads raw bodies): a window's, or a headless SDK's while no window attached one
+  ([[2026-11-27-apple-system-entry-points-run-in-the-app-over-a-headless-sdk]]). A trigger while a round runs makes that
+  round look at the directory once more. A round is cancelled when every caller waiting for it was cancelled
+  (`OfflineLayer.sendCaptures()`); a round a trigger of the outbox started keeps that trigger waiting and goes on.
+  Cancelling loses nothing, since a capture is deleted only after success and is sent again with the same key. Captures
+  go out in creation order, one at a time: the file (`POST /api/blobs`) unless an uploaded blob id is recorded, then
+  `POST /api/inbox/items` with the body a direct capture sends and `Idempotency-Key: <captureId>`. No answer, a `5xx`, a
+  `429` or a `401` ends the round and keeps the capture, with no limit on how often. A `409` of the item that names the
+  type (`error.details.field` is `typeId`: another change holds the type's lock) is transient: it ends the round and
+  keeps the capture with its type. Any other refusal of the item that names the type is sent again at once without the
+  type, and the capture is written without it. A refusal of the item that names the blob (`error.details.field` is
+  `attachments`, or `error.details` has a `blobId`) is followed, once per delivery, by a new upload and a new send. Any
+  other refusal of either request keeps the capture, counts it and does not try it again for 1 hour; the round goes on
+  with the next capture. A capture whose file is missing and that was never uploaded is left as it is and goes on
+  waiting.
 - **Triggers.** A round starts when a capture is added, when an answer ends the offline state or a sync socket
   connects, when a window starts (`OfflineLayer.warmUpWith`), and after a round that ended without an answer, with a
   `5xx`, a `429` or a busy type (`409` naming `typeId`), with a backoff from 1 s doubling to 60 s with jitter, for as
